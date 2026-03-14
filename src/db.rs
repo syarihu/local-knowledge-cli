@@ -159,13 +159,21 @@ pub fn search_entries(
     }
 
     if keyword_only {
+        let words: Vec<&str> = query.split_whitespace().collect();
         let mut sql = String::from(
             "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source_file, e.file_hash, e.created_at, e.updated_at \
-             FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE k.keyword LIKE ?1",
+             FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (",
         );
-        let like_query = format!("%{}%", query.to_lowercase());
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(like_query)];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        for (i, word) in words.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(" OR ");
+            }
+            let idx = i + 1;
+            sql.push_str(&format!("k.keyword LIKE ?{idx}"));
+            param_values.push(Box::new(format!("%{}%", word.to_lowercase())));
+        }
+        sql.push(')');
 
         append_filters(&mut sql, &mut param_values, category, since);
         sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
@@ -232,13 +240,21 @@ pub fn search_entries(
                 results.iter().map(|r| r.id).collect();
             let remaining = limit - results.len();
 
+            let words: Vec<&str> = query.split_whitespace().collect();
             let mut kw_sql = String::from(
                 "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source_file, e.file_hash, e.created_at, e.updated_at \
-                 FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE k.keyword LIKE ?1",
+                 FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (",
             );
-            let like_query = format!("%{}%", query.to_lowercase());
-            let mut kw_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-                vec![Box::new(like_query)];
+            let mut kw_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            for (i, word) in words.iter().enumerate() {
+                if i > 0 {
+                    kw_sql.push_str(" OR ");
+                }
+                let idx = i + 1;
+                kw_sql.push_str(&format!("k.keyword LIKE ?{idx}"));
+                kw_params.push(Box::new(format!("%{}%", word.to_lowercase())));
+            }
+            kw_sql.push(')');
 
             append_filters(&mut kw_sql, &mut kw_params, category, since);
             kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
