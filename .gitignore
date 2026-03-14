@@ -1,0 +1,7 @@
+.claude/knowledge.db
+.claude/search.log
+
+
+# Added by cargo
+
+/target
