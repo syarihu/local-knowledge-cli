@@ -329,6 +329,14 @@ When launching Explore or general-purpose agents for code investigation, always 
 - Do not save trivial or obvious facts\n\
 - Briefly report what was saved (e.g., \"Added to knowledge base: <title>\")\n\
 \n\
+### Keywords Rule (when adding)\n\
+- Include feature names, screen names, or module names as keywords\n\
+  (e.g., \"login\", \"settings-screen\", \"auth-module\")\n\
+\n\
+### Search Rule (when searching)\n\
+- Search by both abstract topic AND concrete names\n\
+  (e.g., `lk search \"word book detail\"` and `lk search \"navigation\"`)\n\
+\n\
 ### Available Commands\n\
 - `lk search \"<query>\" --json` - Search knowledge (use `--since YYYY-MM-DD` to filter by date)\n\
 - `lk get <id> --json` - Get entry details\n\

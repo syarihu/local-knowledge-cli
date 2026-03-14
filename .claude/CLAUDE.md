@@ -12,6 +12,14 @@ This project has a local knowledge base.
 - Do not save trivial or obvious facts
 - Briefly report what was saved (e.g., "Added to knowledge base: <title>")
 
+### Keywords Rule (when adding)
+- Include feature names, screen names, or module names as keywords
+  (e.g., "login", "settings-screen", "auth-module")
+
+### Search Rule (when searching)
+- Search by both abstract topic AND concrete names
+  (e.g., `lk search "word book detail"` and `lk search "navigation"`)
+
 ### Agent Launch Rule
 When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:
 > Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --limit 5` to check existing knowledge. If useful results are found, use `lk get <id> --json` for details and use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
