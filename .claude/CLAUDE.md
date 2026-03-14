@@ -17,4 +17,4 @@ This project has a local knowledge base.
 - `lk add "<title>" --keywords "kw1,kw2" --content "..."` - Add knowledge
 - `lk edit <id> --title "..." --keywords "..." --content "..."` - Edit existing entry
 - `lk sync` - Sync markdown files with DB
-- `/lk-knowledge-search` `/lk-knowledge-add` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills
+- `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills

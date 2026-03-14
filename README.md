@@ -14,6 +14,14 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install syarihu/tap/lk
+```
+
+### Shell script
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/syarihu/local-knowledge-cli/main/setup.sh | bash
 ```
@@ -30,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/syarihu/local-knowledge-cli/main/se
 cargo install --path .
 ```
 
-> **Note:** Requires `~/.local/bin` in your `PATH`.
+> **Note:** Shell script and source builds require `~/.local/bin` in your `PATH`.
 
 ## Quick Start
 
@@ -142,8 +150,8 @@ Rate limit is 100 requests per minute per API key...
 After `lk init`, Claude Code will automatically:
 
 1. Search the knowledge base before exploring code
-2. Add new discoveries via `/lk-knowledge-add`
-3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write`, `/lk-knowledge-discover`
+2. Add new discoveries via `/lk-knowledge-add-db`
+3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`
 
 ## Search Logging
 
@@ -172,12 +180,13 @@ lk search-log -n 50  # Show last 50 entries
 
 ## Supported Platforms
 
-| Platform | Architecture |
-|----------|-------------|
-| macOS    | Apple Silicon (aarch64) |
-| macOS    | Intel (x86_64) |
-| Linux    | ARM64 (aarch64) |
-| Linux    | x86_64 |
+| Platform | Architecture | Note |
+|----------|-------------|------|
+| macOS    | Apple Silicon (aarch64) | |
+| macOS    | Intel (x86_64) | |
+| Linux    | ARM64 (aarch64) | |
+| Linux    | x86_64 | |
+| Windows  | x86_64 | `lk update` is not supported; use `cargo install` to update |
 
 ## License
 

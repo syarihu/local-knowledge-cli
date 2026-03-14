@@ -324,7 +324,7 @@ This project has a local knowledge base.\n\
 - `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\"` - Add knowledge\n\
 - `lk edit <id> --title \"...\" --keywords \"...\" --content \"...\"` - Edit existing entry\n\
 - `lk sync` - Sync markdown files with DB\n\
-- `/lk-knowledge-search` `/lk-knowledge-add` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills\n";
+- `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills\n";
 
 fn cmd_add(
     title: &str,
@@ -910,10 +910,10 @@ const DEFAULT_REPO: &str = "syarihu/local-knowledge-cli";
 
 const EMBEDDED_COMMANDS: &[(&str, &str)] = &[
     ("~lk-knowledge-search.md", include_str!("../commands/~lk-knowledge-search.md")),
-    ("~lk-knowledge-add.md", include_str!("../commands/~lk-knowledge-add.md")),
+    ("~lk-knowledge-add-db.md", include_str!("../commands/~lk-knowledge-add-db.md")),
     ("~lk-knowledge-export.md", include_str!("../commands/~lk-knowledge-export.md")),
     ("~lk-knowledge-sync.md", include_str!("../commands/~lk-knowledge-sync.md")),
-    ("~lk-knowledge-write.md", include_str!("../commands/~lk-knowledge-write.md")),
+    ("~lk-knowledge-write-md.md", include_str!("../commands/~lk-knowledge-write-md.md")),
     ("~lk-knowledge-discover.md", include_str!("../commands/~lk-knowledge-discover.md")),
     ("~lk-knowledge-refresh.md", include_str!("../commands/~lk-knowledge-refresh.md")),
 ];
@@ -926,6 +926,7 @@ fn detect_target() -> Result<String, Box<dyn std::error::Error>> {
         ("macos", "x86_64") => Ok("x86_64-apple-darwin".to_string()),
         ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu".to_string()),
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu".to_string()),
+        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc".to_string()),
         _ => Err(format!("Unsupported platform: {os}-{arch}").into()),
     }
 }
