@@ -328,6 +328,11 @@ pub fn delete_entry(conn: &Connection, id: i64) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+pub fn delete_entries_by_category(conn: &Connection, category: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    let count = conn.execute("DELETE FROM entries WHERE category = ?1", params![category])?;
+    Ok(count)
+}
+
 pub fn update_entry(
     conn: &Connection,
     id: i64,

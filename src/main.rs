@@ -65,6 +65,11 @@ enum Commands {
         /// Entry ID
         id: i64,
     },
+    /// Delete all entries in a category
+    Purge {
+        /// Category to purge (e.g., "local", "shared")
+        category: String,
+    },
     /// List all entries
     List {
         /// Filter by category
@@ -148,6 +153,7 @@ fn main() {
             cmd_edit(id, title.as_deref(), keywords.as_deref(), content.as_deref(), json)
         }
         Commands::Delete { id } => cmd_delete(id),
+        Commands::Purge { category } => cmd_purge(&category),
         Commands::List { category, json } => cmd_list(category.as_deref(), json),
         Commands::Sync { json } => cmd_sync(json),
         Commands::Export { dir } => cmd_export(dir),
@@ -540,6 +546,13 @@ fn cmd_delete(id: i64) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| format!("Entry #{id} not found"))?;
     db::delete_entry(&conn, id)?;
     println!("Deleted entry #{id}: {}", entry.title);
+    Ok(())
+}
+
+fn cmd_purge(category: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = db::open_db(&get_db_path())?;
+    let count = db::delete_entries_by_category(&conn, category)?;
+    println!("Purged {count} entries from category \"{category}\"");
     Ok(())
 }
 
