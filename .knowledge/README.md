@@ -9,4 +9,4 @@ These files are managed by `lk` (local-knowledge-cli) and synced to a local SQLi
 - `conventions/` - Coding conventions and patterns
 
 ## Format
-See https://github.com/xxx/local-knowledge-cli for the markdown format specification.
+Each markdown file uses YAML frontmatter for metadata and `## Entry:` headings to delimit entries.
