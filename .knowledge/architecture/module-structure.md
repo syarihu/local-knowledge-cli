@@ -8,7 +8,7 @@ category: architecture
 ## Entry: Source Code Organization
 keywords: [src, module, file-layout]
 
-The project has 4 source files: `src/main.rs` handles CLI parsing via clap and all 15 command implementations (including `Edit` and `SearchLog`), `src/db.rs` manages SQLite operations, `src/markdown.rs` handles YAML frontmatter parsing and `## Entry:` heading extraction, and `src/keywords.rs` provides automatic keyword extraction. The `commands/` directory contains 7 embedded Claude Code slash command definitions as markdown files (`~lk-knowledge-*.md`, including `add-db` and `write-md` variants).
+The project has 4 source files: `src/main.rs` handles CLI parsing via clap and all 15 command implementations (including `Edit` and `SearchLog`), `src/db.rs` manages SQLite operations, `src/markdown.rs` handles YAML frontmatter parsing and `## Entry:` heading extraction, and `src/keywords.rs` provides automatic keyword extraction. The `commands/` directory contains 7 embedded Claude Code slash command definitions as markdown files (`lk-knowledge-*.md`, including `add-db` and `write-md` variants).
 
 ## Entry: Project Root Detection
 keywords: [project-root, get_project_root, path]

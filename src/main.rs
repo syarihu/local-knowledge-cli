@@ -914,13 +914,13 @@ fn fetch_latest_tag(repo: &str) -> Result<String, Box<dyn std::error::Error>> {
 const DEFAULT_REPO: &str = "syarihu/local-knowledge-cli";
 
 const EMBEDDED_COMMANDS: &[(&str, &str)] = &[
-    ("~lk-knowledge-search.md", include_str!("../commands/~lk-knowledge-search.md")),
-    ("~lk-knowledge-add-db.md", include_str!("../commands/~lk-knowledge-add-db.md")),
-    ("~lk-knowledge-export.md", include_str!("../commands/~lk-knowledge-export.md")),
-    ("~lk-knowledge-sync.md", include_str!("../commands/~lk-knowledge-sync.md")),
-    ("~lk-knowledge-write-md.md", include_str!("../commands/~lk-knowledge-write-md.md")),
-    ("~lk-knowledge-discover.md", include_str!("../commands/~lk-knowledge-discover.md")),
-    ("~lk-knowledge-refresh.md", include_str!("../commands/~lk-knowledge-refresh.md")),
+    ("lk-knowledge-search.md", include_str!("../commands/lk-knowledge-search.md")),
+    ("lk-knowledge-add-db.md", include_str!("../commands/lk-knowledge-add-db.md")),
+    ("lk-knowledge-export.md", include_str!("../commands/lk-knowledge-export.md")),
+    ("lk-knowledge-sync.md", include_str!("../commands/lk-knowledge-sync.md")),
+    ("lk-knowledge-write-md.md", include_str!("../commands/lk-knowledge-write-md.md")),
+    ("lk-knowledge-discover.md", include_str!("../commands/lk-knowledge-discover.md")),
+    ("lk-knowledge-refresh.md", include_str!("../commands/lk-knowledge-refresh.md")),
 ];
 
 fn detect_target() -> Result<String, Box<dyn std::error::Error>> {
