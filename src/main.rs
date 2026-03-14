@@ -311,7 +311,12 @@ This project has a local knowledge base.\n\
 \n\
 ### Pre-investigation Rule\n\
 - Before reading code with Read, Grep, or Glob tools, first run `lk search \"<keyword>\" --json --limit 5` to check existing knowledge\n\
-- If results are found, use `lk get <id> --json` for details — skip unnecessary code exploration\n\
+- If results are found, use `lk get <id> --json` for details and use that as your starting point — skip unnecessary code exploration\n\
+- If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read\n\
+\n\
+### Agent Launch Rule\n\
+When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:\n\
+> Before using Read/Grep/Glob, first run `lk search \"<relevant keywords>\" --json --limit 5` to check existing knowledge. If useful results are found, use `lk get <id> --json` for details and use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.\n\
 \n\
 ### Auto-accumulation of Knowledge\n\
 - After investigating code or design, save noteworthy discoveries with `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\"`\n\
