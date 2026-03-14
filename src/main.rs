@@ -862,6 +862,16 @@ fn install_embedded_commands() -> Result<(), Box<dyn std::error::Error>> {
     let commands_dir = home_dir().join(".claude").join("commands");
     std::fs::create_dir_all(&commands_dir)?;
 
+    // Clean up legacy ~ prefixed command files
+    for (filename, _) in EMBEDDED_COMMANDS {
+        let legacy = format!("~{filename}");
+        let legacy_path = commands_dir.join(&legacy);
+        if legacy_path.exists() {
+            std::fs::remove_file(&legacy_path)?;
+            println!("  Removed legacy: {legacy}");
+        }
+    }
+
     for (filename, content) in EMBEDDED_COMMANDS {
         std::fs::write(commands_dir.join(filename), content)?;
         println!("  Updated: {filename}");
