@@ -953,8 +953,14 @@ fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
     // Install embedded Claude commands
     install_embedded_commands()?;
 
-    // Update config
-    let new_version = VERSION;
+    // Get the version from the newly installed binary
+    let new_version = std::process::Command::new(&dest)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().strip_prefix("lk ").map(|v| v.to_string()))
+        .unwrap_or_else(|| VERSION.to_string());
     std::fs::create_dir_all(&config_dir)?;
     let config_json = serde_json::json!({
         "install_dir": "",
