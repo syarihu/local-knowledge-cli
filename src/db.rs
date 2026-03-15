@@ -83,7 +83,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
     Ok(conn)
 }
 
-pub fn open_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
+pub fn open_db(db_path: &Path) -> Result<(Connection, bool), Box<dyn std::error::Error>> {
     if !db_path.exists() {
         return Err(format!(
             "Knowledge DB not found at {}. Run 'lk init' first.",
@@ -93,15 +93,11 @@ pub fn open_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
     }
     let conn = Connection::open(db_path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-    let migrations = migrate(&conn)?;
-    for msg in &migrations {
-        eprintln!("Note: {msg}");
-    }
-    Ok(conn)
+    let migrated = migrate(&conn)?;
+    Ok((conn, migrated))
 }
 
-fn migrate(conn: &Connection) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut messages = Vec::new();
+fn migrate(conn: &Connection) -> Result<bool, Box<dyn std::error::Error>> {
     let schema: String = conn
         .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")?
         .query_row([], |row| row.get(0))?;
@@ -112,13 +108,14 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, Box<dyn std::error::Error>>
             "ALTER TABLE entries ADD COLUMN source TEXT NOT NULL DEFAULT 'local';
              CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
              UPDATE entries SET source = 'shared', category = '' WHERE category = 'shared';
-             UPDATE entries SET source = 'local', category = '' WHERE category = 'local';",
+             UPDATE entries SET source = 'local', category = '' WHERE category = 'local';
+             DELETE FROM entries WHERE source = 'shared';",
         )?;
-        messages.push("DB migrated: added 'source' column. Run `lk purge --source shared && lk sync` to populate categories from .knowledge/ frontmatter.".to_string());
+        return Ok(true);
     }
-
-    Ok(messages)
+    Ok(false)
 }
+
 
 pub fn add_entry(
     conn: &Connection,

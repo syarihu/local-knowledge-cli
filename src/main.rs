@@ -211,6 +211,24 @@ fn get_knowledge_dir() -> PathBuf {
     get_project_root().join(".knowledge")
 }
 
+/// Open DB and auto-sync .knowledge/ if a migration occurred.
+fn open_db_with_migrate() -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
+    let db_path = get_db_path();
+    let (conn, migrated) = db::open_db(&db_path)?;
+    if migrated {
+        let root = get_project_root();
+        let knowledge_dir = get_knowledge_dir();
+        if knowledge_dir.exists() {
+            let stats = sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
+            eprintln!(
+                "Note: DB migrated and re-synced .knowledge/ (added: {}, updated: {}, removed: {})",
+                stats.added, stats.updated, stats.removed
+            );
+        }
+    }
+    Ok(conn)
+}
+
 // --- Commands ---
 
 fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
@@ -248,7 +266,7 @@ fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 3. Import existing .knowledge/ files
-    let conn = db::open_db(&db_path)?;
+    let (conn, _) = db::open_db(&db_path)?;
     let stats = sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
     if stats.added > 0 {
         println!("Imported {} entries from .knowledge/", stats.added);
@@ -367,7 +385,7 @@ fn cmd_add(
     category: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let content = content.unwrap_or("");
     let category = category.unwrap_or("");
 
@@ -412,7 +430,7 @@ fn cmd_search(
     limit: usize,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let mut results = db::search_entries(&conn, query, keyword_only, category, since, limit)?;
     if let Some(src) = source {
         results.retain(|e| e.source == src);
@@ -492,7 +510,7 @@ fn cmd_search_log(lines: usize) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let entry = db::get_entry(&conn, id)?
         .ok_or_else(|| format!("Entry #{id} not found"))?;
     let kws = db::get_keywords(&conn, id)?;
@@ -530,7 +548,7 @@ fn cmd_edit(
     content: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let _entry = db::get_entry(&conn, id)?
         .ok_or_else(|| format!("Entry #{id} not found"))?;
 
@@ -573,7 +591,7 @@ fn cmd_edit(
 }
 
 fn cmd_delete(id: i64) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let entry = db::get_entry(&conn, id)?
         .ok_or_else(|| format!("Entry #{id} not found"))?;
     db::delete_entry(&conn, id)?;
@@ -585,7 +603,7 @@ fn cmd_purge(category: Option<&str>, source: Option<&str>) -> Result<(), Box<dyn
     if category.is_none() && source.is_none() {
         return Err("Specify --category or --source (or both)".into());
     }
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let mut total = 0;
     if let Some(src) = source {
         let count = db::purge_by_source(&conn, src)?;
@@ -604,7 +622,7 @@ fn cmd_purge(category: Option<&str>, source: Option<&str>) -> Result<(), Box<dyn
 }
 
 fn cmd_list(category: Option<&str>, source: Option<&str>, json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let mut entries = db::list_entries(&conn, category)?;
     if let Some(src) = source {
         entries.retain(|e| e.source == src);
@@ -635,7 +653,7 @@ fn cmd_list(category: Option<&str>, source: Option<&str>, json_output: bool) -> 
 }
 
 fn cmd_sync(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let root = get_project_root();
     let stats = sync_knowledge_dir(&conn, &get_knowledge_dir(), &root)?;
 
@@ -657,7 +675,7 @@ fn cmd_sync(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_export(dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let output_dir = dir.unwrap_or_else(get_knowledge_dir);
     std::fs::create_dir_all(&output_dir)?;
     let root = get_project_root();
@@ -731,7 +749,7 @@ fn cmd_export(dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_import(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let root = get_project_root();
     let count = import_md_file(&conn, path, &root)?;
     println!("Imported {count} entries from {}", path.display());
@@ -739,7 +757,7 @@ fn cmd_import(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 fn cmd_keywords(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let rows = db::keyword_counts(&conn)?;
 
     if json_output {
@@ -757,7 +775,7 @@ fn cmd_keywords(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_stats(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(&get_db_path())?;
+    let conn = open_db_with_migrate()?;
     let stats = db::get_stats(&conn)?;
 
     if json_output {
@@ -880,6 +898,12 @@ fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
         "repo": repo,
     });
     std::fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
+
+    // Run DB migration if inside a project with a knowledge DB
+    let db_path = get_db_path();
+    if db_path.exists() {
+        let _ = open_db_with_migrate(); // run migration + auto-sync if needed
+    }
 
     // tmpdir is automatically cleaned up when dropped
     println!("\nUpdate complete! (lk {new_version})");
