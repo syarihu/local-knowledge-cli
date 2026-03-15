@@ -4,11 +4,14 @@ This project has a local knowledge base.
 
 ### Pre-investigation Rule
 - Before reading code with Read, Grep, or Glob tools, first run `lk search "<keyword>" --json --limit 5` to check existing knowledge
-- If results are found, use `lk get <id> --json` for details and use that as your starting point — skip unnecessary code exploration
+- Use `--full` to include full content directly: `lk search "<keyword>" --json --full --limit 5`
+- If results are found and `--full` was not used, use `lk get <id> --json` for details
 - If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read
 
 ### Auto-accumulation of Knowledge
 - After investigating code or design, save noteworthy discoveries with `lk add "<title>" --keywords "kw1,kw2" --content "..."`
+- If `lk add` returns `"added": false` with `similar_entries`, use `lk edit <id>` to update the existing entry instead of creating a duplicate
+- Use `--force` to skip duplicate check when you are certain a new entry is needed
 - Do not save trivial or obvious facts
 - Briefly report what was saved (e.g., "Added to knowledge base: <title>")
 
@@ -22,12 +25,14 @@ This project has a local knowledge base.
 
 ### Agent Launch Rule
 When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:
-> Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --limit 5` to check existing knowledge. If useful results are found, use `lk get <id> --json` for details and use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
+> Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. If useful results are found, use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
 
 ### Available Commands
-- `lk search "<query>" --json` - Search knowledge (use `--since`, `--category`, `--source` to filter)
+- `lk search "<query>" --json` - Search knowledge (use `--since`, `--category`, `--source`, `--full` to filter)
+- `lk search "<query>" --json --full` - Search with full content (no need for `lk get`)
 - `lk get <id> --json` - Get entry details
-- `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"` - Add knowledge
+- `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"` - Add knowledge (checks duplicates)
+- `lk add "<title>" --force --content "..."` - Add knowledge (skip duplicate check)
 - `lk list --category "features" --source "local" --json` - List entries with filters
 - `lk edit <id> --title "..." --keywords "..." --content "..."` - Edit existing entry
 - `lk purge --source local` / `lk purge --category features` - Bulk delete entries
