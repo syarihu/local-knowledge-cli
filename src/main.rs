@@ -31,6 +31,9 @@ enum Commands {
         /// Category (e.g., "features", "architecture")
         #[arg(long)]
         category: Option<String>,
+        /// Skip duplicate check and force add
+        #[arg(long)]
+        force: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -54,6 +57,9 @@ enum Commands {
         /// Max results
         #[arg(short, long, default_value = "5")]
         limit: usize,
+        /// Include full content in JSON output (eliminates need for lk get)
+        #[arg(long)]
+        full: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -155,11 +161,11 @@ fn main() {
 
     let result = match cli.command {
         Commands::Init => cmd_init(),
-        Commands::Add { title, keywords, content, category, json } => {
-            cmd_add(&title, keywords.as_deref(), content.as_deref(), category.as_deref(), json)
+        Commands::Add { title, keywords, content, category, force, json } => {
+            cmd_add(&title, keywords.as_deref(), content.as_deref(), category.as_deref(), force, json)
         }
-        Commands::Search { query, keyword_only, category, source, since, limit, json } => {
-            cmd_search(&query, keyword_only, category.as_deref(), source.as_deref(), since.as_deref(), limit, json)
+        Commands::Search { query, keyword_only, category, source, since, limit, full, json } => {
+            cmd_search(&query, keyword_only, category.as_deref(), source.as_deref(), since.as_deref(), limit, full, json)
         }
         Commands::Get { id, json } => cmd_get(id, json),
         Commands::Edit { id, title, keywords, content, json } => {
@@ -360,15 +366,18 @@ This project has a local knowledge base.\n\
 \n\
 ### Pre-investigation Rule\n\
 - Before reading code with Read, Grep, or Glob tools, first run `lk search \"<keyword>\" --json --limit 5` to check existing knowledge\n\
-- If results are found, use `lk get <id> --json` for details and use that as your starting point — skip unnecessary code exploration\n\
+- Use `--full` to include full content directly: `lk search \"<keyword>\" --json --full --limit 5`\n\
+- If results are found and `--full` was not used, use `lk get <id> --json` for details\n\
 - If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read\n\
 \n\
 ### Agent Launch Rule\n\
 When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:\n\
-> Before using Read/Grep/Glob, first run `lk search \"<relevant keywords>\" --json --limit 5` to check existing knowledge. If useful results are found, use `lk get <id> --json` for details and use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.\n\
+> Before using Read/Grep/Glob, first run `lk search \"<relevant keywords>\" --json --full --limit 5` to check existing knowledge. If useful results are found, use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.\n\
 \n\
 ### Auto-accumulation of Knowledge\n\
 - After investigating code or design, save noteworthy discoveries with `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\"`\n\
+- If `lk add` returns `\"added\": false` with `similar_entries`, use `lk edit <id>` to update the existing entry instead of creating a duplicate\n\
+- Use `--force` to skip duplicate check when you are certain a new entry is needed\n\
 - Do not save trivial or obvious facts\n\
 - Briefly report what was saved (e.g., \"Added to knowledge base: <title>\")\n\
 \n\
@@ -381,9 +390,11 @@ When launching Explore or general-purpose agents for code investigation, always 
   (e.g., `lk search \"word book detail\"` and `lk search \"navigation\"`)\n\
 \n\
 ### Available Commands\n\
-- `lk search \"<query>\" --json` - Search knowledge (use `--since`, `--category`, `--source` to filter)\n\
+- `lk search \"<query>\" --json` - Search knowledge (use `--since`, `--category`, `--source`, `--full` to filter)\n\
+- `lk search \"<query>\" --json --full` - Search with full content (no need for `lk get`)\n\
 - `lk get <id> --json` - Get entry details\n\
-- `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\" --category \"features\"` - Add knowledge\n\
+- `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\" --category \"features\"` - Add knowledge (checks duplicates)\n\
+- `lk add \"<title>\" --force --content \"...\"` - Add knowledge (skip duplicate check)\n\
 - `lk list --category \"features\" --source \"local\" --json` - List entries with filters\n\
 - `lk edit <id> --title \"...\" --keywords \"...\" --content \"...\"` - Edit existing entry\n\
 - `lk purge --source local` / `lk purge --category features` - Bulk delete entries\n\
@@ -395,6 +406,7 @@ fn cmd_add(
     keywords_str: Option<&str>,
     content: Option<&str>,
     category: Option<&str>,
+    force: bool,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
@@ -417,10 +429,45 @@ fn cmd_add(
     }
     kws.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
+    // Duplicate check (skip with --force)
+    if !force {
+        let similar = db::find_similar_entries(&conn, title, &kws)?;
+        if !similar.is_empty() {
+            if json_output {
+                let similar_json: Vec<serde_json::Value> = similar
+                    .iter()
+                    .map(|e| {
+                        let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
+                        let snippet = truncate_str(&e.content, 300);
+                        serde_json::json!({
+                            "id": e.id,
+                            "title": e.title,
+                            "keywords": ekws,
+                            "snippet": snippet,
+                        })
+                    })
+                    .collect();
+                let out = serde_json::json!({
+                    "added": false,
+                    "similar_entries": similar_json,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("Similar entries found (use --force to add anyway):");
+                for e in &similar {
+                    let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
+                    println!("  [{}] {} (keywords: {})", e.id, e.title, ekws.join(", "));
+                }
+            }
+            return Ok(());
+        }
+    }
+
     let entry_id = db::add_entry(&conn, title, content, &kws, category, "local", None, None)?;
 
     if json_output {
         let out = serde_json::json!({
+            "added": true,
             "id": entry_id,
             "title": title,
             "keywords": kws,
@@ -440,6 +487,7 @@ fn cmd_search(
     source: Option<&str>,
     since: Option<&str>,
     limit: usize,
+    full: bool,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
@@ -454,16 +502,21 @@ fn cmd_search(
         let output: Vec<serde_json::Value> = results
             .iter()
             .map(|r| {
-                let snippet = truncate_str(&r.content, 100);
                 let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "id": r.id,
                     "title": r.title,
                     "keywords": kws,
-                    "snippet": snippet,
                     "category": r.category,
                     "source": r.source,
-                })
+                    "score": r.rank,
+                });
+                if full {
+                    obj["content"] = serde_json::Value::String(r.content.clone());
+                } else {
+                    obj["snippet"] = serde_json::Value::String(truncate_str(&r.content, 300));
+                }
+                obj
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);

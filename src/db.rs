@@ -16,6 +16,7 @@ pub struct Entry {
     pub file_hash: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub rank: Option<f64>,
 }
 
 pub struct DbStats {
@@ -218,6 +219,7 @@ pub fn search_entries(
                 file_hash: row.get(6)?,
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
+                rank: None,
             })
         })?;
         for row in rows {
@@ -226,7 +228,7 @@ pub fn search_entries(
     } else {
         // FTS search
         let mut fts_sql = String::from(
-            "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.created_at, e.updated_at \
+            "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.created_at, e.updated_at, fts.rank \
              FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
@@ -241,6 +243,8 @@ pub fn search_entries(
 
         if let Ok(mut stmt) = conn.prepare(&fts_sql) {
             if let Ok(rows) = stmt.query_map(params_ref.as_slice(), |row| {
+                let raw_rank: f64 = row.get(9)?;
+                let score = 1.0 / (1.0 + raw_rank.abs());
                 Ok(Entry {
                     id: row.get(0)?,
                     title: row.get(1)?,
@@ -251,6 +255,7 @@ pub fn search_entries(
                     file_hash: row.get(6)?,
                     created_at: row.get(7)?,
                     updated_at: row.get(8)?,
+                    rank: Some(score),
                 })
             }) {
                 for row in rows {
@@ -301,6 +306,7 @@ pub fn search_entries(
                     file_hash: row.get(6)?,
                     created_at: row.get(7)?,
                     updated_at: row.get(8)?,
+                    rank: None,
                 })
             })?;
             for row in rows {
@@ -334,6 +340,7 @@ pub fn get_entry(conn: &Connection, id: i64) -> Result<Option<Entry>, Box<dyn st
             file_hash: row.get(6)?,
             created_at: row.get(7)?,
             updated_at: row.get(8)?,
+            rank: None,
         })
     })?;
     match rows.next() {
@@ -517,6 +524,133 @@ pub fn get_stats(conn: &Connection) -> Result<DbStats, Box<dyn std::error::Error
     Ok(DbStats { total, shared, local, keywords })
 }
 
+pub fn find_similar_entries(
+    conn: &Connection,
+    title: &str,
+    kws: &[String],
+) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
+    let mut results = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+
+    // 1. Title exact match (case-insensitive)
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, title, content, category, source, source_file, file_hash, created_at, updated_at \
+             FROM entries WHERE LOWER(title) = LOWER(?1) LIMIT 3",
+        )?;
+        let rows = stmt.query_map(params![title], |row| {
+            Ok(Entry {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                content: row.get(2)?,
+                category: row.get(3)?,
+                source: row.get(4)?,
+                source_file: row.get(5)?,
+                file_hash: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                rank: None,
+            })
+        })?;
+        for row in rows {
+            if let Ok(entry) = row {
+                seen_ids.insert(entry.id);
+                results.push(entry);
+            }
+        }
+    }
+
+    if results.len() >= 3 {
+        results.truncate(3);
+        return Ok(results);
+    }
+
+    // 2. FTS MATCH on title
+    {
+        let fts_query = title.to_string();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.created_at, e.updated_at \
+             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1 ORDER BY rank LIMIT 3",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![fts_query], |row| {
+                Ok(Entry {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    category: row.get(3)?,
+                    source: row.get(4)?,
+                    source_file: row.get(5)?,
+                    file_hash: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    rank: None,
+                })
+            }) {
+                for row in rows {
+                    if let Ok(entry) = row {
+                        if !seen_ids.contains(&entry.id) {
+                            seen_ids.insert(entry.id);
+                            results.push(entry);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if results.len() >= 3 {
+        results.truncate(3);
+        return Ok(results);
+    }
+
+    // 3. Keyword overlap
+    if !kws.is_empty() {
+        let remaining = 3 - results.len();
+        let placeholders: Vec<String> = kws.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.created_at, e.updated_at \
+             FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE k.keyword IN ({}) \
+             ORDER BY e.updated_at DESC LIMIT ?{}",
+            placeholders.join(", "),
+            kws.len() + 1
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = kws
+            .iter()
+            .map(|k| Box::new(k.to_lowercase()) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+        param_values.push(Box::new(remaining as i64));
+
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_ref.as_slice(), |row| {
+            Ok(Entry {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                content: row.get(2)?,
+                category: row.get(3)?,
+                source: row.get(4)?,
+                source_file: row.get(5)?,
+                file_hash: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                rank: None,
+            })
+        })?;
+        for row in rows {
+            if let Ok(entry) = row {
+                if !seen_ids.contains(&entry.id) {
+                    seen_ids.insert(entry.id);
+                    results.push(entry);
+                }
+            }
+        }
+    }
+
+    results.truncate(3);
+    Ok(results)
+}
+
 fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
     Ok(Entry {
         id: row.get(0)?,
@@ -528,5 +662,6 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
         file_hash: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        rank: None,
     })
 }
