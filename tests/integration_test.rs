@@ -38,15 +38,15 @@ fn test_init() {
     assert!(output.status.success());
 
     // Verify DB was created
-    assert!(dir.path().join(".claude/knowledge.db").exists());
+    assert!(dir.path().join(".knowledge/knowledge.db").exists());
     // Verify .knowledge/ was created
     assert!(dir.path().join(".knowledge").is_dir());
     assert!(dir.path().join(".knowledge/README.md").exists());
     // Verify .gitignore was created
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-    assert!(gitignore.contains(".claude/knowledge.db"));
-    // Verify CLAUDE.md was created
-    let claude_md = std::fs::read_to_string(dir.path().join(".claude/CLAUDE.md")).unwrap();
+    assert!(gitignore.contains(".knowledge/knowledge.db"));
+    // Verify CLAUDE.md was created (at root, not .claude/)
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
     assert!(claude_md.contains("Knowledge Base (local-knowledge-cli)"));
 }
 
@@ -64,7 +64,7 @@ fn test_init_idempotent() {
     assert!(output.status.success());
 
     // CLAUDE.md should not have duplicate sections
-    let claude_md = std::fs::read_to_string(dir.path().join(".claude/CLAUDE.md")).unwrap();
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
     let count = claude_md.matches("Knowledge Base (local-knowledge-cli)").count();
     assert_eq!(count, 1, "CLAUDE.md should not have duplicate sections");
 }

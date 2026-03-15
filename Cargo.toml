@@ -1,6 +1,6 @@
 [package]
 name = "lk"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "Local knowledge base CLI for Claude Code"
 

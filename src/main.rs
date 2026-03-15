@@ -204,7 +204,19 @@ fn get_project_root() -> PathBuf {
 }
 
 fn get_db_path() -> PathBuf {
-    get_project_root().join(".claude").join("knowledge.db")
+    let root = get_project_root();
+    let new_path = root.join(".knowledge").join("knowledge.db");
+    let old_path = root.join(".claude").join("knowledge.db");
+    // Auto-migrate DB location from .claude/ to .knowledge/
+    if !new_path.exists() && old_path.exists() {
+        if let Some(parent) = new_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        if std::fs::rename(&old_path, &new_path).is_ok() {
+            eprintln!("Note: Moved knowledge.db from .claude/ to .knowledge/");
+        }
+    }
+    new_path
 }
 
 fn get_knowledge_dir() -> PathBuf {
@@ -233,7 +245,7 @@ fn open_db_with_migrate() -> Result<rusqlite::Connection, Box<dyn std::error::Er
 
 fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
     let root = get_project_root();
-    let db_path = root.join(".claude").join("knowledge.db");
+    let db_path = root.join(".knowledge").join("knowledge.db");
 
     // 1. Initialize DB
     if db_path.exists() {
@@ -243,10 +255,10 @@ fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         println!("Created DB at {}", db_path.display());
     }
 
-    // 2. Create .knowledge/ directory
+    // 2. Create .knowledge/ directory structure
     let knowledge_dir = root.join(".knowledge");
-    if !knowledge_dir.exists() {
-        std::fs::create_dir_all(&knowledge_dir)?;
+    std::fs::create_dir_all(&knowledge_dir)?;
+    if !knowledge_dir.join("README.md").exists() {
         std::fs::write(
             knowledge_dir.join("README.md"),
             "# Project Knowledge Base\n\n\
@@ -274,7 +286,7 @@ fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Update .gitignore
     let gitignore_path = root.join(".gitignore");
-    let gitignore_entries = [".claude/knowledge.db", ".claude/search.log"];
+    let gitignore_entries = [".knowledge/knowledge.db", ".claude/search.log"];
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(&gitignore_path)?;
         let mut added = Vec::new();
