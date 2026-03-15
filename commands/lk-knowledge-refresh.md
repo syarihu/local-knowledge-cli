@@ -24,11 +24,15 @@ For each entry, check if it references:
 - **Missing features** — new options, flags, or behaviors not documented
 - **Wrong descriptions** — logic that has changed since the entry was written
 - **Test entries** — entries that appear to be test data (e.g., "テスト知識")
+- **Truncated content** — entries whose content appears cut off mid-sentence or mid-word (can happen with older models)
+- **Dead source references** — entries that reference source files (in content or `source_file` field) that no longer exist; verify with Glob
+- **Duplicate with CLAUDE.md/AGENTS.md** — entries whose content substantially overlaps with instructions already in CLAUDE.md or AGENTS.md (read these files and compare); flag for deletion to avoid drift
+- **Category mismatch** — entries from `.knowledge/` files where the frontmatter `category` doesn't match the directory name (e.g., file in `features/` but category says `architecture`); propose fixing the category or moving the file
 
 Present a summary table to the user:
 | ID | Title | Status | Issue |
 |----|-------|--------|-------|
-| #N | ... | Stale / OK / Delete? | what's wrong |
+| #N | ... | Stale / Truncated / Dead ref / Duplicate / Category mismatch / OK / Delete? | what's wrong |
 
 ### Phase 3: Update with user confirmation
 1. Ask user for confirmation before making changes
@@ -38,6 +42,14 @@ Present a summary table to the user:
    - Delete and re-add with corrected content via `lk add`
 4. For test/junk entries:
    - Delete with `lk delete <id>` after confirmation
+5. For truncated entries:
+   - Re-investigate the topic via code exploration, then update with complete content
+6. For dead source references:
+   - If the source was moved, update the reference; if deleted, remove or rewrite the entry
+7. For CLAUDE.md/AGENTS.md duplicates:
+   - Delete the knowledge entry (CLAUDE.md is the source of truth for instructions)
+8. For category mismatches:
+   - Fix the frontmatter category to match the directory, or move the file to the correct directory
 
 ### Phase 4: Report
 1. Run `lk sync` if any markdown files were edited

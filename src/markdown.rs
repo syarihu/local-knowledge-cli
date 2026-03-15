@@ -6,6 +6,7 @@ pub struct MdEntry {
     pub title: String,
     pub content: String,
     pub keywords: Vec<String>,
+    pub category: String,
 }
 
 /// Parse YAML-ish frontmatter. Returns (frontmatter_keywords, category, body).
@@ -38,7 +39,7 @@ fn parse_frontmatter(text: &str) -> (Vec<String>, String, &str) {
 
 /// Parse markdown text into individual entries.
 pub fn parse_md_entries(text: &str) -> Vec<MdEntry> {
-    let (file_kws, _category, body) = parse_frontmatter(text);
+    let (file_kws, category, body) = parse_frontmatter(text);
 
     let entry_re = Regex::new(r"(?m)^## Entry:\s*(.+)$").unwrap();
     let matches: Vec<_> = entry_re.captures_iter(body).collect();
@@ -63,6 +64,7 @@ pub fn parse_md_entries(text: &str) -> Vec<MdEntry> {
                 title,
                 content,
                 keywords: entry_kws,
+                category: category.clone(),
             });
         }
     } else {
@@ -87,6 +89,7 @@ pub fn parse_md_entries(text: &str) -> Vec<MdEntry> {
                     title,
                     content,
                     keywords: entry_kws,
+                    category: category.clone(),
                 });
             }
         }

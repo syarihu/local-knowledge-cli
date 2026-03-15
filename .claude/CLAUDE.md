@@ -25,9 +25,11 @@ When launching Explore or general-purpose agents for code investigation, always 
 > Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --limit 5` to check existing knowledge. If useful results are found, use `lk get <id> --json` for details and use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
 
 ### Available Commands
-- `lk search "<query>" --json` - Search knowledge (use `--since YYYY-MM-DD` to filter by date)
+- `lk search "<query>" --json` - Search knowledge (use `--since`, `--category`, `--source` to filter)
 - `lk get <id> --json` - Get entry details
-- `lk add "<title>" --keywords "kw1,kw2" --content "..."` - Add knowledge
+- `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"` - Add knowledge
+- `lk list --category "features" --source "local" --json` - List entries with filters
 - `lk edit <id> --title "..." --keywords "..." --content "..."` - Edit existing entry
+- `lk purge --source local` / `lk purge --category features` - Bulk delete entries
 - `lk sync` - Sync markdown files with DB
 - `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills

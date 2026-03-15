@@ -28,6 +28,9 @@ enum Commands {
         /// Entry content
         #[arg(short, long)]
         content: Option<String>,
+        /// Category (e.g., "features", "architecture")
+        #[arg(long)]
+        category: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -39,9 +42,12 @@ enum Commands {
         /// Search keywords only
         #[arg(long)]
         keyword_only: bool,
-        /// Filter by category
+        /// Filter by category (e.g., "features", "architecture")
         #[arg(long)]
         category: Option<String>,
+        /// Filter by source ("local" or "shared")
+        #[arg(long)]
+        source: Option<String>,
         /// Only return entries updated since this date (e.g., 2026-01-01)
         #[arg(long)]
         since: Option<String>,
@@ -65,16 +71,23 @@ enum Commands {
         /// Entry ID
         id: i64,
     },
-    /// Delete all entries in a category
+    /// Delete all entries in a category or by source
     Purge {
-        /// Category to purge (e.g., "local", "shared")
-        category: String,
+        /// Category to purge (e.g., "features", "architecture")
+        #[arg(long)]
+        category: Option<String>,
+        /// Source to purge (e.g., "local", "shared")
+        #[arg(long)]
+        source: Option<String>,
     },
     /// List all entries
     List {
-        /// Filter by category
+        /// Filter by category (e.g., "features", "architecture")
         #[arg(long)]
         category: Option<String>,
+        /// Filter by source ("local" or "shared")
+        #[arg(long)]
+        source: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -142,19 +155,19 @@ fn main() {
 
     let result = match cli.command {
         Commands::Init => cmd_init(),
-        Commands::Add { title, keywords, content, json } => {
-            cmd_add(&title, keywords.as_deref(), content.as_deref(), json)
+        Commands::Add { title, keywords, content, category, json } => {
+            cmd_add(&title, keywords.as_deref(), content.as_deref(), category.as_deref(), json)
         }
-        Commands::Search { query, keyword_only, category, since, limit, json } => {
-            cmd_search(&query, keyword_only, category.as_deref(), since.as_deref(), limit, json)
+        Commands::Search { query, keyword_only, category, source, since, limit, json } => {
+            cmd_search(&query, keyword_only, category.as_deref(), source.as_deref(), since.as_deref(), limit, json)
         }
         Commands::Get { id, json } => cmd_get(id, json),
         Commands::Edit { id, title, keywords, content, json } => {
             cmd_edit(id, title.as_deref(), keywords.as_deref(), content.as_deref(), json)
         }
         Commands::Delete { id } => cmd_delete(id),
-        Commands::Purge { category } => cmd_purge(&category),
-        Commands::List { category, json } => cmd_list(category.as_deref(), json),
+        Commands::Purge { category, source } => cmd_purge(category.as_deref(), source.as_deref()),
+        Commands::List { category, source, json } => cmd_list(category.as_deref(), source.as_deref(), json),
         Commands::Sync { json } => cmd_sync(json),
         Commands::Export { dir } => cmd_export(dir),
         Commands::Import { path } => cmd_import(&path),
@@ -338,10 +351,12 @@ When launching Explore or general-purpose agents for code investigation, always 
   (e.g., `lk search \"word book detail\"` and `lk search \"navigation\"`)\n\
 \n\
 ### Available Commands\n\
-- `lk search \"<query>\" --json` - Search knowledge (use `--since YYYY-MM-DD` to filter by date)\n\
+- `lk search \"<query>\" --json` - Search knowledge (use `--since`, `--category`, `--source` to filter)\n\
 - `lk get <id> --json` - Get entry details\n\
-- `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\"` - Add knowledge\n\
+- `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\" --category \"features\"` - Add knowledge\n\
+- `lk list --category \"features\" --source \"local\" --json` - List entries with filters\n\
 - `lk edit <id> --title \"...\" --keywords \"...\" --content \"...\"` - Edit existing entry\n\
+- `lk purge --source local` / `lk purge --category features` - Bulk delete entries\n\
 - `lk sync` - Sync markdown files with DB\n\
 - `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills\n";
 
@@ -349,10 +364,12 @@ fn cmd_add(
     title: &str,
     keywords_str: Option<&str>,
     content: Option<&str>,
+    category: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = db::open_db(&get_db_path())?;
     let content = content.unwrap_or("");
+    let category = category.unwrap_or("");
 
     let mut kws: Vec<String> = if let Some(ks) = keywords_str {
         ks.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
@@ -370,7 +387,7 @@ fn cmd_add(
     }
     kws.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
-    let entry_id = db::add_entry(&conn, title, content, &kws, "local", None, None)?;
+    let entry_id = db::add_entry(&conn, title, content, &kws, category, "local", None, None)?;
 
     if json_output {
         let out = serde_json::json!({
@@ -390,12 +407,16 @@ fn cmd_search(
     query: &str,
     keyword_only: bool,
     category: Option<&str>,
+    source: Option<&str>,
     since: Option<&str>,
     limit: usize,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = db::open_db(&get_db_path())?;
-    let results = db::search_entries(&conn, query, keyword_only, category, since, limit)?;
+    let mut results = db::search_entries(&conn, query, keyword_only, category, since, limit)?;
+    if let Some(src) = source {
+        results.retain(|e| e.source == src);
+    }
 
     log_search(query, &results);
 
@@ -411,6 +432,7 @@ fn cmd_search(
                     "keywords": kws,
                     "snippet": snippet,
                     "category": r.category,
+                    "source": r.source,
                 })
             })
             .collect();
@@ -482,13 +504,14 @@ fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>>
             "content": entry.content,
             "keywords": kws,
             "category": entry.category,
+            "source": entry.source,
             "source_file": entry.source_file,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("#{} - {} ({})", entry.id, entry.title, entry.category);
+        println!("#{} - {} ({}/{})", entry.id, entry.title, entry.category, entry.source);
         println!("Keywords: {}", kws.join(", "));
         if let Some(ref sf) = entry.source_file {
             println!("Source: {sf}");
@@ -538,6 +561,7 @@ fn cmd_edit(
             "content": updated.content,
             "keywords": updated_kws,
             "category": updated.category,
+            "source": updated.source,
             "updated_at": updated.updated_at,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -557,16 +581,34 @@ fn cmd_delete(id: i64) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_purge(category: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_purge(category: Option<&str>, source: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    if category.is_none() && source.is_none() {
+        return Err("Specify --category or --source (or both)".into());
+    }
     let conn = db::open_db(&get_db_path())?;
-    let count = db::delete_entries_by_category(&conn, category)?;
-    println!("Purged {count} entries from category \"{category}\"");
+    let mut total = 0;
+    if let Some(src) = source {
+        let count = db::purge_by_source(&conn, src)?;
+        println!("Purged {count} entries with source \"{src}\"");
+        total += count;
+    }
+    if let Some(cat) = category {
+        let count = db::delete_entries_by_category(&conn, cat)?;
+        println!("Purged {count} entries with category \"{cat}\"");
+        total += count;
+    }
+    if total == 0 {
+        println!("No entries matched.");
+    }
     Ok(())
 }
 
-fn cmd_list(category: Option<&str>, json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_list(category: Option<&str>, source: Option<&str>, json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = db::open_db(&get_db_path())?;
-    let entries = db::list_entries(&conn, category)?;
+    let mut entries = db::list_entries(&conn, category)?;
+    if let Some(src) = source {
+        entries.retain(|e| e.source == src);
+    }
 
     if json_output {
         let output: Vec<serde_json::Value> = entries
@@ -576,6 +618,7 @@ fn cmd_list(category: Option<&str>, json_output: bool) -> Result<(), Box<dyn std
                     "id": e.id,
                     "title": e.title,
                     "category": e.category,
+                    "source": e.source,
                     "updated_at": e.updated_at,
                 })
             })
@@ -585,7 +628,7 @@ fn cmd_list(category: Option<&str>, json_output: bool) -> Result<(), Box<dyn std
         println!("No entries found.");
     } else {
         for e in &entries {
-            println!("  [{}] {} ({}) - {}", e.id, e.title, e.category, e.updated_at);
+            println!("  [{}] {} ({}/{}) - {}", e.id, e.title, e.category, e.source, e.updated_at);
         }
     }
     Ok(())
@@ -619,7 +662,7 @@ fn cmd_export(dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&output_dir)?;
     let root = get_project_root();
 
-    let entries = db::list_local_entries_with_content(&conn)?;
+    let entries = db::list_entries_by_source(&conn, "local")?;
     if entries.is_empty() {
         println!("No local entries to export.");
         return Ok(());
@@ -1003,7 +1046,7 @@ fn sync_knowledge_dir(
 
         if let Some(old_hash) = existing.get(&rel_path) {
             if *old_hash != current_hash {
-                db::delete_entries_by_source(conn, &rel_path)?;
+                db::delete_entries_by_source_file(conn, &rel_path)?;
                 let count = import_md_file(conn, &entry, root)?;
                 stats.updated += count;
             } else {
@@ -1017,7 +1060,7 @@ fn sync_knowledge_dir(
 
     for rel_path in existing.keys() {
         if !found_files.contains(rel_path) {
-            db::delete_entries_by_source(conn, rel_path)?;
+            db::delete_entries_by_source_file(conn, rel_path)?;
             stats.removed += 1;
         }
     }
@@ -1046,6 +1089,7 @@ fn import_md_file(
             &entry.title,
             &entry.content,
             &entry.keywords,
+            &entry.category,
             "shared",
             Some(&rel_path),
             Some(&fhash),

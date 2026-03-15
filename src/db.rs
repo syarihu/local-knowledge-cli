@@ -10,6 +10,7 @@ pub struct Entry {
     pub title: String,
     pub content: String,
     pub category: String,
+    pub source: String,
     pub source_file: Option<String>,
     #[allow(dead_code)]
     pub file_hash: Option<String>,
@@ -37,7 +38,8 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             title       TEXT NOT NULL,
             content     TEXT NOT NULL,
-            category    TEXT NOT NULL DEFAULT 'local',
+            category    TEXT NOT NULL DEFAULT '',
+            source      TEXT NOT NULL DEFAULT 'local',
             source_file TEXT,
             file_hash   TEXT,
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -53,6 +55,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
         CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON keywords(keyword);
         CREATE INDEX IF NOT EXISTS idx_keywords_entry_id ON keywords(entry_id);
         CREATE INDEX IF NOT EXISTS idx_entries_category ON entries(category);
+        CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
         CREATE INDEX IF NOT EXISTS idx_entries_source_file ON entries(source_file);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
@@ -90,7 +93,31 @@ pub fn open_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
     }
     let conn = Connection::open(db_path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    let migrations = migrate(&conn)?;
+    for msg in &migrations {
+        eprintln!("Note: {msg}");
+    }
     Ok(conn)
+}
+
+fn migrate(conn: &Connection) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut messages = Vec::new();
+    let schema: String = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")?
+        .query_row([], |row| row.get(0))?;
+
+    // Migration 1: Add source column, separate source (local/shared) from category (topic)
+    if !schema.contains("source ") {
+        conn.execute_batch(
+            "ALTER TABLE entries ADD COLUMN source TEXT NOT NULL DEFAULT 'local';
+             CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
+             UPDATE entries SET source = 'shared', category = '' WHERE category = 'shared';
+             UPDATE entries SET source = 'local', category = '' WHERE category = 'local';",
+        )?;
+        messages.push("DB migrated: added 'source' column. Run `lk purge --source shared && lk sync` to populate categories from .knowledge/ frontmatter.".to_string());
+    }
+
+    Ok(messages)
 }
 
 pub fn add_entry(
@@ -99,6 +126,7 @@ pub fn add_entry(
     content: &str,
     kws: &[String],
     category: &str,
+    source: &str,
     source_file: Option<&str>,
     file_hash: Option<&str>,
 ) -> Result<i64, Box<dyn std::error::Error>> {
@@ -114,8 +142,8 @@ pub fn add_entry(
     };
 
     conn.execute(
-        "INSERT INTO entries (title, content, category, source_file, file_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![title, content, category, source_file, file_hash, now, now],
+        "INSERT INTO entries (title, content, category, source, source_file, file_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![title, content, category, source, source_file, file_hash, now, now],
     )?;
     let entry_id = conn.last_insert_rowid();
 
@@ -161,7 +189,7 @@ pub fn search_entries(
     if keyword_only {
         let words: Vec<&str> = query.split_whitespace().collect();
         let mut sql = String::from(
-            "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source_file, e.file_hash, e.created_at, e.updated_at \
+            "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.created_at, e.updated_at \
              FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -188,10 +216,11 @@ pub fn search_entries(
                 title: row.get(1)?,
                 content: row.get(2)?,
                 category: row.get(3)?,
-                source_file: row.get(4)?,
-                file_hash: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                source: row.get(4)?,
+                source_file: row.get(5)?,
+                file_hash: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
             })
         })?;
         for row in rows {
@@ -200,7 +229,7 @@ pub fn search_entries(
     } else {
         // FTS search
         let mut fts_sql = String::from(
-            "SELECT e.id, e.title, e.content, e.category, e.source_file, e.file_hash, e.created_at, e.updated_at \
+            "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.created_at, e.updated_at \
              FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
@@ -220,10 +249,11 @@ pub fn search_entries(
                     title: row.get(1)?,
                     content: row.get(2)?,
                     category: row.get(3)?,
-                    source_file: row.get(4)?,
-                    file_hash: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    source: row.get(4)?,
+                    source_file: row.get(5)?,
+                    file_hash: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             }) {
                 for row in rows {
@@ -242,7 +272,7 @@ pub fn search_entries(
 
             let words: Vec<&str> = query.split_whitespace().collect();
             let mut kw_sql = String::from(
-                "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source_file, e.file_hash, e.created_at, e.updated_at \
+                "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.created_at, e.updated_at \
                  FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (",
             );
             let mut kw_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -269,10 +299,11 @@ pub fn search_entries(
                     title: row.get(1)?,
                     content: row.get(2)?,
                     category: row.get(3)?,
-                    source_file: row.get(4)?,
-                    file_hash: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    source: row.get(4)?,
+                    source_file: row.get(5)?,
+                    file_hash: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             })?;
             for row in rows {
@@ -293,7 +324,7 @@ pub fn search_entries(
 
 pub fn get_entry(conn: &Connection, id: i64) -> Result<Option<Entry>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, content, category, source_file, file_hash, created_at, updated_at FROM entries WHERE id = ?1",
+        "SELECT id, title, content, category, source, source_file, file_hash, created_at, updated_at FROM entries WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
         Ok(Entry {
@@ -301,10 +332,11 @@ pub fn get_entry(conn: &Connection, id: i64) -> Result<Option<Entry>, Box<dyn st
             title: row.get(1)?,
             content: row.get(2)?,
             category: row.get(3)?,
-            source_file: row.get(4)?,
-            file_hash: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
+            source: row.get(4)?,
+            source_file: row.get(5)?,
+            file_hash: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
         })
     })?;
     match rows.next() {
@@ -330,6 +362,11 @@ pub fn delete_entry(conn: &Connection, id: i64) -> Result<(), Box<dyn std::error
 
 pub fn delete_entries_by_category(conn: &Connection, category: &str) -> Result<usize, Box<dyn std::error::Error>> {
     let count = conn.execute("DELETE FROM entries WHERE category = ?1", params![category])?;
+    Ok(count)
+}
+
+pub fn purge_by_source(conn: &Connection, source: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    let count = conn.execute("DELETE FROM entries WHERE source = ?1", params![source])?;
     Ok(count)
 }
 
@@ -374,9 +411,9 @@ pub fn list_entries(
     category: Option<&str>,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
     let sql = if category.is_some() {
-        "SELECT id, title, content, category, source_file, file_hash, created_at, updated_at FROM entries WHERE category = ?1 ORDER BY updated_at DESC"
+        "SELECT id, title, content, category, source, source_file, file_hash, created_at, updated_at FROM entries WHERE category = ?1 ORDER BY updated_at DESC"
     } else {
-        "SELECT id, title, content, category, source_file, file_hash, created_at, updated_at FROM entries ORDER BY updated_at DESC"
+        "SELECT id, title, content, category, source, source_file, file_hash, created_at, updated_at FROM entries ORDER BY updated_at DESC"
     };
 
     let mut stmt = conn.prepare(sql)?;
@@ -393,17 +430,25 @@ pub fn list_entries(
     Ok(entries)
 }
 
-pub fn list_local_entries_with_content(
+pub fn list_entries_by_source(
     conn: &Connection,
+    source: &str,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
-    list_entries(conn, Some("local"))
+    let sql = "SELECT id, title, content, category, source, source_file, file_hash, created_at, updated_at FROM entries WHERE source = ?1 ORDER BY updated_at DESC";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![source], row_to_entry)?;
+    let mut entries = Vec::new();
+    for row in rows {
+        entries.push(row?);
+    }
+    Ok(entries)
 }
 
 pub fn get_shared_file_hashes(
     conn: &Connection,
 ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT source_file, file_hash FROM entries WHERE category = 'shared' AND source_file IS NOT NULL",
+        "SELECT DISTINCT source_file, file_hash FROM entries WHERE source = 'shared' AND source_file IS NOT NULL",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -416,7 +461,7 @@ pub fn get_shared_file_hashes(
     Ok(map)
 }
 
-pub fn delete_entries_by_source(
+pub fn delete_entries_by_source_file(
     conn: &Connection,
     source_file: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -435,7 +480,7 @@ pub fn update_entry_to_shared(
     updated_at: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(
-        "UPDATE entries SET category = 'shared', source_file = ?1, file_hash = ?2, updated_at = ?3 WHERE id = ?4",
+        "UPDATE entries SET source = 'shared', source_file = ?1, file_hash = ?2, updated_at = ?3 WHERE id = ?4",
         params![source_file, file_hash, updated_at, id],
     )?;
     Ok(())
@@ -458,12 +503,12 @@ pub fn keyword_counts(
 pub fn get_stats(conn: &Connection) -> Result<DbStats, Box<dyn std::error::Error>> {
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
     let shared: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM entries WHERE category = 'shared'",
+        "SELECT COUNT(*) FROM entries WHERE source = 'shared'",
         [],
         |r| r.get(0),
     )?;
     let local: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM entries WHERE category = 'local'",
+        "SELECT COUNT(*) FROM entries WHERE source = 'local'",
         [],
         |r| r.get(0),
     )?;
@@ -481,9 +526,10 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
         title: row.get(1)?,
         content: row.get(2)?,
         category: row.get(3)?,
-        source_file: row.get(4)?,
-        file_hash: row.get(5)?,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        source: row.get(4)?,
+        source_file: row.get(5)?,
+        file_hash: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
