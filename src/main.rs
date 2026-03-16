@@ -1,7 +1,9 @@
 mod cmd;
+mod config;
 mod db;
 mod keywords;
 mod markdown;
+mod secrets;
 mod util;
 
 use clap::{Parser, Subcommand};
@@ -37,6 +39,9 @@ enum Commands {
         /// Skip duplicate check and force add
         #[arg(long)]
         force: bool,
+        /// Allow content that contains potential secrets
+        #[arg(long)]
+        allow_secrets: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -156,6 +161,9 @@ enum Commands {
         /// Export only entries matching a search query
         #[arg(long)]
         query: Option<String>,
+        /// Allow content that contains potential secrets
+        #[arg(long)]
+        allow_secrets: bool,
     },
     /// Import a markdown file
     Import {
@@ -203,6 +211,25 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
+    // Auto-sync before read commands (if enabled)
+    let needs_auto_sync = matches!(
+        cli.command,
+        Commands::Search { .. }
+            | Commands::Get { .. }
+            | Commands::List { .. }
+            | Commands::Keywords { .. }
+            | Commands::Stats { .. }
+            | Commands::Add { .. }
+            | Commands::Edit { .. }
+            | Commands::Delete { .. }
+            | Commands::Purge { .. }
+            | Commands::Export { .. }
+    );
+
+    if needs_auto_sync {
+        cmd::maybe_auto_sync();
+    }
+
     let result = match cli.command {
         Commands::Init => cmd::cmd_init(),
         Commands::Add {
@@ -211,6 +238,7 @@ fn main() {
             content,
             category,
             force,
+            allow_secrets,
             json,
         } => cmd::cmd_add(
             &title,
@@ -218,6 +246,7 @@ fn main() {
             content.as_deref(),
             category.as_deref(),
             force,
+            allow_secrets,
             json,
         ),
         Commands::Search {
@@ -273,9 +302,12 @@ fn main() {
             json,
         } => cmd::cmd_list(category.as_deref(), source.as_deref(), limit, offset, json),
         Commands::Sync { json } => cmd::cmd_sync(json),
-        Commands::Export { dir, ids, query } => {
-            cmd::cmd_export(dir, ids.as_deref(), query.as_deref())
-        }
+        Commands::Export {
+            dir,
+            ids,
+            query,
+            allow_secrets,
+        } => cmd::cmd_export(dir, ids.as_deref(), query.as_deref(), allow_secrets),
         Commands::Import { path } => cmd::cmd_import(&path),
         Commands::Keywords { json } => cmd::cmd_keywords(json),
         Commands::Stats { json, verbose } => cmd::cmd_stats(json, verbose),

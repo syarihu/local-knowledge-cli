@@ -1,7 +1,5 @@
 use crate::db;
-use crate::util::{
-    STALE_THRESHOLD_DAYS, days_since, get_project_root, open_db_with_migrate, truncate_str,
-};
+use crate::util::{days_since, get_knowledge_dir, get_project_root, open_db_with_migrate, truncate_str};
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_search(
@@ -15,6 +13,8 @@ pub fn cmd_search(
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
+    let config = crate::config::Config::load(&get_knowledge_dir());
+    let stale_threshold_days = config.stale_threshold_days;
     let results = db::search_entries(&conn, query, keyword_only, category, source, since, limit)?;
 
     let result_count = results.len().to_string();
@@ -26,7 +26,7 @@ pub fn cmd_search(
             .map(|r| {
                 let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
                 let days = days_since(&r.updated_at);
-                let stale = days.map(|d| d >= STALE_THRESHOLD_DAYS).unwrap_or(false);
+                let stale = days.map(|d| d >= stale_threshold_days).unwrap_or(false);
                 let mut obj = serde_json::json!({
                     "id": r.id,
                     "title": r.title,
@@ -59,7 +59,7 @@ pub fn cmd_search(
             let snippet = truncate_str(&r.content, 80);
             let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
             let days = days_since(&r.updated_at);
-            let stale = days.map(|d| d >= STALE_THRESHOLD_DAYS).unwrap_or(false);
+            let stale = days.map(|d| d >= stale_threshold_days).unwrap_or(false);
             if r.status == "deprecated" {
                 print!(
                     "  \u{26a0} [{}] {} ({}) [DEPRECATED]",

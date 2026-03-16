@@ -8,6 +8,7 @@ pub fn cmd_add(
     content: Option<&str>,
     category: Option<&str>,
     force: bool,
+    allow_secrets: bool,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     super::log_command(
@@ -17,6 +18,37 @@ pub fn cmd_add(
     let conn = open_db_with_migrate()?;
     let content = content.unwrap_or("");
     let category = category.unwrap_or("");
+
+    // Secret detection
+    if !allow_secrets {
+        let config = crate::config::Config::load(&crate::util::get_knowledge_dir());
+        if config.secret_detection {
+            let text = format!("{title}\n{content}");
+            let matches = crate::secrets::check_for_secrets(&text);
+            if !matches.is_empty() {
+                if json_output {
+                    let warnings: Vec<serde_json::Value> = matches
+                        .iter()
+                        .map(|m| {
+                            serde_json::json!({
+                                "pattern": m.pattern_name,
+                                "matched": m.matched,
+                            })
+                        })
+                        .collect();
+                    let out = serde_json::json!({
+                        "added": false,
+                        "secret_detected": true,
+                        "warnings": warnings,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    eprintln!("{}", crate::secrets::format_warning(&matches));
+                }
+                return Err("secret_detected".into());
+            }
+        }
+    }
 
     let mut kws: Vec<String> = if let Some(ks) = keywords_str {
         ks.split(',')

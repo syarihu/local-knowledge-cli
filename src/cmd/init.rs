@@ -173,11 +173,18 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 6. Write .knowledge/.lk-version
+    // 6. Create config.toml if it doesn't exist
+    let config_path = knowledge_dir.join("config.toml");
+    if !config_path.exists() {
+        std::fs::write(&config_path, crate::config::DEFAULT_CONFIG_CONTENT)?;
+        println!("Created {}", config_path.display());
+    }
+
+    // 7. Write .knowledge/.lk-version
     let version_path = knowledge_dir.join(".lk-version");
     std::fs::write(&version_path, format!("{}\n", crate::util::VERSION))?;
 
-    // 7. Install embedded Claude commands
+    // 8. Install embedded Claude commands
     install_embedded_commands()?;
 
     println!("\nInitialization complete!");

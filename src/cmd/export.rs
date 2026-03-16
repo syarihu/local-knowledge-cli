@@ -9,6 +9,7 @@ pub fn cmd_export(
     dir: Option<PathBuf>,
     ids: Option<&str>,
     query: Option<&str>,
+    allow_secrets: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let output_dir = dir.unwrap_or_else(get_knowledge_dir);
@@ -51,9 +52,32 @@ pub fn cmd_export(
         return Ok(());
     }
 
-    // Group by first keyword
-    let mut groups: std::collections::HashMap<String, Vec<db::Entry>> =
-        std::collections::HashMap::new();
+    // Secret detection before export
+    if !allow_secrets {
+        let config = crate::config::Config::load(&crate::util::get_knowledge_dir());
+        if config.secret_detection {
+            let mut all_matches = Vec::new();
+            for entry in &entries {
+                let text = format!("{}\n{}", entry.title, entry.content);
+                let matches = crate::secrets::check_for_secrets(&text);
+                for m in matches {
+                    all_matches.push((entry.id, entry.title.clone(), m));
+                }
+            }
+            if !all_matches.is_empty() {
+                eprintln!("Potential secrets detected in entries to export:");
+                for (id, title, m) in &all_matches {
+                    eprintln!("  Entry #{id} \"{title}\": {} ({})", m.pattern_name, m.matched);
+                }
+                eprintln!("\nUse --allow-secrets to override this check.");
+                return Err("secret_detected".into());
+            }
+        }
+    }
+
+    // Group by first keyword — use BTreeMap for stable alphabetical order
+    let mut groups: std::collections::BTreeMap<String, Vec<db::Entry>> =
+        std::collections::BTreeMap::new();
     for entry in entries {
         let kws = db::get_keywords(&conn, entry.id)?;
         let group = kws
@@ -65,6 +89,10 @@ pub fn cmd_export(
 
     let mut total = 0;
     for (group_name, group_entries) in &groups {
+        // Sort entries within each group by title for stable output
+        let mut sorted_entries: Vec<&db::Entry> = group_entries.iter().collect();
+        sorted_entries.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+
         let filename = format!("exported-{group_name}.md");
         let filepath = output_dir.join(&filename);
         let rel_path = filepath
@@ -73,7 +101,7 @@ pub fn cmd_export(
             .unwrap_or_else(|_| filepath.to_string_lossy().to_string());
 
         let mut all_kws: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for entry in group_entries {
+        for entry in &sorted_entries {
             let kws = db::get_keywords(&conn, entry.id)?;
             all_kws.extend(kws);
         }
@@ -88,7 +116,7 @@ pub fn cmd_export(
         lines.push("---\n".to_string());
         lines.push(format!("# Exported: {group_name}\n"));
 
-        for entry in group_entries {
+        for entry in &sorted_entries {
             let kws = db::get_keywords(&conn, entry.id)?;
             lines.push(format!("## Entry: {}", entry.title));
             lines.push(format!("keywords: [{}]\n", kws.join(", ")));

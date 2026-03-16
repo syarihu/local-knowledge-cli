@@ -1,14 +1,15 @@
 use crate::db;
-use crate::util::{STALE_THRESHOLD_DAYS, confirm, days_since, now_iso, open_db_with_migrate};
+use crate::util::{confirm, days_since, get_knowledge_dir, now_iso, open_db_with_migrate};
 
 pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
     super::log_command("get", &[("id", &id.to_string())]);
     let conn = open_db_with_migrate()?;
+    let config = crate::config::Config::load(&get_knowledge_dir());
     let entry = db::get_entry(&conn, id)?.ok_or_else(|| format!("Entry #{id} not found"))?;
     let kws = db::get_keywords(&conn, id)?;
 
     let days = days_since(&entry.updated_at);
-    let stale = days.map(|d| d >= STALE_THRESHOLD_DAYS).unwrap_or(false);
+    let stale = days.map(|d| d >= config.stale_threshold_days).unwrap_or(false);
 
     if json_output {
         let mut out = serde_json::json!({

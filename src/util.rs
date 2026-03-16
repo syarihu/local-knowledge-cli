@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use crate::db;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const STALE_THRESHOLD_DAYS: i64 = 90;
 pub const DEFAULT_REPO: &str = "syarihu/local-knowledge-cli";
 
 pub fn get_project_root() -> PathBuf {
