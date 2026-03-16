@@ -401,6 +401,7 @@ If `lk` command is not available, install it first: `brew install syarihu/tap/lk
 - Use `--full` to include full content directly: `lk search \"<keyword>\" --json --full --limit 5`\n\
 - If results are found and `--full` was not used, use `lk get <id> --json` for details\n\
 - If a result has `\"status\": \"deprecated\"` with `\"superseded_by\": <id>`, use the superseding entry instead\n\
+- If a result has `\"stale\": true`, verify against the current code and update with `lk edit <id>` if outdated\n\
 - If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read\n\
 \n\
 ### Agent Launch Rule\n\
@@ -546,6 +547,8 @@ fn cmd_search(
             .iter()
             .map(|r| {
                 let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
+                let days = days_since(&r.updated_at);
+                let stale = days.map(|d| d >= STALE_THRESHOLD_DAYS).unwrap_or(false);
                 let mut obj = serde_json::json!({
                     "id": r.id,
                     "title": r.title,
@@ -554,7 +557,13 @@ fn cmd_search(
                     "source": r.source,
                     "score": r.rank,
                     "status": r.status,
+                    "stale": stale,
                 });
+                if stale {
+                    if let Some(d) = days {
+                        obj["days_since_update"] = serde_json::json!(d);
+                    }
+                }
                 if let Some(sb) = r.superseded_by {
                     obj["superseded_by"] = serde_json::json!(sb);
                 }
@@ -573,8 +582,12 @@ fn cmd_search(
         for r in &results {
             let snippet = truncate_str(&r.content, 80);
             let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
+            let days = days_since(&r.updated_at);
+            let stale = days.map(|d| d >= STALE_THRESHOLD_DAYS).unwrap_or(false);
             if r.status == "deprecated" {
                 print!("  \u{26a0} [{}] {} ({}) [DEPRECATED]", r.id, r.title, r.category);
+            } else if stale {
+                print!("  \u{26a0} [{}] {} ({}) [STALE: {} days since update]", r.id, r.title, r.category, days.unwrap_or(0));
             } else {
                 print!("  [{}] {} ({})", r.id, r.title, r.category);
             }
@@ -635,6 +648,9 @@ fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>>
         .ok_or_else(|| format!("Entry #{id} not found"))?;
     let kws = db::get_keywords(&conn, id)?;
 
+    let days = days_since(&entry.updated_at);
+    let stale = days.map(|d| d >= STALE_THRESHOLD_DAYS).unwrap_or(false);
+
     if json_output {
         let mut out = serde_json::json!({
             "id": entry.id,
@@ -645,9 +661,15 @@ fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>>
             "source": entry.source,
             "source_file": entry.source_file,
             "status": entry.status,
+            "stale": stale,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
         });
+        if stale {
+            if let Some(d) = days {
+                out["days_since_update"] = serde_json::json!(d);
+            }
+        }
         if let Some(sb) = entry.superseded_by {
             out["superseded_by"] = serde_json::json!(sb);
         }
@@ -655,6 +677,8 @@ fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>>
     } else {
         if entry.status == "deprecated" {
             println!("\u{26a0} #{} - {} ({}/{}) [DEPRECATED]", entry.id, entry.title, entry.category, entry.source);
+        } else if stale {
+            println!("\u{26a0} #{} - {} ({}/{}) [STALE: {} days since update]", entry.id, entry.title, entry.category, entry.source, days.unwrap_or(0));
         } else {
             println!("#{} - {} ({}/{})", entry.id, entry.title, entry.category, entry.source);
         }
@@ -1501,4 +1525,26 @@ pub fn now_iso() -> String {
         now.minute(),
         now.second(),
     )
+}
+
+const STALE_THRESHOLD_DAYS: i64 = 90;
+
+/// Calculate days since an ISO datetime string. Returns None on parse failure.
+fn days_since(updated_at: &str) -> Option<i64> {
+    use time::OffsetDateTime;
+    use time::Month;
+    // Parse just the date portion (YYYY-MM-DD) manually
+    let date_str = &updated_at[..10.min(updated_at.len())];
+    let parts: Vec<&str> = date_str.split('-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let year: i32 = parts[0].parse().ok()?;
+    let month: u8 = parts[1].parse().ok()?;
+    let day: u8 = parts[2].parse().ok()?;
+    let month = Month::try_from(month).ok()?;
+    let date = time::Date::from_calendar_date(year, month, day).ok()?;
+    let now = OffsetDateTime::now_utc().date();
+    let duration = now - date;
+    Some(duration.whole_days())
 }
