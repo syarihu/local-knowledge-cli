@@ -146,6 +146,9 @@ enum Commands {
         /// ID of the entry that supersedes this one
         #[arg(long)]
         superseded_by: Option<i64>,
+        /// Update timestamp without changing content (resets stale warning)
+        #[arg(long)]
+        touch: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -176,8 +179,8 @@ fn main() {
             cmd_search(&query, keyword_only, category.as_deref(), source.as_deref(), since.as_deref(), limit, full, json)
         }
         Commands::Get { id, json } => cmd_get(id, json),
-        Commands::Edit { id, title, keywords, content, status, superseded_by, json } => {
-            cmd_edit(id, title.as_deref(), keywords.as_deref(), content.as_deref(), status.as_deref(), superseded_by, json)
+        Commands::Edit { id, title, keywords, content, status, superseded_by, touch, json } => {
+            cmd_edit(id, title.as_deref(), keywords.as_deref(), content.as_deref(), status.as_deref(), superseded_by, touch, json)
         }
         Commands::Delete { id } => cmd_delete(id),
         Commands::Purge { category, source } => cmd_purge(category.as_deref(), source.as_deref()),
@@ -401,7 +404,7 @@ If `lk` command is not available, install it first: `brew install syarihu/tap/lk
 - Use `--full` to include full content directly: `lk search \"<keyword>\" --json --full --limit 5`\n\
 - If results are found and `--full` was not used, use `lk get <id> --json` for details\n\
 - If a result has `\"status\": \"deprecated\"` with `\"superseded_by\": <id>`, use the superseding entry instead\n\
-- If a result has `\"stale\": true`, verify against the current code and update with `lk edit <id>` if outdated\n\
+- If a result has `\"stale\": true`, verify against the current code; if outdated update with `lk edit <id>`, if still correct run `lk edit <id> --touch` to reset the stale warning\n\
 - If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read\n\
 \n\
 ### Agent Launch Rule\n\
@@ -703,14 +706,15 @@ fn cmd_edit(
     content: Option<&str>,
     status: Option<&str>,
     superseded_by: Option<i64>,
+    touch: bool,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let _entry = db::get_entry(&conn, id)?
         .ok_or_else(|| format!("Entry #{id} not found"))?;
 
-    if title.is_none() && keywords_str.is_none() && content.is_none() && status.is_none() && superseded_by.is_none() {
-        return Err("Nothing to update. Specify --title, --keywords, --content, --status, or --superseded-by.".into());
+    if title.is_none() && keywords_str.is_none() && content.is_none() && status.is_none() && superseded_by.is_none() && !touch {
+        return Err("Nothing to update. Specify --title, --keywords, --content, --status, --superseded-by, or --touch.".into());
     }
 
     // Validate status
@@ -724,14 +728,22 @@ fn cmd_edit(
         s.split(',').map(|k| k.trim().to_string()).collect::<Vec<_>>()
     });
 
-    db::update_entry(
-        &conn,
-        id,
-        title,
-        content,
-        kws.as_deref(),
-        &now_iso(),
-    )?;
+    if touch && title.is_none() && keywords_str.is_none() && content.is_none() {
+        // --touch only: just update the timestamp
+        conn.execute(
+            "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_iso(), id],
+        )?;
+    } else {
+        db::update_entry(
+            &conn,
+            id,
+            title,
+            content,
+            kws.as_deref(),
+            &now_iso(),
+        )?;
+    }
 
     if status.is_some() || superseded_by.is_some() {
         let current = db::get_entry(&conn, id)?.unwrap();
