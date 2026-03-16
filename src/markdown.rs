@@ -124,3 +124,94 @@ pub fn file_hash(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let hash = Sha256::digest(&data);
     Ok(hex::encode(hash))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_single_entry_with_frontmatter() {
+        let md = "---\nkeywords: [auth, login]\ncategory: architecture\n---\n\n# Auth Flow\n\nOAuth 2.0 with PKCE.\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "Auth Flow");
+        assert!(entries[0].content.contains("OAuth 2.0"));
+        assert!(entries[0].keywords.contains(&"auth".to_string()));
+        assert!(entries[0].keywords.contains(&"login".to_string()));
+        assert_eq!(entries[0].category, "architecture");
+    }
+
+    #[test]
+    fn test_parse_multiple_entries() {
+        let md = "---\nkeywords: [base]\ncategory: features\n---\n\n# Title\n\n## Entry: First\n\nFirst content.\n\n## Entry: Second\nkeywords: [extra]\n\nSecond content.\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "First");
+        assert_eq!(entries[1].title, "Second");
+        assert!(entries[1].keywords.contains(&"extra".to_string()));
+        assert!(entries[1].keywords.contains(&"base".to_string()));
+    }
+
+    #[test]
+    fn test_parse_no_frontmatter() {
+        let md = "# Simple Title\n\nSome content here.\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "Simple Title");
+        assert_eq!(entries[0].category, "");
+        assert!(entries[0].keywords.is_empty());
+    }
+
+    #[test]
+    fn test_parse_empty_body() {
+        let md = "---\nkeywords: [test]\n---\n\n";
+        let entries = parse_md_entries(md);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_no_heading() {
+        let md = "---\nkeywords: [test]\n---\n\nJust some text without a heading.\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "Untitled");
+    }
+
+    #[test]
+    fn test_parse_entry_inline_keywords_merged() {
+        let md = "---\nkeywords: [file-kw]\n---\n\n## Entry: Test\nkeywords: [inline-kw]\n\nContent.\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].keywords.contains(&"file-kw".to_string()));
+        assert!(entries[0].keywords.contains(&"inline-kw".to_string()));
+        // Content should not contain the keywords line
+        assert!(!entries[0].content.contains("keywords:"));
+    }
+
+    #[test]
+    fn test_parse_malformed_frontmatter() {
+        // Missing closing ---
+        let md = "---\nkeywords: [test]\n\n# Title\n\nContent.\n";
+        let entries = parse_md_entries(md);
+        // Should not crash; treats entire text as body
+        assert!(!entries.is_empty());
+    }
+
+    #[test]
+    fn test_file_hash() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "hello world").unwrap();
+        let hash = file_hash(tmp.path()).unwrap();
+        // SHA256 of "hello world"
+        assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+    }
+
+    #[test]
+    fn test_parse_japanese_keywords() {
+        let md = "---\nkeywords: [認証, ログイン]\ncategory: features\n---\n\n# テスト\n\nコンテンツ。\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].keywords.contains(&"認証".to_string()));
+        assert!(entries[0].keywords.contains(&"ログイン".to_string()));
+    }
+}

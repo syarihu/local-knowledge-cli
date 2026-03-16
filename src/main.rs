@@ -76,6 +76,9 @@ enum Commands {
     Delete {
         /// Entry ID
         id: i64,
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Delete all entries in a category or by source
     Purge {
@@ -85,6 +88,9 @@ enum Commands {
         /// Source to purge (e.g., "local", "shared")
         #[arg(long)]
         source: Option<String>,
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// List all entries
     List {
@@ -109,6 +115,12 @@ enum Commands {
         /// Output directory
         #[arg(long)]
         dir: Option<PathBuf>,
+        /// Export only specific entry IDs (comma-separated, e.g., "1,2,3")
+        #[arg(long)]
+        ids: Option<String>,
+        /// Export entries matching a search query
+        #[arg(long)]
+        query: Option<String>,
     },
     /// Import a markdown file
     Import {
@@ -126,6 +138,9 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Show verbose information (project root, schema version)
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
     /// Edit an existing entry
     Edit {
@@ -160,11 +175,19 @@ enum Commands {
         lines: usize,
     },
     /// Update lk to latest version
-    Update,
+    Update {
+        /// Skip checksum verification (not recommended)
+        #[arg(long)]
+        skip_verify: bool,
+    },
     /// Install embedded Claude commands to ~/.claude/commands/
     InstallCommands,
     /// Remove knowledge base from current project
-    Uninstall,
+    Uninstall {
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 fn main() {
@@ -182,18 +205,18 @@ fn main() {
         Commands::Edit { id, title, keywords, content, status, superseded_by, touch, json } => {
             cmd_edit(id, title.as_deref(), keywords.as_deref(), content.as_deref(), status.as_deref(), superseded_by, touch, json)
         }
-        Commands::Delete { id } => cmd_delete(id),
-        Commands::Purge { category, source } => cmd_purge(category.as_deref(), source.as_deref()),
+        Commands::Delete { id, yes } => cmd_delete(id, yes),
+        Commands::Purge { category, source, yes } => cmd_purge(category.as_deref(), source.as_deref(), yes),
         Commands::List { category, source, json } => cmd_list(category.as_deref(), source.as_deref(), json),
         Commands::Sync { json } => cmd_sync(json),
-        Commands::Export { dir } => cmd_export(dir),
+        Commands::Export { dir, ids, query } => cmd_export(dir, ids.as_deref(), query.as_deref()),
         Commands::Import { path } => cmd_import(&path),
         Commands::Keywords { json } => cmd_keywords(json),
-        Commands::Stats { json } => cmd_stats(json),
+        Commands::Stats { json, verbose } => cmd_stats(json, verbose),
         Commands::SearchLog { lines } => cmd_search_log(lines),
-        Commands::Update => cmd_update(),
+        Commands::Update { skip_verify } => cmd_update(skip_verify),
         Commands::InstallCommands => install_embedded_commands(),
-        Commands::Uninstall => cmd_uninstall(),
+        Commands::Uninstall { yes } => cmd_uninstall(yes),
     };
 
     if let Err(e) = result {
@@ -446,6 +469,7 @@ When launching Explore or general-purpose agents for code investigation, always 
 - `lk edit <id> --title \"...\" --keywords \"...\" --content \"...\"` - Edit existing entry\n\
 - `lk edit <id> --status deprecated --superseded-by <new_id>` - Mark entry as deprecated\n\
 - `lk purge --source local` / `lk purge --category features` - Bulk delete entries\n\
+- `lk export` - Export all local entries / `lk export --ids 1,2,3` - Export specific entries / `lk export --query \"auth\"` - Export by search\n\
 - `lk sync` - Sync markdown files with DB\n\
 - `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills\n";
 
@@ -793,20 +817,57 @@ fn cmd_edit(
     Ok(())
 }
 
-fn cmd_delete(id: i64) -> Result<(), Box<dyn std::error::Error>> {
+/// Prompt user for confirmation. Returns true if confirmed.
+fn confirm(prompt: &str) -> bool {
+    use std::io::Write;
+    eprint!("{prompt} [y/N] ");
+    std::io::stderr().flush().ok();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+fn cmd_delete(id: i64, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let entry = db::get_entry(&conn, id)?
         .ok_or_else(|| format!("Entry #{id} not found"))?;
+
+    if !yes && !confirm(&format!("Delete entry #{id} \"{}\"?", entry.title)) {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
     db::delete_entry(&conn, id)?;
     println!("Deleted entry #{id}: {}", entry.title);
     Ok(())
 }
 
-fn cmd_purge(category: Option<&str>, source: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_purge(category: Option<&str>, source: Option<&str>, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     if category.is_none() && source.is_none() {
         return Err("Specify --category or --source (or both)".into());
     }
     let conn = open_db_with_migrate()?;
+
+    // Count entries that will be affected before confirming
+    if !yes {
+        let mut desc_parts = Vec::new();
+        if let Some(src) = source {
+            let entries = db::list_entries_by_source(&conn, src)?;
+            desc_parts.push(format!("{} entries with source \"{}\"", entries.len(), src));
+        }
+        if let Some(cat) = category {
+            let entries = db::list_entries(&conn, Some(cat))?;
+            desc_parts.push(format!("{} entries with category \"{}\"", entries.len(), cat));
+        }
+        let desc = desc_parts.join(" and ");
+        if !confirm(&format!("Purge {desc}?")) {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
     let mut total = 0;
     if let Some(src) = source {
         let count = db::purge_by_source(&conn, src)?;
@@ -882,13 +943,41 @@ fn cmd_sync(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_export(dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_export(dir: Option<PathBuf>, ids: Option<&str>, query: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let output_dir = dir.unwrap_or_else(get_knowledge_dir);
     std::fs::create_dir_all(&output_dir)?;
     let root = get_project_root();
 
-    let entries = db::list_entries_by_source(&conn, "local")?;
+    let entries = if let Some(ids_str) = ids {
+        // Export specific entries by ID
+        let mut selected = Vec::new();
+        for id_str in ids_str.split(',') {
+            let id: i64 = id_str.trim().parse()
+                .map_err(|_| format!("Invalid ID: {}", id_str.trim()))?;
+            match db::get_entry(&conn, id)? {
+                Some(entry) => {
+                    if entry.source != "local" {
+                        eprintln!("Warning: Entry #{id} is already shared, skipping.");
+                    } else {
+                        selected.push(entry);
+                    }
+                }
+                None => {
+                    return Err(format!("Entry #{id} not found").into());
+                }
+            }
+        }
+        selected
+    } else if let Some(q) = query {
+        // Export entries matching a search query
+        let results = db::search_entries(&conn, q, false, None, None, 100)?;
+        results.into_iter().filter(|e| e.source == "local").collect()
+    } else {
+        // Export all local entries
+        db::list_entries_by_source(&conn, "local")?
+    };
+
     if entries.is_empty() {
         println!("No local entries to export.");
         return Ok(());
@@ -982,18 +1071,23 @@ fn cmd_keywords(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_stats(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_stats(json_output: bool, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let stats = db::get_stats(&conn)?;
 
     if json_output {
-        println!("{}", serde_json::to_string(&serde_json::json!({
+        let mut obj = serde_json::json!({
             "total_entries": stats.total,
             "shared_entries": stats.shared,
             "local_entries": stats.local,
             "unique_keywords": stats.keywords,
             "db_path": get_db_path().to_string_lossy(),
-        }))?);
+        });
+        if verbose {
+            obj["project_root"] = serde_json::json!(get_project_root().to_string_lossy());
+            obj["schema_version"] = serde_json::json!(db::get_schema_version_public(&conn));
+        }
+        println!("{}", serde_json::to_string(&obj)?);
     } else {
         println!("Knowledge Base Stats:");
         println!("  Total entries:    {}", stats.total);
@@ -1001,14 +1095,23 @@ fn cmd_stats(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("  Local entries:    {}", stats.local);
         println!("  Unique keywords:  {}", stats.keywords);
         println!("  DB path:          {}", get_db_path().display());
+        if verbose {
+            println!("  Project root:     {}", get_project_root().display());
+            println!("  Schema version:   {}", db::get_schema_version_public(&conn));
+        }
     }
     Ok(())
 }
 
-fn cmd_uninstall() -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_uninstall(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = get_project_root();
     let knowledge_dir = root.join(".knowledge");
     let marker = "## Knowledge Base (local-knowledge-cli)";
+
+    if !yes && !confirm(&format!("Uninstall lk from project {}? This will remove .knowledge/ and all data.", root.display())) {
+        println!("Cancelled.");
+        return Ok(());
+    }
 
     println!("Uninstalling lk from project: {}", root.display());
     println!();
@@ -1112,7 +1215,7 @@ fn is_homebrew_install() -> bool {
         .unwrap_or(false)
 }
 
-fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = home_dir().join(".config").join("lk");
     let config_path = config_dir.join("config.json");
 
@@ -1189,8 +1292,10 @@ fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
         if dl_checksum.status.success() {
             verify_checksum(&archive_path, &checksum_path, &asset_name)?;
             println!("Checksum verified.");
+        } else if skip_verify {
+            eprintln!("Warning: checksums.txt not found in release, skipping verification (--skip-verify).");
         } else {
-            eprintln!("Warning: checksums.txt not found in release, skipping verification.");
+            return Err("Checksum file not found in release. Use --skip-verify to bypass (not recommended).".into());
         }
 
         // Extract

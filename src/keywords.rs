@@ -69,3 +69,70 @@ fn extract_file_path_keywords(text: &str, keywords: &mut HashSet<String>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_camel_case_extraction() {
+        let kws = extract_keywords("SessionManager", "");
+        assert!(kws.contains(&"session".to_string()));
+        assert!(kws.contains(&"manager".to_string()));
+    }
+
+    #[test]
+    fn test_file_path_extraction() {
+        let kws = extract_keywords("", "The file src/auth/session.ts handles tokens.");
+        assert!(kws.contains(&"auth".to_string()));
+        assert!(kws.contains(&"session".to_string()));
+    }
+
+    #[test]
+    fn test_stop_words_excluded() {
+        let kws = extract_keywords("", "this is the content with some words");
+        assert!(!kws.contains(&"this".to_string()));
+        assert!(!kws.contains(&"the".to_string()));
+        assert!(!kws.contains(&"with".to_string()));
+    }
+
+    #[test]
+    fn test_short_words_excluded() {
+        let kws = extract_keywords("", "Go is a language by Rob Pike");
+        // Words <= 3 chars should be excluded
+        assert!(!kws.contains(&"go".to_string()));
+        assert!(!kws.contains(&"rob".to_string()));
+    }
+
+    #[test]
+    fn test_snake_case_extraction() {
+        let kws = extract_keywords("get_user_session", "");
+        assert!(kws.contains(&"user".to_string()));
+        assert!(kws.contains(&"session".to_string()));
+    }
+
+    #[test]
+    fn test_katakana_extraction() {
+        let kws = extract_keywords("", "これはセッションマネージャーです");
+        // 4+ char katakana should be extracted
+        assert!(kws.contains(&"セッションマネージャー".to_string()));
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let kws = extract_keywords("", "");
+        assert!(kws.is_empty());
+    }
+
+    #[test]
+    fn test_keywords_sorted() {
+        let kws = extract_keywords("Zebra Apple", "Mango content");
+        // Should be sorted
+        let sorted = {
+            let mut v = kws.clone();
+            v.sort();
+            v
+        };
+        assert_eq!(kws, sorted);
+    }
+}

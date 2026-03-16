@@ -30,15 +30,22 @@ pub struct DbStats {
     pub keywords: i64,
 }
 
+/// Current schema version. Increment when adding new migrations.
+const SCHEMA_VERSION: i64 = 3;
+
 pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let conn = Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
 
     conn.execute_batch(
         "
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS entries (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             title       TEXT NOT NULL,
@@ -87,6 +94,12 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
         ",
     )?;
 
+    // Set initial schema version for new databases
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))?;
+    if count == 0 {
+        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", params![SCHEMA_VERSION])?;
+    }
+
     Ok(conn)
 }
 
@@ -99,20 +112,83 @@ pub fn open_db(db_path: &Path) -> Result<(Connection, bool), Box<dyn std::error:
         .into());
     }
     let conn = Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-    let migrated = migrate(&conn)?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    let migrated = migrate(db_path, &conn)?;
     Ok((conn, migrated))
 }
 
-fn migrate(conn: &Connection) -> Result<bool, Box<dyn std::error::Error>> {
-    let schema: String = conn
-        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")?
-        .query_row([], |row| row.get(0))?;
+/// Get current schema version from DB (0 if table doesn't exist yet).
+fn get_schema_version(conn: &Connection) -> i64 {
+    // Check if schema_version table exists
+    let has_table: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+
+    if !has_table {
+        return 0;
+    }
+
+    conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |r| r.get(0))
+        .unwrap_or(0)
+}
+
+fn set_schema_version(conn: &Connection, version: i64) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);",
+    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))?;
+    if count == 0 {
+        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", params![version])?;
+    } else {
+        conn.execute("UPDATE schema_version SET version = ?1", params![version])?;
+    }
+    Ok(())
+}
+
+/// Create a backup of the DB file before migration.
+pub fn backup_db(db_path: &Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let backup_path = db_path.with_extension("db.bak");
+    std::fs::copy(db_path, &backup_path)?;
+    Ok(backup_path)
+}
+
+fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error::Error>> {
+    let current_version = get_schema_version(conn);
+
+    if current_version >= SCHEMA_VERSION {
+        return Ok(false);
+    }
+
+    // For legacy DBs without schema_version table, detect version from schema
+    let effective_version = if current_version == 0 {
+        let schema: String = conn
+            .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")?
+            .query_row([], |row| row.get(0))?;
+        if schema.contains("status") {
+            // Has all columns already — just needs version table
+            set_schema_version(conn, SCHEMA_VERSION)?;
+            return Ok(false);
+        } else if schema.contains("source ") {
+            1 // Has source but not status
+        } else {
+            0 // Original schema
+        }
+    } else {
+        current_version
+    };
+
+    // Back up before migration
+    let backup_path = backup_db(db_path)?;
+    eprintln!("Note: DB backed up to {}", backup_path.display());
 
     let mut migrated = false;
 
-    // Migration 1: Add source column, separate source (local/shared) from category (topic)
-    if !schema.contains("source ") {
+    // Migration 1: Add source column (version 0 -> 1)
+    if effective_version < 1 {
         conn.execute_batch(
             "ALTER TABLE entries ADD COLUMN source TEXT NOT NULL DEFAULT 'local';
              CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
@@ -123,8 +199,8 @@ fn migrate(conn: &Connection) -> Result<bool, Box<dyn std::error::Error>> {
         migrated = true;
     }
 
-    // Migration 2: Add status and superseded_by columns
-    if !schema.contains("status") {
+    // Migration 2: Add status and superseded_by columns (version 1 -> 2)
+    if effective_version < 2 {
         conn.execute_batch(
             "ALTER TABLE entries ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
              ALTER TABLE entries ADD COLUMN superseded_by INTEGER;",
@@ -132,6 +208,10 @@ fn migrate(conn: &Connection) -> Result<bool, Box<dyn std::error::Error>> {
         migrated = true;
     }
 
+    // Migration 3: Add schema_version table and busy_timeout (version 2 -> 3)
+    // (schema_version table creation and busy_timeout are handled above)
+
+    set_schema_version(conn, SCHEMA_VERSION)?;
     Ok(migrated)
 }
 
@@ -247,13 +327,23 @@ pub fn search_entries(
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
 
-        if let Ok(mut stmt) = conn.prepare(&fts_sql) {
-            if let Ok(rows) = stmt.query_map(params_ref.as_slice(), row_to_entry_with_rank) {
-                for row in rows {
-                    if let Ok(entry) = row {
-                        results.push(entry);
+        match conn.prepare(&fts_sql) {
+            Ok(mut stmt) => {
+                match stmt.query_map(params_ref.as_slice(), row_to_entry_with_rank) {
+                    Ok(rows) => {
+                        for row in rows {
+                            if let Ok(entry) = row {
+                                results.push(entry);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: FTS query failed: {e}");
                     }
                 }
+            }
+            Err(e) => {
+                eprintln!("Warning: FTS prepare failed (index may be corrupted): {e}");
             }
         }
 
@@ -482,6 +572,11 @@ pub fn keyword_counts(
     Ok(result)
 }
 
+/// Public accessor for schema version (for stats --verbose).
+pub fn get_schema_version_public(conn: &Connection) -> i64 {
+    get_schema_version(conn)
+}
+
 pub fn get_stats(conn: &Connection) -> Result<DbStats, Box<dyn std::error::Error>> {
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
     let shared: i64 = conn.query_row(
@@ -626,4 +721,224 @@ fn row_to_entry_with_rank(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
         updated_at: row.get(10)?,
         rank: Some(score),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    fn setup_test_db() -> (Connection, NamedTempFile) {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        (conn, tmp)
+    }
+
+    #[test]
+    fn test_init_db_creates_tables() {
+        let (conn, _tmp) = setup_test_db();
+        // Verify entries table exists
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entries'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Verify schema_version table exists
+        let sv_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sv_count, 1);
+
+        // Verify schema version is set
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_busy_timeout_is_set() {
+        let (conn, _tmp) = setup_test_db();
+        let timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5000);
+    }
+
+    #[test]
+    fn test_add_and_get_entry() {
+        let (conn, _tmp) = setup_test_db();
+        let kws = vec!["rust".to_string(), "test".to_string()];
+        let id = add_entry(&conn, "Test", "Content here", &kws, "arch", "local", None, None).unwrap();
+        assert!(id > 0);
+
+        let entry = get_entry(&conn, id).unwrap().unwrap();
+        assert_eq!(entry.title, "Test");
+        assert_eq!(entry.content, "Content here");
+        assert_eq!(entry.category, "arch");
+        assert_eq!(entry.source, "local");
+        assert_eq!(entry.status, "active");
+    }
+
+    #[test]
+    fn test_get_keywords() {
+        let (conn, _tmp) = setup_test_db();
+        let kws = vec!["alpha".to_string(), "Beta".to_string()];
+        let id = add_entry(&conn, "T", "C", &kws, "", "local", None, None).unwrap();
+        let retrieved = get_keywords(&conn, id).unwrap();
+        // Keywords are lowercased on insert
+        assert!(retrieved.contains(&"alpha".to_string()));
+        assert!(retrieved.contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn test_delete_entry() {
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(&conn, "Del", "To delete", &[], "", "local", None, None).unwrap();
+        delete_entry(&conn, id).unwrap();
+        assert!(get_entry(&conn, id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_fts_search() {
+        let (conn, _tmp) = setup_test_db();
+        add_entry(&conn, "OAuth Login", "OAuth 2.0 PKCE flow for authentication", &["oauth".to_string()], "", "local", None, None).unwrap();
+        add_entry(&conn, "Database Schema", "SQLite with FTS5", &["database".to_string()], "", "local", None, None).unwrap();
+
+        let results = search_entries(&conn, "OAuth", false, None, None, 10).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].title, "OAuth Login");
+    }
+
+    #[test]
+    fn test_keyword_search() {
+        let (conn, _tmp) = setup_test_db();
+        add_entry(&conn, "A", "content", &["mykey".to_string()], "", "local", None, None).unwrap();
+
+        let results = search_entries(&conn, "mykey", true, None, None, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "A");
+    }
+
+    #[test]
+    fn test_update_entry() {
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(&conn, "Old", "old content", &[], "", "local", None, None).unwrap();
+        let now = "2026-01-01T00:00:00".to_string();
+        update_entry(&conn, id, Some("New Title"), Some("new content"), None, &now).unwrap();
+
+        let entry = get_entry(&conn, id).unwrap().unwrap();
+        assert_eq!(entry.title, "New Title");
+        assert_eq!(entry.content, "new content");
+    }
+
+    #[test]
+    fn test_update_entry_status() {
+        let (conn, _tmp) = setup_test_db();
+        let old_id = add_entry(&conn, "Old", "old", &[], "", "local", None, None).unwrap();
+        let new_id = add_entry(&conn, "New", "new", &[], "", "local", None, None).unwrap();
+        update_entry_status(&conn, old_id, "deprecated", Some(new_id)).unwrap();
+
+        let entry = get_entry(&conn, old_id).unwrap().unwrap();
+        assert_eq!(entry.status, "deprecated");
+        assert_eq!(entry.superseded_by, Some(new_id));
+    }
+
+    #[test]
+    fn test_find_similar_entries() {
+        let (conn, _tmp) = setup_test_db();
+        add_entry(&conn, "OAuth Flow", "OAuth details", &["oauth".to_string()], "", "local", None, None).unwrap();
+
+        let similar = find_similar_entries(&conn, "OAuth Flow", &["oauth".to_string()]).unwrap();
+        assert!(!similar.is_empty());
+    }
+
+    #[test]
+    fn test_stats() {
+        let (conn, _tmp) = setup_test_db();
+        add_entry(&conn, "A", "a", &["k1".to_string()], "", "local", None, None).unwrap();
+        add_entry(&conn, "B", "b", &["k2".to_string()], "", "shared", Some("f.md"), Some("hash")).unwrap();
+
+        let stats = get_stats(&conn).unwrap();
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.local, 1);
+        assert_eq!(stats.shared, 1);
+        assert_eq!(stats.keywords, 2);
+    }
+
+    #[test]
+    fn test_purge_by_source() {
+        let (conn, _tmp) = setup_test_db();
+        add_entry(&conn, "A", "a", &[], "", "local", None, None).unwrap();
+        add_entry(&conn, "B", "b", &[], "", "local", None, None).unwrap();
+        add_entry(&conn, "C", "c", &[], "", "shared", Some("f.md"), Some("h")).unwrap();
+
+        let count = purge_by_source(&conn, "local").unwrap();
+        assert_eq!(count, 2);
+        let stats = get_stats(&conn).unwrap();
+        assert_eq!(stats.total, 1);
+    }
+
+    #[test]
+    fn test_migration_from_legacy_db() {
+        // Create a DB with the original schema (no source, no status)
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '',
+                source_file TEXT,
+                file_hash TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+                keyword TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE entries_fts USING fts5(title, content, content='entries', content_rowid='id');",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO entries (title, content, category) VALUES ('Test', 'Content', 'local')",
+            [],
+        ).unwrap();
+        drop(conn);
+
+        // Open with migration
+        let (conn, migrated) = open_db(tmp.path()).unwrap();
+        assert!(migrated);
+
+        // Verify new columns exist
+        let entry: String = conn
+            .query_row("SELECT status FROM entries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(entry, "active");
+
+        // Verify schema version was set
+        assert_eq!(get_schema_version(&conn), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_backup_db() {
+        let tmp = NamedTempFile::new().unwrap();
+        let _conn = init_db(tmp.path()).unwrap();
+
+        let backup_path = backup_db(tmp.path()).unwrap();
+        assert!(backup_path.exists());
+        // Clean up
+        std::fs::remove_file(&backup_path).ok();
+    }
 }

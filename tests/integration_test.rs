@@ -140,9 +140,9 @@ fn test_delete() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let id = result["id"].as_i64().unwrap();
 
-    // Delete
+    // Delete (with -y to skip confirmation)
     let output = lk_bin()
-        .args(["delete", &id.to_string()])
+        .args(["delete", &id.to_string(), "-y"])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -229,6 +229,92 @@ fn test_export() {
         })
         .collect();
     assert!(!exported_files.is_empty());
+}
+
+#[test]
+fn test_export_by_ids() {
+    let dir = setup_temp_project();
+    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+
+    // Add two entries with distinct titles/keywords to avoid auto-extraction collisions
+    let out1 = lk_bin()
+        .args(["add", "Authentication Flow", "--keywords", "oauth,auth", "--content", "OAuth 2.0 with PKCE flow.", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let r1: serde_json::Value = serde_json::from_slice(&out1.stdout).unwrap();
+    let id1 = r1["id"].as_i64().unwrap();
+
+    lk_bin()
+        .args(["add", "Database Migration", "--keywords", "database,migration", "--content", "SQLite schema versioning.", "--json", "--force"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Export only the first entry by ID
+    let output = lk_bin()
+        .args(["export", "--ids", &id1.to_string()])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("1 entries"));
+
+    // First entry should now be shared
+    let out_shared = lk_bin()
+        .args(["list", "--source", "shared", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let shared: Vec<serde_json::Value> = serde_json::from_slice(&out_shared.stdout).unwrap();
+    assert!(shared.iter().any(|e| e["title"] == "Authentication Flow"), "Auth entry should be shared after export");
+
+    // Second entry should still be local
+    let out_local = lk_bin()
+        .args(["list", "--source", "local", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let local: Vec<serde_json::Value> = serde_json::from_slice(&out_local.stdout).unwrap();
+    assert!(local.iter().any(|e| e["title"] == "Database Migration"), "DB entry should still be local");
+}
+
+#[test]
+fn test_export_by_query() {
+    let dir = setup_temp_project();
+    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+
+    lk_bin()
+        .args(["add", "OAuth Flow", "--keywords", "oauth", "--content", "OAuth 2.0 with PKCE."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    lk_bin()
+        .args(["add", "Database Schema", "--keywords", "database", "--content", "SQLite with FTS5."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Export only OAuth-related entries
+    let output = lk_bin()
+        .args(["export", "--query", "OAuth"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("1 entries"));
+
+    // Database entry should still be local
+    let out = lk_bin()
+        .args(["list", "--source", "local", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["title"], "Database Schema");
 }
 
 #[test]
