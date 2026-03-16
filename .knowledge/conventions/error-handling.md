@@ -8,7 +8,7 @@ category: conventions
 ## Entry: Error Propagation Pattern
 keywords: [error, Result, Box-dyn-Error]
 
-All command handlers return `Result<(), Box<dyn std::error::Error>>` and use the `?` operator for propagation. The main function at `src/main.rs:132-135` catches errors with `eprintln!` and `std::process::exit(1)`. No custom error types are defined; the project relies on boxed trait objects for simplicity.
+All command handlers return `Result<(), Box<dyn std::error::Error>>` and use the `?` operator for propagation. The `main()` function catches errors with `eprintln!` and `std::process::exit(1)`. No custom error types are defined; the project relies on boxed trait objects for simplicity.
 
 ## Entry: JSON Output Pattern
 keywords: [json, serde_json, output, --json]

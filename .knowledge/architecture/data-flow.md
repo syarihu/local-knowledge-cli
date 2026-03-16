@@ -18,4 +18,4 @@ The `sync_knowledge_dir()` function in `src/main.rs` performs a 3-stage sync: (1
 ## Entry: Export Workflow
 keywords: [export, local, shared, markdown-generation]
 
-The `cmd_export()` function in `src/main.rs` takes "local" category entries from the DB, groups them by their first keyword, and writes `exported-{keyword}.md` files to `.knowledge/`. After export, entries are promoted from "local" to "shared" category via `update_entry_to_shared()` so they won't be re-exported.
+The `cmd_export()` function in `src/main.rs` takes entries with `source = "local"` from the DB, groups them by their first keyword, and writes `exported-{keyword}.md` files to `.knowledge/`. After export, entries are promoted from `source = "local"` to `source = "shared"` via `update_entry_to_shared()` so they won't be re-exported.

@@ -8,7 +8,7 @@ category: features
 ## Entry: Update Flow
 keywords: [fetch_latest_tag, verify_checksum, update]
 
-The `cmd_update()` function in `src/main.rs` downloads the latest release from GitHub. Version discovery uses `gh release view` with a curl redirect fallback (`fetch_latest_tag()`). The binary is downloaded to a temp directory (via tempfile crate), verified with SHA256 checksum (`verify_checksum()`), extracted, and installed to `~/.local/bin/lk`. After installation, embedded Claude commands are automatically re-installed.
+The `cmd_update()` function in `src/main.rs` downloads the latest release from GitHub. Version discovery uses `gh release view` with a curl redirect fallback (`fetch_latest_tag()`). The binary is downloaded to a temp directory (via tempfile crate), verified with SHA256 checksum (`verify_checksum()`), extracted, and installed to `~/.local/bin/lk`. After installation, embedded Claude commands are automatically re-installed. The version displayed in "Update complete!" is read from the newly installed binary (not the running process) to show the correct new version.
 
 ## Entry: Platform Detection
 keywords: [detect_target, platform, cross-platform]
