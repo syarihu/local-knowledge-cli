@@ -408,11 +408,12 @@ When launching Explore or general-purpose agents for code investigation, always 
 - Briefly report what was saved (e.g., \"Added to knowledge base: <title>\")\n\
 \n\
 ### Content Guidelines (to prevent staleness)\n\
-- Focus on **why** (design decisions, rationale, trade-offs) rather than **what** (line numbers, counts, file paths)\n\
-- BAD: \"DB schema has 3 tables defined at src/db.rs:34-78\" — goes stale when code changes\n\
-- GOOD: \"FTS5 is used because it provides full-text search without external dependencies\" — stays true\n\
-- Avoid embedding specific line numbers, exact counts, or volatile implementation details\n\
-- If you must reference code locations, use function/struct names instead of line numbers\n\
+- Stable facts are valuable: technology choices, function/struct names, architecture structure\n\
+- Avoid **volatile details** that go stale quickly: line numbers, exact counts, specific file paths\n\
+- BAD: \"DB schema has 3 tables defined at src/db.rs:34-78\" — line numbers and counts drift\n\
+- GOOD: \"DB uses FTS5 for full-text search; schema is defined in `init_db()`\" — stays true\n\
+- Reference function/struct names instead of line numbers\n\
+- Include **why** (design decisions, rationale) alongside **what** when possible\n\
 \n\
 ### Keywords Rule (when adding)\n\
 - Include feature names, screen names, or module names as keywords\n\

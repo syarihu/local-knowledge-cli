@@ -83,12 +83,13 @@ Organize files into subdirectories:
 ## Guidelines
 - Skip trivially obvious facts (e.g., "this is a Node.js project" if package.json exists)
 - Focus on knowledge that would help a NEW developer (or Claude) understand the project quickly
-- Focus on **why** (design decisions, rationale, trade-offs) rather than **what** (line numbers, counts, volatile implementation details)
-  - BAD: "release.yml (86 lines) has a 4-platform matrix" — goes stale on every change
+- Stable facts are valuable (technology choices, function/struct names, architecture structure)
+- Avoid **volatile details** that go stale quickly (line numbers, exact counts, specific file paths)
+  - BAD: "release.yml (86 lines) has a 4-platform matrix" — line numbers and counts drift
   - GOOD: "Binary is embedded with include_str! to prevent MITM attacks on network-fetched commands"
-  - Avoid specific line numbers; use function/struct names to reference code
 - Each entry should be 2-5 sentences, factual and concise
-- Reference function/struct names rather than line numbers when pointing to code
+- Reference function/struct names instead of line numbers
+- Include **why** (design decisions, rationale) alongside **what** when possible
 - Use both English and Japanese keywords if the project uses Japanese
 - Do NOT overwrite existing .knowledge/ files — only create new ones or suggest updates
 - If $ARGUMENTS specifies a focus area, prioritize that area but still do a light scan of others

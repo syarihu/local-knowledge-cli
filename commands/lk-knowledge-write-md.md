@@ -35,10 +35,12 @@ keywords: [specific, keywords]
 3. Key rules for entries:
    - Each `## Entry:` should cover ONE concept/fact
    - 2-5 sentences per entry (keeps context consumption low)
-   - Focus on **why** (design decisions, rationale, trade-offs) rather than **what** (line numbers, counts, implementation details that Grep/Read can reveal)
-     - BAD: "15 commands defined at main.rs:18-157" — goes stale on every addition
-     - GOOD: "Commands use clap derive API for type-safe argument parsing"
-   - Reference function/struct names rather than line numbers when pointing to code
+   - Stable facts are valuable (technology choices, function/struct names, architecture structure)
+   - Avoid **volatile details** that go stale quickly (line numbers, exact counts, specific file paths)
+     - BAD: "15 commands defined at main.rs:18-157" — line numbers and counts drift
+     - GOOD: "Commands use clap derive API; dispatch is in `main()` match block" — stays true
+   - Reference function/struct names instead of line numbers
+   - Include **why** (design decisions, rationale) alongside **what** when possible
    - Keywords should cover both the concept and implementation terms
 4. Show the draft to the user for review
 5. After approval, save to the appropriate .knowledge/ subdirectory
