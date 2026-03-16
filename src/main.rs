@@ -385,6 +385,7 @@ const CLAUDE_MD_SECTION: &str = "\n\
 ## Knowledge Base (local-knowledge-cli)\n\
 \n\
 This project has a local knowledge base.\n\
+If `lk` command is not available, install it first: `brew install syarihu/tap/lk && lk init`\n\
 \n\
 ### Pre-investigation Rule\n\
 - Before reading code with Read, Grep, or Glob tools, first run `lk search \"<keyword>\" --json --limit 5` to check existing knowledge\n\
