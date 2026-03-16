@@ -501,42 +501,65 @@ fn cmd_add(
     }
     kws.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
-    // Duplicate check (skip with --force)
-    if !force {
-        let similar = db::find_similar_entries(&conn, title, &kws)?;
-        if !similar.is_empty() {
-            if json_output {
-                let similar_json: Vec<serde_json::Value> = similar
-                    .iter()
-                    .map(|e| {
-                        let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
-                        let snippet = truncate_str(&e.content, 300);
-                        serde_json::json!({
-                            "id": e.id,
-                            "title": e.title,
-                            "keywords": ekws,
-                            "snippet": snippet,
+    // Use BEGIN IMMEDIATE to acquire a write lock before duplicate check,
+    // preventing race conditions when multiple processes call `lk add` concurrently.
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+
+    let result = (|| -> Result<i64, Box<dyn std::error::Error>> {
+        // Duplicate check (skip with --force)
+        if !force {
+            let similar = db::find_similar_entries(&conn, title, &kws)?;
+            if !similar.is_empty() {
+                if json_output {
+                    let similar_json: Vec<serde_json::Value> = similar
+                        .iter()
+                        .map(|e| {
+                            let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
+                            let snippet = truncate_str(&e.content, 300);
+                            serde_json::json!({
+                                "id": e.id,
+                                "title": e.title,
+                                "keywords": ekws,
+                                "snippet": snippet,
+                            })
                         })
-                    })
-                    .collect();
-                let out = serde_json::json!({
-                    "added": false,
-                    "similar_entries": similar_json,
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                println!("Similar entries found (use --force to add anyway):");
-                for e in &similar {
-                    let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
-                    println!("  [{}] {} (keywords: {})", e.id, e.title, ekws.join(", "));
+                        .collect();
+                    let out = serde_json::json!({
+                        "added": false,
+                        "similar_entries": similar_json,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    println!("Similar entries found (use --force to add anyway):");
+                    for e in &similar {
+                        let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
+                        println!("  [{}] {} (keywords: {})", e.id, e.title, ekws.join(", "));
+                    }
                 }
+                return Err("duplicate_found".into());
             }
+        }
+
+        db::add_entry(&conn, title, content, &kws, category, "local", None, None)
+    })();
+
+    match result {
+        Ok(entry_id) => {
+            conn.execute_batch("COMMIT")?;
+            return Ok(cmd_add_print_success(entry_id, title, &kws, json_output));
+        }
+        Err(e) if e.to_string() == "duplicate_found" => {
+            conn.execute_batch("ROLLBACK")?;
             return Ok(());
         }
+        Err(e) => {
+            conn.execute_batch("ROLLBACK").ok();
+            return Err(e);
+        }
     }
+}
 
-    let entry_id = db::add_entry(&conn, title, content, &kws, category, "local", None, None)?;
-
+fn cmd_add_print_success(entry_id: i64, title: &str, kws: &[String], json_output: bool) {
     if json_output {
         let out = serde_json::json!({
             "added": true,
@@ -544,12 +567,11 @@ fn cmd_add(
             "title": title,
             "keywords": kws,
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         println!("Added entry #{entry_id}: {title}");
         println!("Keywords: {}", kws.join(", "));
     }
-    Ok(())
 }
 
 fn cmd_search(
