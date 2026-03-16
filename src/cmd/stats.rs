@@ -45,7 +45,10 @@ pub fn cmd_stats(json_output: bool, verbose: bool) -> Result<(), Box<dyn std::er
         println!("  DB path:          {}", get_db_path().display());
         if verbose {
             println!("  Project root:     {}", get_project_root().display());
-            println!("  Schema version:   {}", db::get_schema_version_public(&conn));
+            println!(
+                "  Schema version:   {}",
+                db::get_schema_version_public(&conn)
+            );
         }
     }
     Ok(())

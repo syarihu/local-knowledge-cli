@@ -72,10 +72,7 @@ pub fn confirm(prompt: &str) -> bool {
 }
 
 pub fn truncate_str(s: &str, max_chars: usize) -> String {
-    let oneline: String = s
-        .chars()
-        .map(|c| if c == '\n' { ' ' } else { c })
-        .collect();
+    let oneline: String = s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
     if oneline.chars().count() <= max_chars {
         oneline
     } else {
@@ -106,8 +103,8 @@ pub fn now_iso() -> String {
 
 /// Calculate days since an ISO datetime string. Returns None on parse failure.
 pub fn days_since(updated_at: &str) -> Option<i64> {
-    use time::OffsetDateTime;
     use time::Month;
+    use time::OffsetDateTime;
     // Parse just the date portion (YYYY-MM-DD) manually
     let date_str = &updated_at[..10.min(updated_at.len())];
     let parts: Vec<&str> = date_str.split('-').collect();

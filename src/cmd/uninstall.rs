@@ -5,7 +5,12 @@ pub fn cmd_uninstall(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     let knowledge_dir = root.join(".knowledge");
     let marker = "## Knowledge Base (local-knowledge-cli)";
 
-    if !yes && !confirm(&format!("Uninstall lk from project {}? This will remove .knowledge/ and all data.", root.display())) {
+    if !yes
+        && !confirm(&format!(
+            "Uninstall lk from project {}? This will remove .knowledge/ and all data.",
+            root.display()
+        ))
+    {
         println!("Cancelled.");
         return Ok(());
     }
@@ -53,10 +58,16 @@ pub fn cmd_uninstall(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
 
             if new_content.trim().is_empty() {
                 std::fs::remove_file(claude_md_path)?;
-                println!("  Removed {} (was empty after section removal)", claude_md_path.display());
+                println!(
+                    "  Removed {} (was empty after section removal)",
+                    claude_md_path.display()
+                );
             } else {
                 std::fs::write(claude_md_path, new_content)?;
-                println!("  Removed knowledge section from {}", claude_md_path.display());
+                println!(
+                    "  Removed knowledge section from {}",
+                    claude_md_path.display()
+                );
             }
         }
     }

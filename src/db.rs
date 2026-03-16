@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -38,7 +38,9 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
         std::fs::create_dir_all(parent)?;
     }
     let conn = Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+    )?;
 
     conn.execute_batch(
         "
@@ -97,7 +99,10 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
     // Set initial schema version for new databases
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))?;
     if count == 0 {
-        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", params![SCHEMA_VERSION])?;
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![SCHEMA_VERSION],
+        )?;
     }
 
     Ok(conn)
@@ -112,7 +117,9 @@ pub fn open_db(db_path: &Path) -> Result<(Connection, bool), Box<dyn std::error:
         .into());
     }
     let conn = Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+    )?;
     let migrated = migrate(db_path, &conn)?;
     Ok((conn, migrated))
 }
@@ -132,17 +139,20 @@ fn get_schema_version(conn: &Connection) -> i64 {
         return 0;
     }
 
-    conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |r| r.get(0))
-        .unwrap_or(0)
+    conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |r| {
+        r.get(0)
+    })
+    .unwrap_or(0)
 }
 
 fn set_schema_version(conn: &Connection, version: i64) -> Result<(), Box<dyn std::error::Error>> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);",
-    )?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))?;
     if count == 0 {
-        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", params![version])?;
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![version],
+        )?;
     } else {
         conn.execute("UPDATE schema_version SET version = ?1", params![version])?;
     }
@@ -220,7 +230,7 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
     Ok(migrated)
 }
 
-
+#[allow(clippy::too_many_arguments)]
 pub fn add_entry(
     conn: &Connection,
     title: &str,
@@ -326,13 +336,10 @@ pub fn search_entries(
         // FTS search — sanitize query to prevent FTS5 syntax injection
         let sanitized = sanitize_fts_query(query);
 
-        let fts_sql_base = format!(
-            "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at, fts.rank \
-             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1"
-        );
+        let fts_sql_base = "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at, fts.rank \
+             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1".to_string();
         let mut fts_sql = fts_sql_base;
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(sanitized)];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(sanitized)];
 
         append_filters(&mut fts_sql, &mut param_values, category, source, since);
         fts_sql.push_str(" ORDER BY rank, e.updated_at DESC LIMIT ?");
@@ -342,20 +349,16 @@ pub fn search_entries(
             param_values.iter().map(|b| b.as_ref()).collect();
 
         match conn.prepare(&fts_sql) {
-            Ok(mut stmt) => {
-                match stmt.query_map(params_ref.as_slice(), row_to_entry_with_rank) {
-                    Ok(rows) => {
-                        for row in rows {
-                            if let Ok(entry) = row {
-                                results.push(entry);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: FTS query failed: {e}");
+            Ok(mut stmt) => match stmt.query_map(params_ref.as_slice(), row_to_entry_with_rank) {
+                Ok(rows) => {
+                    for entry in rows.flatten() {
+                        results.push(entry);
                     }
                 }
-            }
+                Err(e) => {
+                    eprintln!("Warning: FTS query failed: {e}");
+                }
+            },
             Err(e) => {
                 eprintln!("Warning: FTS prepare failed (index may be corrupted): {e}");
             }
@@ -363,8 +366,7 @@ pub fn search_entries(
 
         // Supplement with keyword search if needed
         if results.len() < limit {
-            let seen_ids: std::collections::HashSet<i64> =
-                results.iter().map(|r| r.id).collect();
+            let seen_ids: std::collections::HashSet<i64> = results.iter().map(|r| r.id).collect();
             let remaining = limit - results.len();
 
             let words: Vec<&str> = query.split_whitespace().collect();
@@ -417,7 +419,10 @@ pub fn get_entry(conn: &Connection, id: i64) -> Result<Option<Entry>, Box<dyn st
     }
 }
 
-pub fn get_keywords(conn: &Connection, entry_id: i64) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+pub fn get_keywords(
+    conn: &Connection,
+    entry_id: i64,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare("SELECT keyword FROM keywords WHERE entry_id = ?1")?;
     let rows = stmt.query_map(params![entry_id], |row| row.get::<_, String>(0))?;
     let mut kws = Vec::new();
@@ -432,12 +437,18 @@ pub fn delete_entry(conn: &Connection, id: i64) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-pub fn delete_entries_by_category(conn: &Connection, category: &str) -> Result<usize, Box<dyn std::error::Error>> {
+pub fn delete_entries_by_category(
+    conn: &Connection,
+    category: &str,
+) -> Result<usize, Box<dyn std::error::Error>> {
     let count = conn.execute("DELETE FROM entries WHERE category = ?1", params![category])?;
     Ok(count)
 }
 
-pub fn purge_by_source(conn: &Connection, source: &str) -> Result<usize, Box<dyn std::error::Error>> {
+pub fn purge_by_source(
+    conn: &Connection,
+    source: &str,
+) -> Result<usize, Box<dyn std::error::Error>> {
     let count = conn.execute("DELETE FROM entries WHERE source = ?1", params![source])?;
     Ok(count)
 }
@@ -520,7 +531,8 @@ pub fn list_entries_by_source(
     conn: &Connection,
     source: &str,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
-    let sql = format!("SELECT {ENTRY_COLS} FROM entries WHERE source = ?1 ORDER BY updated_at DESC");
+    let sql =
+        format!("SELECT {ENTRY_COLS} FROM entries WHERE source = ?1 ORDER BY updated_at DESC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![source], row_to_entry)?;
     let mut entries = Vec::new();
@@ -572,13 +584,13 @@ pub fn update_entry_to_shared(
     Ok(())
 }
 
-pub fn keyword_counts(
-    conn: &Connection,
-) -> Result<Vec<(String, i64)>, Box<dyn std::error::Error>> {
+pub fn keyword_counts(conn: &Connection) -> Result<Vec<(String, i64)>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
         "SELECT keyword, COUNT(*) as count FROM keywords GROUP BY keyword ORDER BY count DESC",
     )?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
     let mut result = Vec::new();
     for row in rows {
         result.push(row?);
@@ -603,12 +615,16 @@ pub fn get_stats(conn: &Connection) -> Result<DbStats, Box<dyn std::error::Error
         [],
         |r| r.get(0),
     )?;
-    let keywords: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT keyword) FROM keywords",
-        [],
-        |r| r.get(0),
-    )?;
-    Ok(DbStats { total, shared, local, keywords })
+    let keywords: i64 =
+        conn.query_row("SELECT COUNT(DISTINCT keyword) FROM keywords", [], |r| {
+            r.get(0)
+        })?;
+    Ok(DbStats {
+        total,
+        shared,
+        local,
+        keywords,
+    })
 }
 
 pub fn find_similar_entries(
@@ -621,16 +637,13 @@ pub fn find_similar_entries(
 
     // 1. Title exact match (case-insensitive)
     {
-        let sql = format!(
-            "SELECT {ENTRY_COLS} FROM entries WHERE LOWER(title) = LOWER(?1) LIMIT 3"
-        );
+        let sql =
+            format!("SELECT {ENTRY_COLS} FROM entries WHERE LOWER(title) = LOWER(?1) LIMIT 3");
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![title], row_to_entry)?;
-        for row in rows {
-            if let Ok(entry) = row {
-                seen_ids.insert(entry.id);
-                results.push(entry);
-            }
+        for entry in rows.flatten() {
+            seen_ids.insert(entry.id);
+            results.push(entry);
         }
     }
 
@@ -642,19 +655,17 @@ pub fn find_similar_entries(
     // 2. FTS MATCH on title
     {
         let fts_query = title.to_string();
-        let sql = format!(
-            "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
-             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1 ORDER BY rank LIMIT 3"
-        );
-        if let Ok(mut stmt) = conn.prepare(&sql) {
-            if let Ok(rows) = stmt.query_map(params![fts_query], row_to_entry) {
-                for row in rows {
-                    if let Ok(entry) = row {
-                        if !seen_ids.contains(&entry.id) {
-                            seen_ids.insert(entry.id);
-                            results.push(entry);
-                        }
-                    }
+        let sql = "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
+             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1 ORDER BY rank LIMIT 3".to_string();
+        if let Ok(mut stmt) = conn.prepare(&sql)
+            && let Ok(rows) = stmt.query_map(params![fts_query], row_to_entry)
+        {
+            for row in rows {
+                if let Ok(entry) = row
+                    && !seen_ids.contains(&entry.id)
+                {
+                    seen_ids.insert(entry.id);
+                    results.push(entry);
                 }
             }
         }
@@ -668,7 +679,11 @@ pub fn find_similar_entries(
     // 3. Keyword overlap
     if !kws.is_empty() {
         let remaining = 3 - results.len();
-        let placeholders: Vec<String> = kws.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let placeholders: Vec<String> = kws
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
         let sql = format!(
             "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
              FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE k.keyword IN ({}) \
@@ -687,11 +702,11 @@ pub fn find_similar_entries(
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
         for row in rows {
-            if let Ok(entry) = row {
-                if !seen_ids.contains(&entry.id) {
-                    seen_ids.insert(entry.id);
-                    results.push(entry);
-                }
+            if let Ok(entry) = row
+                && !seen_ids.contains(&entry.id)
+            {
+                seen_ids.insert(entry.id);
+                results.push(entry);
             }
         }
     }
@@ -810,7 +825,17 @@ mod tests {
     fn test_add_and_get_entry() {
         let (conn, _tmp) = setup_test_db();
         let kws = vec!["rust".to_string(), "test".to_string()];
-        let id = add_entry(&conn, "Test", "Content here", &kws, "arch", "local", None, None).unwrap();
+        let id = add_entry(
+            &conn,
+            "Test",
+            "Content here",
+            &kws,
+            "arch",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
         assert!(id > 0);
 
         let entry = get_entry(&conn, id).unwrap().unwrap();
@@ -843,8 +868,28 @@ mod tests {
     #[test]
     fn test_fts_search() {
         let (conn, _tmp) = setup_test_db();
-        add_entry(&conn, "OAuth Login", "OAuth 2.0 PKCE flow for authentication", &["oauth".to_string()], "", "local", None, None).unwrap();
-        add_entry(&conn, "Database Schema", "SQLite with FTS5", &["database".to_string()], "", "local", None, None).unwrap();
+        add_entry(
+            &conn,
+            "OAuth Login",
+            "OAuth 2.0 PKCE flow for authentication",
+            &["oauth".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "Database Schema",
+            "SQLite with FTS5",
+            &["database".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
 
         let results = search_entries(&conn, "OAuth", false, None, None, None, 10).unwrap();
         assert!(!results.is_empty());
@@ -854,7 +899,17 @@ mod tests {
     #[test]
     fn test_keyword_search() {
         let (conn, _tmp) = setup_test_db();
-        add_entry(&conn, "A", "content", &["mykey".to_string()], "", "local", None, None).unwrap();
+        add_entry(
+            &conn,
+            "A",
+            "content",
+            &["mykey".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
 
         let results = search_entries(&conn, "mykey", true, None, None, None, 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -866,7 +921,15 @@ mod tests {
         let (conn, _tmp) = setup_test_db();
         let id = add_entry(&conn, "Old", "old content", &[], "", "local", None, None).unwrap();
         let now = "2026-01-01T00:00:00".to_string();
-        update_entry(&conn, id, Some("New Title"), Some("new content"), None, &now).unwrap();
+        update_entry(
+            &conn,
+            id,
+            Some("New Title"),
+            Some("new content"),
+            None,
+            &now,
+        )
+        .unwrap();
 
         let entry = get_entry(&conn, id).unwrap().unwrap();
         assert_eq!(entry.title, "New Title");
@@ -888,7 +951,17 @@ mod tests {
     #[test]
     fn test_find_similar_entries() {
         let (conn, _tmp) = setup_test_db();
-        add_entry(&conn, "OAuth Flow", "OAuth details", &["oauth".to_string()], "", "local", None, None).unwrap();
+        add_entry(
+            &conn,
+            "OAuth Flow",
+            "OAuth details",
+            &["oauth".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
 
         let similar = find_similar_entries(&conn, "OAuth Flow", &["oauth".to_string()]).unwrap();
         assert!(!similar.is_empty());
@@ -897,8 +970,28 @@ mod tests {
     #[test]
     fn test_stats() {
         let (conn, _tmp) = setup_test_db();
-        add_entry(&conn, "A", "a", &["k1".to_string()], "", "local", None, None).unwrap();
-        add_entry(&conn, "B", "b", &["k2".to_string()], "", "shared", Some("f.md"), Some("hash")).unwrap();
+        add_entry(
+            &conn,
+            "A",
+            "a",
+            &["k1".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "B",
+            "b",
+            &["k2".to_string()],
+            "",
+            "shared",
+            Some("f.md"),
+            Some("hash"),
+        )
+        .unwrap();
 
         let stats = get_stats(&conn).unwrap();
         assert_eq!(stats.total, 2);
@@ -925,7 +1018,8 @@ mod tests {
         // Create a DB with the original schema (no source, no status)
         let tmp = NamedTempFile::new().unwrap();
         let conn = Connection::open(tmp.path()).unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
         conn.execute_batch(
             "CREATE TABLE entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -947,7 +1041,8 @@ mod tests {
         conn.execute(
             "INSERT INTO entries (title, content, category) VALUES ('Test', 'Content', 'local')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         drop(conn);
 
         // Open with migration

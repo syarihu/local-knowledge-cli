@@ -1,7 +1,7 @@
-use crate::db;
-use crate::util::get_project_root;
 use crate::cmd::sync::sync_knowledge_dir;
 use crate::cmd::update::install_embedded_commands;
+use crate::db;
+use crate::util::get_project_root;
 
 pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
     let root = get_project_root();
@@ -34,7 +34,10 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         for subdir in ["architecture", "features", "conventions"] {
             std::fs::create_dir_all(knowledge_dir.join(subdir))?;
         }
-        println!("Created .knowledge/ directory at {}", knowledge_dir.display());
+        println!(
+            "Created .knowledge/ directory at {}",
+            knowledge_dir.display()
+        );
     }
 
     // 3. Import existing .knowledge/ files
@@ -52,7 +55,9 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         let mut added = Vec::new();
         {
             use std::io::Write;
-            let mut f = std::fs::OpenOptions::new().append(true).open(&gitignore_path)?;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&gitignore_path)?;
             let mut needs_newline = !content.ends_with('\n');
             for entry in &gitignore_entries {
                 if !content.contains(entry) {
@@ -110,22 +115,33 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
                     new_content.push_str(&content[section_end..]);
                 }
                 std::fs::write(&claude_md_path, new_content)?;
-                println!("Updated knowledge base instructions in {}", claude_md_path.display());
+                println!(
+                    "Updated knowledge base instructions in {}",
+                    claude_md_path.display()
+                );
             } else {
                 println!("CLAUDE.md already contains up-to-date knowledge base instructions");
             }
         } else {
             use std::io::Write;
-            let mut f = std::fs::OpenOptions::new().append(true).open(&claude_md_path)?;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&claude_md_path)?;
             if !content.ends_with('\n') {
                 writeln!(f)?;
             }
             write!(f, "{CLAUDE_MD_SECTION}")?;
-            println!("Added knowledge base instructions to {}", claude_md_path.display());
+            println!(
+                "Added knowledge base instructions to {}",
+                claude_md_path.display()
+            );
         }
     } else {
         std::fs::write(&claude_md_path, CLAUDE_MD_SECTION.trim_start())?;
-        println!("Created {} with knowledge base instructions", claude_md_path.display());
+        println!(
+            "Created {} with knowledge base instructions",
+            claude_md_path.display()
+        );
     }
 
     // 6. Install embedded Claude commands

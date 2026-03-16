@@ -15,7 +15,10 @@ pub fn cmd_add(
     let category = category.unwrap_or("");
 
     let mut kws: Vec<String> = if let Some(ks) = keywords_str {
-        ks.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        ks.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     } else {
         Vec::new()
     };
@@ -28,7 +31,7 @@ pub fn cmd_add(
             kws.push(kw);
         }
     }
-    kws.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    kws.sort_by_key(|a| a.to_lowercase());
 
     // Use BEGIN IMMEDIATE to acquire a write lock before duplicate check,
     // preventing race conditions when multiple processes call `lk add` concurrently.
@@ -76,15 +79,15 @@ pub fn cmd_add(
         Ok(entry_id) => {
             conn.execute_batch("COMMIT")?;
             print_success(entry_id, title, &kws, json_output);
-            return Ok(());
+            Ok(())
         }
         Err(e) if e.to_string() == "duplicate_found" => {
             conn.execute_batch("ROLLBACK")?;
-            return Ok(());
+            Ok(())
         }
         Err(e) => {
             conn.execute_batch("ROLLBACK").ok();
-            return Err(e);
+            Err(e)
         }
     }
 }

@@ -17,12 +17,15 @@ pub fn cmd_sync(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
     let stats = sync_knowledge_dir(&conn, &get_knowledge_dir(), &root)?;
 
     if json_output {
-        println!("{}", serde_json::to_string(&serde_json::json!({
-            "added": stats.added,
-            "updated": stats.updated,
-            "removed": stats.removed,
-            "unchanged": stats.unchanged,
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "added": stats.added,
+                "updated": stats.updated,
+                "removed": stats.removed,
+                "unchanged": stats.unchanged,
+            }))?
+        );
     } else {
         println!("Sync complete:");
         println!("  Added:     {}", stats.added);
@@ -39,10 +42,20 @@ pub fn sync_knowledge_dir(
     root: &std::path::Path,
 ) -> Result<SyncStats, Box<dyn std::error::Error>> {
     if !knowledge_dir.exists() {
-        return Ok(SyncStats { added: 0, updated: 0, removed: 0, unchanged: 0 });
+        return Ok(SyncStats {
+            added: 0,
+            updated: 0,
+            removed: 0,
+            unchanged: 0,
+        });
     }
 
-    let mut stats = SyncStats { added: 0, updated: 0, removed: 0, unchanged: 0 };
+    let mut stats = SyncStats {
+        added: 0,
+        updated: 0,
+        removed: 0,
+        unchanged: 0,
+    };
     let existing = db::get_shared_file_hashes(conn)?;
     let mut found_files = std::collections::HashSet::new();
 

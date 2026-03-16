@@ -55,7 +55,11 @@ fn test_init_idempotent() {
     let dir = setup_temp_project();
 
     // Run init twice
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
     let output = lk_bin()
         .arg("init")
         .current_dir(dir.path())
@@ -65,25 +69,38 @@ fn test_init_idempotent() {
 
     // CLAUDE.md should not have duplicate sections
     let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
-    let count = claude_md.matches("Knowledge Base (local-knowledge-cli)").count();
+    let count = claude_md
+        .matches("Knowledge Base (local-knowledge-cli)")
+        .count();
     assert_eq!(count, 1, "CLAUDE.md should not have duplicate sections");
 }
 
 #[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     // Add an entry
     let output = lk_bin()
-        .args(["add", "Test Entry", "--keywords", "test,rust", "--content", "This is test content.", "--json"])
+        .args([
+            "add",
+            "Test Entry",
+            "--keywords",
+            "test,rust",
+            "--content",
+            "This is test content.",
+            "--json",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(output.status.success());
 
-    let add_result: serde_json::Value =
-        serde_json::from_slice(&output.stdout).unwrap();
+    let add_result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let id = add_result["id"].as_i64().unwrap();
     assert!(id > 0);
 
@@ -98,17 +115,40 @@ fn test_add_and_get() {
     let entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(entry["title"], "Test Entry");
     assert_eq!(entry["content"], "This is test content.");
-    assert!(entry["keywords"].as_array().unwrap().iter().any(|k| k == "test"));
-    assert!(entry["keywords"].as_array().unwrap().iter().any(|k| k == "rust"));
+    assert!(
+        entry["keywords"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|k| k == "test")
+    );
+    assert!(
+        entry["keywords"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|k| k == "rust")
+    );
 }
 
 #[test]
 fn test_search() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     lk_bin()
-        .args(["add", "OAuth Login", "--keywords", "oauth,login", "--content", "OAuth 2.0 with PKCE flow."])
+        .args([
+            "add",
+            "OAuth Login",
+            "--keywords",
+            "oauth,login",
+            "--content",
+            "OAuth 2.0 with PKCE flow.",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -121,8 +161,7 @@ fn test_search() {
         .unwrap();
     assert!(output.status.success());
 
-    let results: Vec<serde_json::Value> =
-        serde_json::from_slice(&output.stdout).unwrap();
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert!(!results.is_empty());
     assert_eq!(results[0]["title"], "OAuth Login");
 }
@@ -130,10 +169,20 @@ fn test_search() {
 #[test]
 fn test_delete() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     let output = lk_bin()
-        .args(["add", "To Delete", "--content", "Will be deleted.", "--json"])
+        .args([
+            "add",
+            "To Delete",
+            "--content",
+            "Will be deleted.",
+            "--json",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -160,7 +209,11 @@ fn test_delete() {
 #[test]
 fn test_import_and_sync() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     // Create a knowledge file
     let arch_dir = dir.path().join(".knowledge/architecture");
@@ -192,19 +245,29 @@ fn test_import_and_sync() {
         .current_dir(dir.path())
         .output()
         .unwrap();
-    let results: Vec<serde_json::Value> =
-        serde_json::from_slice(&output.stdout).unwrap();
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert!(!results.is_empty());
 }
 
 #[test]
 fn test_export() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     // Add local entries
     lk_bin()
-        .args(["add", "Local Fact", "--keywords", "local,fact", "--content", "A locally discovered fact."])
+        .args([
+            "add",
+            "Local Fact",
+            "--keywords",
+            "local,fact",
+            "--content",
+            "A locally discovered fact.",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -222,11 +285,7 @@ fn test_export() {
     let exported_files: Vec<_> = std::fs::read_dir(&knowledge_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("exported-")
-        })
+        .filter(|e| e.file_name().to_string_lossy().starts_with("exported-"))
         .collect();
     assert!(!exported_files.is_empty());
 }
@@ -234,11 +293,23 @@ fn test_export() {
 #[test]
 fn test_export_by_ids() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     // Add two entries with distinct titles/keywords to avoid auto-extraction collisions
     let out1 = lk_bin()
-        .args(["add", "Authentication Flow", "--keywords", "oauth,auth", "--content", "OAuth 2.0 with PKCE flow.", "--json"])
+        .args([
+            "add",
+            "Authentication Flow",
+            "--keywords",
+            "oauth,auth",
+            "--content",
+            "OAuth 2.0 with PKCE flow.",
+            "--json",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -246,7 +317,16 @@ fn test_export_by_ids() {
     let id1 = r1["id"].as_i64().unwrap();
 
     lk_bin()
-        .args(["add", "Database Migration", "--keywords", "database,migration", "--content", "SQLite schema versioning.", "--json", "--force"])
+        .args([
+            "add",
+            "Database Migration",
+            "--keywords",
+            "database,migration",
+            "--content",
+            "SQLite schema versioning.",
+            "--json",
+            "--force",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -268,7 +348,10 @@ fn test_export_by_ids() {
         .output()
         .unwrap();
     let shared: Vec<serde_json::Value> = serde_json::from_slice(&out_shared.stdout).unwrap();
-    assert!(shared.iter().any(|e| e["title"] == "Authentication Flow"), "Auth entry should be shared after export");
+    assert!(
+        shared.iter().any(|e| e["title"] == "Authentication Flow"),
+        "Auth entry should be shared after export"
+    );
 
     // Second entry should still be local
     let out_local = lk_bin()
@@ -277,21 +360,42 @@ fn test_export_by_ids() {
         .output()
         .unwrap();
     let local: Vec<serde_json::Value> = serde_json::from_slice(&out_local.stdout).unwrap();
-    assert!(local.iter().any(|e| e["title"] == "Database Migration"), "DB entry should still be local");
+    assert!(
+        local.iter().any(|e| e["title"] == "Database Migration"),
+        "DB entry should still be local"
+    );
 }
 
 #[test]
 fn test_export_by_query() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     lk_bin()
-        .args(["add", "OAuth Flow", "--keywords", "oauth", "--content", "OAuth 2.0 with PKCE."])
+        .args([
+            "add",
+            "OAuth Flow",
+            "--keywords",
+            "oauth",
+            "--content",
+            "OAuth 2.0 with PKCE.",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
     lk_bin()
-        .args(["add", "Database Schema", "--keywords", "database", "--content", "SQLite with FTS5."])
+        .args([
+            "add",
+            "Database Schema",
+            "--keywords",
+            "database",
+            "--content",
+            "SQLite with FTS5.",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -320,7 +424,11 @@ fn test_export_by_query() {
 #[test]
 fn test_stats() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     let output = lk_bin()
         .args(["stats", "--json"])
@@ -339,11 +447,21 @@ fn test_stats() {
 #[test]
 fn test_keywords_auto_extraction() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     // Add entry without explicit keywords - should auto-extract
     let output = lk_bin()
-        .args(["add", "SessionManager Config", "--content", "The SessionManager in src/auth/session.ts handles tokens.", "--json"])
+        .args([
+            "add",
+            "SessionManager Config",
+            "--content",
+            "The SessionManager in src/auth/session.ts handles tokens.",
+            "--json",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -358,15 +476,28 @@ fn test_keywords_auto_extraction() {
         .collect();
 
     // Should have extracted CamelCase components and file path parts
-    assert!(keywords.iter().any(|k| k == "session"), "Should extract 'session' from CamelCase/path");
-    assert!(keywords.iter().any(|k| k == "manager"), "Should extract 'manager' from CamelCase");
-    assert!(keywords.iter().any(|k| k == "auth"), "Should extract 'auth' from file path");
+    assert!(
+        keywords.iter().any(|k| k == "session"),
+        "Should extract 'session' from CamelCase/path"
+    );
+    assert!(
+        keywords.iter().any(|k| k == "manager"),
+        "Should extract 'manager' from CamelCase"
+    );
+    assert!(
+        keywords.iter().any(|k| k == "auth"),
+        "Should extract 'auth' from file path"
+    );
 }
 
 #[test]
 fn test_symlink_traversal_blocked() {
     let dir = setup_temp_project();
-    lk_bin().arg("init").current_dir(dir.path()).output().unwrap();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
     // Create a file outside .knowledge/
     let secret_dir = dir.path().join("secrets");
@@ -395,7 +526,6 @@ fn test_symlink_traversal_blocked() {
         .current_dir(dir.path())
         .output()
         .unwrap();
-    let results: Vec<serde_json::Value> =
-        serde_json::from_slice(&output.stdout).unwrap();
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert!(results.is_empty(), "Symlink traversal should be blocked");
 }

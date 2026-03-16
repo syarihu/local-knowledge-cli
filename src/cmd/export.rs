@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
+use crate::cmd::sync::import_md_file;
 use crate::db;
 use crate::markdown;
 use crate::util::{get_knowledge_dir, get_project_root, now_iso, open_db_with_migrate};
-use crate::cmd::sync::import_md_file;
 
-pub fn cmd_export(dir: Option<PathBuf>, ids: Option<&str>, query: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_export(
+    dir: Option<PathBuf>,
+    ids: Option<&str>,
+    query: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let output_dir = dir.unwrap_or_else(get_knowledge_dir);
     std::fs::create_dir_all(&output_dir)?;
@@ -15,7 +19,9 @@ pub fn cmd_export(dir: Option<PathBuf>, ids: Option<&str>, query: Option<&str>) 
         // Export specific entries by ID
         let mut selected = Vec::new();
         for id_str in ids_str.split(',') {
-            let id: i64 = id_str.trim().parse()
+            let id: i64 = id_str
+                .trim()
+                .parse()
                 .map_err(|_| format!("Invalid ID: {}", id_str.trim()))?;
             match db::get_entry(&conn, id)? {
                 Some(entry) => {
@@ -33,8 +39,8 @@ pub fn cmd_export(dir: Option<PathBuf>, ids: Option<&str>, query: Option<&str>) 
         selected
     } else if let Some(q) = query {
         // Export entries matching a search query
-        let results = db::search_entries(&conn, q, false, None, Some("local"), None, 100)?;
-        results
+
+        db::search_entries(&conn, q, false, None, Some("local"), None, 100)?
     } else {
         // Export all local entries
         db::list_entries_by_source(&conn, "local")?
@@ -50,7 +56,10 @@ pub fn cmd_export(dir: Option<PathBuf>, ids: Option<&str>, query: Option<&str>) 
         std::collections::HashMap::new();
     for entry in entries {
         let kws = db::get_keywords(&conn, entry.id)?;
-        let group = kws.first().cloned().unwrap_or_else(|| "general".to_string());
+        let group = kws
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "general".to_string());
         groups.entry(group).or_default().push(entry);
     }
 

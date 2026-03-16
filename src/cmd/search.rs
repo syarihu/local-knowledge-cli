@@ -1,9 +1,9 @@
 use crate::db;
 use crate::util::{
-    days_since, get_project_root, now_iso, open_db_with_migrate, truncate_str,
-    STALE_THRESHOLD_DAYS,
+    STALE_THRESHOLD_DAYS, days_since, get_project_root, now_iso, open_db_with_migrate, truncate_str,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_search(
     query: &str,
     keyword_only: bool,
@@ -36,10 +36,8 @@ pub fn cmd_search(
                     "status": r.status,
                     "stale": stale,
                 });
-                if stale {
-                    if let Some(d) = days {
-                        obj["days_since_update"] = serde_json::json!(d);
-                    }
+                if stale && let Some(d) = days {
+                    obj["days_since_update"] = serde_json::json!(d);
                 }
                 if let Some(sb) = r.superseded_by {
                     obj["superseded_by"] = serde_json::json!(sb);
@@ -62,9 +60,18 @@ pub fn cmd_search(
             let days = days_since(&r.updated_at);
             let stale = days.map(|d| d >= STALE_THRESHOLD_DAYS).unwrap_or(false);
             if r.status == "deprecated" {
-                print!("  \u{26a0} [{}] {} ({}) [DEPRECATED]", r.id, r.title, r.category);
+                print!(
+                    "  \u{26a0} [{}] {} ({}) [DEPRECATED]",
+                    r.id, r.title, r.category
+                );
             } else if stale {
-                print!("  \u{26a0} [{}] {} ({}) [STALE: {} days since update]", r.id, r.title, r.category, days.unwrap_or(0));
+                print!(
+                    "  \u{26a0} [{}] {} ({}) [STALE: {} days since update]",
+                    r.id,
+                    r.title,
+                    r.category,
+                    days.unwrap_or(0)
+                );
             } else {
                 print!("  [{}] {} ({})", r.id, r.title, r.category);
             }

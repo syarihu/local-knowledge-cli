@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::util::{get_db_path, home_dir, now_iso, open_db_with_migrate, VERSION, DEFAULT_REPO};
+use crate::util::{DEFAULT_REPO, VERSION, get_db_path, home_dir, now_iso, open_db_with_migrate};
 
 pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = home_dir().join(".config").join("lk");
@@ -9,10 +9,7 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
     let repo = if config_path.exists() {
         let config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path)?)?;
-        config["repo"]
-            .as_str()
-            .unwrap_or(DEFAULT_REPO)
-            .to_string()
+        config["repo"].as_str().unwrap_or(DEFAULT_REPO).to_string()
     } else {
         DEFAULT_REPO.to_string()
     };
@@ -26,7 +23,9 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
             .args(["upgrade", "syarihu/tap/lk"])
             .status()?;
         if !status.success() {
-            return Err("brew upgrade failed. Try: brew update && brew upgrade syarihu/tap/lk".into());
+            return Err(
+                "brew upgrade failed. Try: brew update && brew upgrade syarihu/tap/lk".into(),
+            );
         }
         // Use the current exe path (symlink resolves to new version after upgrade)
         std::env::current_exe()
@@ -61,11 +60,7 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
             .output()?;
 
         if !dl.status.success() {
-            return Err(format!(
-                "Download failed: {}",
-                String::from_utf8_lossy(&dl.stderr)
-            )
-            .into());
+            return Err(format!("Download failed: {}", String::from_utf8_lossy(&dl.stderr)).into());
         }
 
         // Download and verify checksum
@@ -80,7 +75,9 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
             verify_checksum(&archive_path, &checksum_path, &asset_name)?;
             println!("Checksum verified.");
         } else if skip_verify {
-            eprintln!("Warning: checksums.txt not found in release, skipping verification (--skip-verify).");
+            eprintln!(
+                "Warning: checksums.txt not found in release, skipping verification (--skip-verify)."
+            );
         } else {
             return Err("Checksum file not found in release. Use --skip-verify to bypass (not recommended).".into());
         }
@@ -210,23 +207,27 @@ pub fn install_embedded_commands() -> Result<(), Box<dyn std::error::Error>> {
 fn fetch_latest_tag(repo: &str) -> Result<String, Box<dyn std::error::Error>> {
     // Try gh CLI first
     if let Ok(output) = std::process::Command::new("gh")
-        .args(["release", "view", "--repo", repo, "--json", "tagName", "-q", ".tagName"])
+        .args([
+            "release", "view", "--repo", repo, "--json", "tagName", "-q", ".tagName",
+        ])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let tag = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !tag.is_empty() {
-                println!("Latest version: {tag}");
-                return Ok(tag);
-            }
+        let tag = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !tag.is_empty() {
+            println!("Latest version: {tag}");
+            return Ok(tag);
         }
     }
 
     // Fallback: curl redirect
     let output = std::process::Command::new("curl")
         .args([
-            "-fsSL", "-o", "/dev/null",
-            "-w", "%{redirect_url}",
+            "-fsSL",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{redirect_url}",
             &format!("https://github.com/{repo}/releases/latest"),
         ])
         .output()?;
@@ -248,14 +249,38 @@ fn fetch_latest_tag(repo: &str) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 const EMBEDDED_COMMANDS: &[(&str, &str)] = &[
-    ("lk-knowledge-search.md", include_str!("../../commands/lk-knowledge-search.md")),
-    ("lk-knowledge-add-db.md", include_str!("../../commands/lk-knowledge-add-db.md")),
-    ("lk-knowledge-export.md", include_str!("../../commands/lk-knowledge-export.md")),
-    ("lk-knowledge-sync.md", include_str!("../../commands/lk-knowledge-sync.md")),
-    ("lk-knowledge-write-md.md", include_str!("../../commands/lk-knowledge-write-md.md")),
-    ("lk-knowledge-discover.md", include_str!("../../commands/lk-knowledge-discover.md")),
-    ("lk-knowledge-refresh.md", include_str!("../../commands/lk-knowledge-refresh.md")),
-    ("lk-knowledge-from-branch.md", include_str!("../../commands/lk-knowledge-from-branch.md")),
+    (
+        "lk-knowledge-search.md",
+        include_str!("../../commands/lk-knowledge-search.md"),
+    ),
+    (
+        "lk-knowledge-add-db.md",
+        include_str!("../../commands/lk-knowledge-add-db.md"),
+    ),
+    (
+        "lk-knowledge-export.md",
+        include_str!("../../commands/lk-knowledge-export.md"),
+    ),
+    (
+        "lk-knowledge-sync.md",
+        include_str!("../../commands/lk-knowledge-sync.md"),
+    ),
+    (
+        "lk-knowledge-write-md.md",
+        include_str!("../../commands/lk-knowledge-write-md.md"),
+    ),
+    (
+        "lk-knowledge-discover.md",
+        include_str!("../../commands/lk-knowledge-discover.md"),
+    ),
+    (
+        "lk-knowledge-refresh.md",
+        include_str!("../../commands/lk-knowledge-refresh.md"),
+    ),
+    (
+        "lk-knowledge-from-branch.md",
+        include_str!("../../commands/lk-knowledge-from-branch.md"),
+    ),
 ];
 
 fn detect_target() -> Result<String, Box<dyn std::error::Error>> {

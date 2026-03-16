@@ -1,10 +1,9 @@
 use crate::db;
-use crate::util::{confirm, days_since, now_iso, open_db_with_migrate, STALE_THRESHOLD_DAYS};
+use crate::util::{STALE_THRESHOLD_DAYS, confirm, days_since, now_iso, open_db_with_migrate};
 
 pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
-    let entry = db::get_entry(&conn, id)?
-        .ok_or_else(|| format!("Entry #{id} not found"))?;
+    let entry = db::get_entry(&conn, id)?.ok_or_else(|| format!("Entry #{id} not found"))?;
     let kws = db::get_keywords(&conn, id)?;
 
     let days = days_since(&entry.updated_at);
@@ -24,10 +23,8 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
         });
-        if stale {
-            if let Some(d) = days {
-                out["days_since_update"] = serde_json::json!(d);
-            }
+        if stale && let Some(d) = days {
+            out["days_since_update"] = serde_json::json!(d);
         }
         if let Some(sb) = entry.superseded_by {
             out["superseded_by"] = serde_json::json!(sb);
@@ -35,11 +32,24 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         if entry.status == "deprecated" {
-            println!("\u{26a0} #{} - {} ({}/{}) [DEPRECATED]", entry.id, entry.title, entry.category, entry.source);
+            println!(
+                "\u{26a0} #{} - {} ({}/{}) [DEPRECATED]",
+                entry.id, entry.title, entry.category, entry.source
+            );
         } else if stale {
-            println!("\u{26a0} #{} - {} ({}/{}) [STALE: {} days since update]", entry.id, entry.title, entry.category, entry.source, days.unwrap_or(0));
+            println!(
+                "\u{26a0} #{} - {} ({}/{}) [STALE: {} days since update]",
+                entry.id,
+                entry.title,
+                entry.category,
+                entry.source,
+                days.unwrap_or(0)
+            );
         } else {
-            println!("#{} - {} ({}/{})", entry.id, entry.title, entry.category, entry.source);
+            println!(
+                "#{} - {} ({}/{})",
+                entry.id, entry.title, entry.category, entry.source
+            );
         }
         println!("Keywords: {}", kws.join(", "));
         if let Some(ref sf) = entry.source_file {
@@ -55,6 +65,7 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_edit(
     id: i64,
     title: Option<&str>,
@@ -66,22 +77,30 @@ pub fn cmd_edit(
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
-    let _entry = db::get_entry(&conn, id)?
-        .ok_or_else(|| format!("Entry #{id} not found"))?;
+    let _entry = db::get_entry(&conn, id)?.ok_or_else(|| format!("Entry #{id} not found"))?;
 
-    if title.is_none() && keywords_str.is_none() && content.is_none() && status.is_none() && superseded_by.is_none() && !touch {
+    if title.is_none()
+        && keywords_str.is_none()
+        && content.is_none()
+        && status.is_none()
+        && superseded_by.is_none()
+        && !touch
+    {
         return Err("Nothing to update. Specify --title, --keywords, --content, --status, --superseded-by, or --touch.".into());
     }
 
     // Validate status
-    if let Some(s) = status {
-        if s != "active" && s != "deprecated" {
-            return Err("Status must be 'active' or 'deprecated'.".into());
-        }
+    if let Some(s) = status
+        && s != "active"
+        && s != "deprecated"
+    {
+        return Err("Status must be 'active' or 'deprecated'.".into());
     }
 
     let kws = keywords_str.map(|s| {
-        s.split(',').map(|k| k.trim().to_string()).collect::<Vec<_>>()
+        s.split(',')
+            .map(|k| k.trim().to_string())
+            .collect::<Vec<_>>()
     });
 
     if touch && title.is_none() && keywords_str.is_none() && content.is_none() {
@@ -91,14 +110,7 @@ pub fn cmd_edit(
             rusqlite::params![now_iso(), id],
         )?;
     } else {
-        db::update_entry(
-            &conn,
-            id,
-            title,
-            content,
-            kws.as_deref(),
-            &now_iso(),
-        )?;
+        db::update_entry(&conn, id, title, content, kws.as_deref(), &now_iso())?;
     }
 
     if status.is_some() || superseded_by.is_some() {
@@ -109,12 +121,7 @@ pub fn cmd_edit(
             Some(v) => Some(v),
             None => current.superseded_by,
         };
-        db::update_entry_status(
-            &conn,
-            id,
-            status.unwrap_or(&current.status),
-            new_superseded,
-        )?;
+        db::update_entry_status(&conn, id, status.unwrap_or(&current.status), new_superseded)?;
     }
 
     let updated = db::get_entry(&conn, id)?.unwrap();
@@ -150,8 +157,7 @@ pub fn cmd_edit(
 
 pub fn cmd_delete(id: i64, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
-    let entry = db::get_entry(&conn, id)?
-        .ok_or_else(|| format!("Entry #{id} not found"))?;
+    let entry = db::get_entry(&conn, id)?.ok_or_else(|| format!("Entry #{id} not found"))?;
 
     if !yes && !confirm(&format!("Delete entry #{id} \"{}\"?", entry.title)) {
         println!("Cancelled.");
@@ -163,7 +169,11 @@ pub fn cmd_delete(id: i64, yes: bool) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-pub fn cmd_purge(category: Option<&str>, source: Option<&str>, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_purge(
+    category: Option<&str>,
+    source: Option<&str>,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if category.is_none() && source.is_none() {
         return Err("Specify --category or --source (or both)".into());
     }
@@ -178,7 +188,11 @@ pub fn cmd_purge(category: Option<&str>, source: Option<&str>, yes: bool) -> Res
         }
         if let Some(cat) = category {
             let entries = db::list_entries(&conn, Some(cat))?;
-            desc_parts.push(format!("{} entries with category \"{}\"", entries.len(), cat));
+            desc_parts.push(format!(
+                "{} entries with category \"{}\"",
+                entries.len(),
+                cat
+            ));
         }
         let desc = desc_parts.join(" and ");
         if !confirm(&format!("Purge {desc}?")) {

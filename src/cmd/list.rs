@@ -1,7 +1,11 @@
 use crate::db;
 use crate::util::open_db_with_migrate;
 
-pub fn cmd_list(category: Option<&str>, source: Option<&str>, json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_list(
+    category: Option<&str>,
+    source: Option<&str>,
+    json_output: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let mut entries = db::list_entries(&conn, category)?;
     if let Some(src) = source {
@@ -31,7 +35,10 @@ pub fn cmd_list(category: Option<&str>, source: Option<&str>, json_output: bool)
         println!("No entries found.");
     } else {
         for e in &entries {
-            println!("  [{}] {} ({}/{}) - {}", e.id, e.title, e.category, e.source, e.updated_at);
+            println!(
+                "  [{}] {} ({}/{}) - {}",
+                e.id, e.title, e.category, e.source, e.updated_at
+            );
         }
     }
     Ok(())

@@ -19,10 +19,11 @@ fn parse_frontmatter(text: &str) -> (Vec<String>, String, &str) {
         let mut keywords = Vec::new();
         let mut category = String::new();
 
+        let kw_re =
+            Regex::new(r"[\w\u{3040}-\u{309F}\u{30A0}-\u{30FF}\u{4E00}-\u{9FFF}-]+").unwrap();
         for line in fm_text.lines() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("keywords:") {
-                let kw_re = Regex::new(r"[\w\u{3040}-\u{309F}\u{30A0}-\u{30FF}\u{4E00}-\u{9FFF}-]+").unwrap();
                 for mat in kw_re.find_iter(rest) {
                     keywords.push(mat.as_str().to_string());
                 }
@@ -179,7 +180,8 @@ mod tests {
 
     #[test]
     fn test_parse_entry_inline_keywords_merged() {
-        let md = "---\nkeywords: [file-kw]\n---\n\n## Entry: Test\nkeywords: [inline-kw]\n\nContent.\n";
+        let md =
+            "---\nkeywords: [file-kw]\n---\n\n## Entry: Test\nkeywords: [inline-kw]\n\nContent.\n";
         let entries = parse_md_entries(md);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].keywords.contains(&"file-kw".to_string()));
@@ -203,7 +205,10 @@ mod tests {
         std::fs::write(tmp.path(), "hello world").unwrap();
         let hash = file_hash(tmp.path()).unwrap();
         // SHA256 of "hello world"
-        assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
     }
 
     #[test]

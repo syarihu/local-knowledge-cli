@@ -17,6 +17,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::enum_variant_names)]
 enum Commands {
     /// Initialize knowledge base for current project
     Init,
@@ -197,21 +198,75 @@ fn main() {
 
     let result = match cli.command {
         Commands::Init => cmd::cmd_init(),
-        Commands::Add { title, keywords, content, category, force, json } => {
-            cmd::cmd_add(&title, keywords.as_deref(), content.as_deref(), category.as_deref(), force, json)
-        }
-        Commands::Search { query, keyword_only, category, source, since, limit, full, json } => {
-            cmd::cmd_search(&query, keyword_only, category.as_deref(), source.as_deref(), since.as_deref(), limit, full, json)
-        }
+        Commands::Add {
+            title,
+            keywords,
+            content,
+            category,
+            force,
+            json,
+        } => cmd::cmd_add(
+            &title,
+            keywords.as_deref(),
+            content.as_deref(),
+            category.as_deref(),
+            force,
+            json,
+        ),
+        Commands::Search {
+            query,
+            keyword_only,
+            category,
+            source,
+            since,
+            limit,
+            full,
+            json,
+        } => cmd::cmd_search(
+            &query,
+            keyword_only,
+            category.as_deref(),
+            source.as_deref(),
+            since.as_deref(),
+            limit,
+            full,
+            json,
+        ),
         Commands::Get { id, json } => cmd::cmd_get(id, json),
-        Commands::Edit { id, title, keywords, content, status, superseded_by, touch, json } => {
-            cmd::cmd_edit(id, title.as_deref(), keywords.as_deref(), content.as_deref(), status.as_deref(), superseded_by, touch, json)
-        }
+        Commands::Edit {
+            id,
+            title,
+            keywords,
+            content,
+            status,
+            superseded_by,
+            touch,
+            json,
+        } => cmd::cmd_edit(
+            id,
+            title.as_deref(),
+            keywords.as_deref(),
+            content.as_deref(),
+            status.as_deref(),
+            superseded_by,
+            touch,
+            json,
+        ),
         Commands::Delete { id, yes } => cmd::cmd_delete(id, yes),
-        Commands::Purge { category, source, yes } => cmd::cmd_purge(category.as_deref(), source.as_deref(), yes),
-        Commands::List { category, source, json } => cmd::cmd_list(category.as_deref(), source.as_deref(), json),
+        Commands::Purge {
+            category,
+            source,
+            yes,
+        } => cmd::cmd_purge(category.as_deref(), source.as_deref(), yes),
+        Commands::List {
+            category,
+            source,
+            json,
+        } => cmd::cmd_list(category.as_deref(), source.as_deref(), json),
         Commands::Sync { json } => cmd::cmd_sync(json),
-        Commands::Export { dir, ids, query } => cmd::cmd_export(dir, ids.as_deref(), query.as_deref()),
+        Commands::Export { dir, ids, query } => {
+            cmd::cmd_export(dir, ids.as_deref(), query.as_deref())
+        }
         Commands::Import { path } => cmd::cmd_import(&path),
         Commands::Keywords { json } => cmd::cmd_keywords(json),
         Commands::Stats { json, verbose } => cmd::cmd_stats(json, verbose),
