@@ -1,5 +1,6 @@
 .knowledge/knowledge.db
 .knowledge/search.log
+.claude/search.log
 
 
 # Added by cargo
