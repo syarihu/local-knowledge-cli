@@ -32,11 +32,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run unit tests
-        run: cargo test --lib
-
-      - name: Run integration tests
-        run: cargo test --test integration_test
+      - name: Run tests
+        run: cargo test
 
       - name: Check formatting
         run: cargo fmt -- --check
