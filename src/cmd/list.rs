@@ -4,12 +4,23 @@ use crate::util::open_db_with_migrate;
 pub fn cmd_list(
     category: Option<&str>,
     source: Option<&str>,
+    limit: Option<usize>,
+    offset: usize,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let mut entries = db::list_entries(&conn, category)?;
     if let Some(src) = source {
         entries.retain(|e| e.source == src);
+    }
+
+    // Apply pagination
+    let total = entries.len();
+    if offset > 0 {
+        entries = entries.into_iter().skip(offset).collect();
+    }
+    if let Some(lim) = limit {
+        entries.truncate(lim);
     }
 
     if json_output {
@@ -39,6 +50,9 @@ pub fn cmd_list(
                 "  [{}] {} ({}/{}) - {}",
                 e.id, e.title, e.category, e.source, e.updated_at
             );
+        }
+        if limit.is_some() || offset > 0 {
+            println!("  ({}-{} of {} entries)", offset + 1, offset + entries.len(), total);
         }
     }
     Ok(())

@@ -129,6 +129,12 @@ enum Commands {
         /// Filter by source ("local" or "shared")
         #[arg(long)]
         source: Option<String>,
+        /// Max results (default: unlimited)
+        #[arg(short, long)]
+        limit: Option<usize>,
+        /// Skip first N results
+        #[arg(long, default_value = "0")]
+        offset: usize,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -261,8 +267,10 @@ fn main() {
         Commands::List {
             category,
             source,
+            limit,
+            offset,
             json,
-        } => cmd::cmd_list(category.as_deref(), source.as_deref(), json),
+        } => cmd::cmd_list(category.as_deref(), source.as_deref(), limit, offset, json),
         Commands::Sync { json } => cmd::cmd_sync(json),
         Commands::Export { dir, ids, query } => {
             cmd::cmd_export(dir, ids.as_deref(), query.as_deref())
