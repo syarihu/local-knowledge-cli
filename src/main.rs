@@ -292,7 +292,7 @@ fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Update .gitignore
     let gitignore_path = root.join(".gitignore");
-    let gitignore_entries = [".knowledge/knowledge.db", ".claude/search.log"];
+    let gitignore_entries = [".knowledge/knowledge.db", ".knowledge/search.log"];
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(&gitignore_path)?;
         let mut added = Vec::new();
@@ -541,7 +541,7 @@ fn log_search(query: &str, results: &[db::Entry]) {
     }
     let _ = (|| -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
-        let log_path = get_project_root().join(".claude").join("search.log");
+        let log_path = get_project_root().join(".knowledge").join("search.log");
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -560,7 +560,7 @@ fn log_search(query: &str, results: &[db::Entry]) {
 }
 
 fn cmd_search_log(lines: usize) -> Result<(), Box<dyn std::error::Error>> {
-    let log_path = get_project_root().join(".claude").join("search.log");
+    let log_path = get_project_root().join(".knowledge").join("search.log");
     if !log_path.exists() {
         println!("No search log found.");
         return Ok(());

@@ -13,4 +13,4 @@ keywords: [claude, code, commands, embedded, include, include_str, install, inst
 ## Entry: Search Logging機能
 keywords: [claude, fire, forget, lk_search_log, log, logging, main, search, search-log, クエリ・, コマンド, デフォルト, ・ヒットタイトル]
 
-lk search 実行時に .claude/search.log へクエリ・件数・ヒットタイトルを記録する機能。デフォルトは無効で、環境変数 LK_SEARCH_LOG=1 で有効化する。log_search() 関数（src/main.rs）はfire-and-forget方式で、ログ書き込み失敗が検索結果に影響しない。lk search-log コマンドで直近のログを確認できる（デフォルト20件、-n で変更可）。
+lk search 実行時に .knowledge/search.log へクエリ・件数・ヒットタイトルを記録する機能。デフォルトは無効で、環境変数 LK_SEARCH_LOG=1 で有効化する。log_search() 関数（src/main.rs）はfire-and-forget方式で、ログ書き込み失敗が検索結果に影響しない。lk search-log コマンドで直近のログを確認できる（デフォルト20件、-n で変更可）。

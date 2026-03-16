@@ -102,8 +102,8 @@ Commands:
 |------|---------|-------------|
 | `.knowledge/` | Yes | Shared knowledge (markdown files) |
 | `CLAUDE.md` or `.claude/CLAUDE.md` | Yes | Claude Code instructions (root takes priority) |
-| `.claude/knowledge.db` | No (auto-ignored) | Local search index |
-| `.claude/search.log` | No (auto-ignored) | Search log |
+| `.knowledge/knowledge.db` | No (auto-ignored) | Local search index |
+| `.knowledge/search.log` | No (auto-ignored) | Search log |
 
 ### Shared vs local knowledge
 
@@ -165,7 +165,7 @@ LK_SEARCH_LOG=1 lk search "query"
 export LK_SEARCH_LOG=1
 ```
 
-Logs are written to `.claude/search.log` with timestamp, query, result count, and matched titles:
+Logs are written to `.knowledge/search.log` with timestamp, query, result count, and matched titles:
 
 ```
 [2026-03-14T13:57:48] query="database" results=2 titles=["Database Configuration", "Project Root Detection"]
