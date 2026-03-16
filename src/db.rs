@@ -31,7 +31,7 @@ pub struct DbStats {
 }
 
 /// Current schema version. Increment when adding new migrations.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     if let Some(parent) = db_path.parent() {
@@ -78,7 +78,8 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
             title,
             content,
             content='entries',
-            content_rowid='id'
+            content_rowid='id',
+            tokenize='trigram'
         );
 
         CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
@@ -263,6 +264,33 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
     // Migration 3: Add schema_version table and busy_timeout (version 2 -> 3)
     // (schema_version table creation and busy_timeout are handled above)
 
+    // Migration 4: Rebuild FTS with trigram tokenizer for CJK support (version 3 -> 4)
+    if effective_version < 4 {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS entries_ai;
+             DROP TRIGGER IF EXISTS entries_ad;
+             DROP TRIGGER IF EXISTS entries_au;
+             DROP TABLE IF EXISTS entries_fts;
+             CREATE VIRTUAL TABLE entries_fts USING fts5(
+                 title, content,
+                 content='entries', content_rowid='id',
+                 tokenize='trigram'
+             );
+             INSERT INTO entries_fts(rowid, title, content) SELECT id, title, content FROM entries;
+             CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+                 INSERT INTO entries_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+             END;
+             CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+                 INSERT INTO entries_fts(entries_fts, rowid, title, content) VALUES('delete', old.id, old.title, old.content);
+             END;
+             CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
+                 INSERT INTO entries_fts(entries_fts, rowid, title, content) VALUES('delete', old.id, old.title, old.content);
+                 INSERT INTO entries_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+             END;",
+        )?;
+        migrated = true;
+    }
+
     set_schema_version(conn, SCHEMA_VERSION)?;
     Ok(migrated)
 }
@@ -429,6 +457,44 @@ pub fn search_entries(
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 kw_params.iter().map(|b| b.as_ref()).collect();
             let mut stmt = conn.prepare(&kw_sql)?;
+            let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
+            for row in rows {
+                let entry = row?;
+                if !seen_ids.contains(&entry.id) {
+                    results.push(entry);
+                }
+            }
+        }
+
+        // LIKE fallback for short queries (e.g. 2-char CJK words) that trigram FTS cannot match
+        if results.len() < limit {
+            let seen_ids: std::collections::HashSet<i64> = results.iter().map(|r| r.id).collect();
+            let remaining = limit - results.len();
+
+            let words: Vec<&str> = query.split_whitespace().collect();
+            let mut like_sql = format!(
+                "SELECT {ENTRY_COLS} FROM entries e WHERE ("
+            );
+            let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            for (i, word) in words.iter().enumerate() {
+                if i > 0 {
+                    like_sql.push_str(" OR ");
+                }
+                let idx = i * 2 + 1;
+                like_sql.push_str(&format!("e.title LIKE ?{idx} OR e.content LIKE ?{}", idx + 1));
+                let pattern = format!("%{word}%");
+                like_params.push(Box::new(pattern.clone()));
+                like_params.push(Box::new(pattern));
+            }
+            like_sql.push(')');
+
+            append_filters(&mut like_sql, &mut like_params, category, source, since);
+            like_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
+            like_params.push(Box::new(remaining as i64));
+
+            let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                like_params.iter().map(|b| b.as_ref()).collect();
+            let mut stmt = conn.prepare(&like_sql)?;
             let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
             for row in rows {
                 let entry = row?;
@@ -993,6 +1059,47 @@ mod tests {
         let entry = get_entry(&conn, old_id).unwrap().unwrap();
         assert_eq!(entry.status, "deprecated");
         assert_eq!(entry.superseded_by, Some(new_id));
+    }
+
+    #[test]
+    fn test_fts_trigram_japanese() {
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "認証フロー",
+            "JWTトークンを使った認証フローの説明",
+            &["auth".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "レート制限",
+            "APIのレート制限は100リクエスト/分",
+            &["rate-limit".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 3+ char Japanese query via trigram FTS
+        let results = search_entries(&conn, "トークン", false, None, None, None, 10).unwrap();
+        assert!(!results.is_empty(), "trigram should match 3+ char Japanese");
+        assert_eq!(results[0].title, "認証フロー");
+
+        // 2-char Japanese query falls back to LIKE
+        let results = search_entries(&conn, "認証", false, None, None, None, 10).unwrap();
+        assert!(!results.is_empty(), "LIKE fallback should match 2-char Japanese");
+        assert_eq!(results[0].title, "認証フロー");
+
+        // Multi-word Japanese query
+        let results = search_entries(&conn, "レート制限", false, None, None, None, 10).unwrap();
+        assert!(!results.is_empty(), "should match multi-char Japanese");
     }
 
     #[test]
