@@ -28,6 +28,7 @@ For each entry, check if it references:
 - **Dead source references** — entries that reference source files (in content or `source_file` field) that no longer exist; verify with Glob
 - **Duplicate with CLAUDE.md/AGENTS.md** — entries whose content substantially overlaps with instructions already in CLAUDE.md or AGENTS.md (read these files and compare); flag for deletion to avoid drift
 - **Category mismatch** — entries from `.knowledge/` files where the frontmatter `category` doesn't match the directory name (e.g., file in `features/` but category says `architecture`); propose fixing the category or moving the file
+- **"What" over "why"** — entries that only describe volatile implementation details (line numbers, exact counts, file paths) without explaining design decisions or rationale; rewrite to focus on "why"
 
 Present a summary table to the user:
 | ID | Title | Status | Issue |
@@ -50,6 +51,8 @@ Present a summary table to the user:
    - Delete the knowledge entry (CLAUDE.md is the source of truth for instructions)
 8. For category mismatches:
    - Fix the frontmatter category to match the directory, or move the file to the correct directory
+9. For "what over why" entries:
+   - Rewrite to focus on design decisions and rationale; remove line numbers and exact counts; use function/struct names instead of line references
 
 ### Phase 4: Report
 1. Run `lk sync` if any markdown files were edited
@@ -57,8 +60,8 @@ Present a summary table to the user:
 3. Summarize what was changed
 
 ## Guidelines
-- Do NOT update entries just because line numbers shifted by a few lines — only flag significant changes
 - Focus on factual accuracy: wrong names, missing features, incorrect descriptions
+- Rewrite "what"-heavy entries to focus on "why" — design decisions stay true longer than line numbers and counts
 - Prefer editing `.knowledge/` markdown files over deleting/re-adding entries
 - Keep entries concise (2-5 sentences) — don't inflate during updates
 - Avoid removing entries that are still broadly correct even if slightly outdated
