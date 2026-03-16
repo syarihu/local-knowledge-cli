@@ -14,7 +14,7 @@ pub use entry::{cmd_delete, cmd_edit, cmd_get, cmd_purge};
 pub use export::{cmd_export, cmd_import};
 pub use init::cmd_init;
 pub use list::cmd_list;
-pub use search::{cmd_search, cmd_command_log};
+pub use search::{cmd_command_log, cmd_search};
 pub use stats::{cmd_keywords, cmd_stats};
 pub use sync::cmd_sync;
 pub use uninstall::cmd_uninstall;
@@ -53,7 +53,12 @@ fn log_command(cmd: &str, meta: &[(&str, &str)]) {
             .append(true)
             .open(&log_path)?;
         let meta_str: Vec<String> = meta.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        writeln!(f, "[{}] cmd={cmd} {}", crate::util::now_iso(), meta_str.join(" "))?;
+        writeln!(
+            f,
+            "[{}] cmd={cmd} {}",
+            crate::util::now_iso(),
+            meta_str.join(" ")
+        )?;
         Ok(())
     })();
 }

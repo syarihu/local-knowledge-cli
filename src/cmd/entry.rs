@@ -78,13 +78,28 @@ pub fn cmd_edit(
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut fields = Vec::new();
-    if title.is_some() { fields.push("title"); }
-    if keywords_str.is_some() { fields.push("keywords"); }
-    if content.is_some() { fields.push("content"); }
-    if status.is_some() { fields.push("status"); }
-    if superseded_by.is_some() { fields.push("superseded_by"); }
-    if touch { fields.push("touch"); }
-    super::log_command("edit", &[("id", &id.to_string()), ("fields", &fields.join(","))]);
+    if title.is_some() {
+        fields.push("title");
+    }
+    if keywords_str.is_some() {
+        fields.push("keywords");
+    }
+    if content.is_some() {
+        fields.push("content");
+    }
+    if status.is_some() {
+        fields.push("status");
+    }
+    if superseded_by.is_some() {
+        fields.push("superseded_by");
+    }
+    if touch {
+        fields.push("touch");
+    }
+    super::log_command(
+        "edit",
+        &[("id", &id.to_string()), ("fields", &fields.join(","))],
+    );
     let conn = open_db_with_migrate()?;
     let _entry = db::get_entry(&conn, id)?.ok_or_else(|| format!("Entry #{id} not found"))?;
 
@@ -183,10 +198,13 @@ pub fn cmd_purge(
     source: Option<&str>,
     yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    super::log_command("purge", &[
-        ("category", category.unwrap_or("")),
-        ("source", source.unwrap_or("")),
-    ]);
+    super::log_command(
+        "purge",
+        &[
+            ("category", category.unwrap_or("")),
+            ("source", source.unwrap_or("")),
+        ],
+    );
     if category.is_none() && source.is_none() {
         return Err("Specify --category or --source (or both)".into());
     }

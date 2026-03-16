@@ -10,7 +10,10 @@ pub fn cmd_add(
     force: bool,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    super::log_command("add", &[("title", title), ("category", category.unwrap_or(""))]);
+    super::log_command(
+        "add",
+        &[("title", title), ("category", category.unwrap_or(""))],
+    );
     let conn = open_db_with_migrate()?;
     let content = content.unwrap_or("");
     let category = category.unwrap_or("");

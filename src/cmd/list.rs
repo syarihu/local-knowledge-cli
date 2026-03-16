@@ -8,10 +8,13 @@ pub fn cmd_list(
     offset: usize,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    super::log_command("list", &[
-        ("category", category.unwrap_or("")),
-        ("source", source.unwrap_or("")),
-    ]);
+    super::log_command(
+        "list",
+        &[
+            ("category", category.unwrap_or("")),
+            ("source", source.unwrap_or("")),
+        ],
+    );
     let conn = open_db_with_migrate()?;
     let mut entries = db::list_entries(&conn, category)?;
     if let Some(src) = source {
@@ -56,7 +59,12 @@ pub fn cmd_list(
             );
         }
         if limit.is_some() || offset > 0 {
-            println!("  ({}-{} of {} entries)", offset + 1, offset + entries.len(), total);
+            println!(
+                "  ({}-{} of {} entries)",
+                offset + 1,
+                offset + entries.len(),
+                total
+            );
         }
     }
     Ok(())
