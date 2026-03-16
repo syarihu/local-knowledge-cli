@@ -29,11 +29,12 @@ For each entry, check if it references:
 - **Duplicate with CLAUDE.md/AGENTS.md** — entries whose content substantially overlaps with instructions already in CLAUDE.md or AGENTS.md (read these files and compare); flag for deletion to avoid drift
 - **Category mismatch** — entries from `.knowledge/` files where the frontmatter `category` doesn't match the directory name (e.g., file in `features/` but category says `architecture`); propose fixing the category or moving the file
 - **Volatile details** — entries that rely on line numbers, exact counts, or specific file paths that drift with code changes; replace with function/struct names and stable facts
+- **Superseded entries** — entries that describe old approaches when a newer entry covers the replacement (e.g., old auth flow replaced by new OAuth flow); mark as deprecated with `lk edit <id> --status deprecated --superseded-by <new_id>`
 
 Present a summary table to the user:
 | ID | Title | Status | Issue |
 |----|-------|--------|-------|
-| #N | ... | Stale / Truncated / Dead ref / Duplicate / Category mismatch / OK / Delete? | what's wrong |
+| #N | ... | Stale / Truncated / Dead ref / Duplicate / Category mismatch / Superseded / OK / Delete? | what's wrong |
 
 ### Phase 3: Update with user confirmation
 1. Ask user for confirmation before making changes
@@ -53,6 +54,8 @@ Present a summary table to the user:
    - Fix the frontmatter category to match the directory, or move the file to the correct directory
 9. For volatile details:
    - Replace line numbers with function/struct names; remove exact counts; keep stable facts and add rationale where possible
+10. For superseded entries:
+    - Run `lk edit <old_id> --status deprecated --superseded-by <new_id>` to mark the old entry and link to the replacement
 
 ### Phase 4: Report
 1. Run `lk sync` if any markdown files were edited
