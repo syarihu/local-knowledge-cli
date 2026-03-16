@@ -140,6 +140,12 @@ enum Commands {
         /// New content
         #[arg(long)]
         content: Option<String>,
+        /// Set status (active, deprecated)
+        #[arg(long)]
+        status: Option<String>,
+        /// ID of the entry that supersedes this one
+        #[arg(long)]
+        superseded_by: Option<i64>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -170,8 +176,8 @@ fn main() {
             cmd_search(&query, keyword_only, category.as_deref(), source.as_deref(), since.as_deref(), limit, full, json)
         }
         Commands::Get { id, json } => cmd_get(id, json),
-        Commands::Edit { id, title, keywords, content, json } => {
-            cmd_edit(id, title.as_deref(), keywords.as_deref(), content.as_deref(), json)
+        Commands::Edit { id, title, keywords, content, status, superseded_by, json } => {
+            cmd_edit(id, title.as_deref(), keywords.as_deref(), content.as_deref(), status.as_deref(), superseded_by, json)
         }
         Commands::Delete { id } => cmd_delete(id),
         Commands::Purge { category, source } => cmd_purge(category.as_deref(), source.as_deref()),
@@ -394,6 +400,7 @@ If `lk` command is not available, install it first: `brew install syarihu/tap/lk
 - Before reading code with Read, Grep, or Glob tools, first run `lk search \"<keyword>\" --json --limit 5` to check existing knowledge\n\
 - Use `--full` to include full content directly: `lk search \"<keyword>\" --json --full --limit 5`\n\
 - If results are found and `--full` was not used, use `lk get <id> --json` for details\n\
+- If a result has `\"status\": \"deprecated\"` with `\"superseded_by\": <id>`, use the superseding entry instead\n\
 - If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read\n\
 \n\
 ### Agent Launch Rule\n\
@@ -431,6 +438,7 @@ When launching Explore or general-purpose agents for code investigation, always 
 - `lk add \"<title>\" --force --content \"...\"` - Add knowledge (skip duplicate check)\n\
 - `lk list --category \"features\" --source \"local\" --json` - List entries with filters\n\
 - `lk edit <id> --title \"...\" --keywords \"...\" --content \"...\"` - Edit existing entry\n\
+- `lk edit <id> --status deprecated --superseded-by <new_id>` - Mark entry as deprecated\n\
 - `lk purge --source local` / `lk purge --category features` - Bulk delete entries\n\
 - `lk sync` - Sync markdown files with DB\n\
 - `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills\n";
@@ -544,7 +552,11 @@ fn cmd_search(
                     "category": r.category,
                     "source": r.source,
                     "score": r.rank,
+                    "status": r.status,
                 });
+                if let Some(sb) = r.superseded_by {
+                    obj["superseded_by"] = serde_json::json!(sb);
+                }
                 if full {
                     obj["content"] = serde_json::Value::String(r.content.clone());
                 } else {
@@ -560,9 +572,17 @@ fn cmd_search(
         for r in &results {
             let snippet = truncate_str(&r.content, 80);
             let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
-            println!("  [{}] {} ({})", r.id, r.title, r.category);
+            if r.status == "deprecated" {
+                print!("  \u{26a0} [{}] {} ({}) [DEPRECATED]", r.id, r.title, r.category);
+            } else {
+                print!("  [{}] {} ({})", r.id, r.title, r.category);
+            }
+            println!();
             println!("       Keywords: {}", kws.join(", "));
             println!("       {snippet}");
+            if let Some(sb) = r.superseded_by {
+                println!("       \u{2192} Superseded by: #{sb}");
+            }
             println!();
         }
     }
@@ -615,7 +635,7 @@ fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>>
     let kws = db::get_keywords(&conn, id)?;
 
     if json_output {
-        let out = serde_json::json!({
+        let mut out = serde_json::json!({
             "id": entry.id,
             "title": entry.title,
             "content": entry.content,
@@ -623,15 +643,26 @@ fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>>
             "category": entry.category,
             "source": entry.source,
             "source_file": entry.source_file,
+            "status": entry.status,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
         });
+        if let Some(sb) = entry.superseded_by {
+            out["superseded_by"] = serde_json::json!(sb);
+        }
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("#{} - {} ({}/{})", entry.id, entry.title, entry.category, entry.source);
+        if entry.status == "deprecated" {
+            println!("\u{26a0} #{} - {} ({}/{}) [DEPRECATED]", entry.id, entry.title, entry.category, entry.source);
+        } else {
+            println!("#{} - {} ({}/{})", entry.id, entry.title, entry.category, entry.source);
+        }
         println!("Keywords: {}", kws.join(", "));
         if let Some(ref sf) = entry.source_file {
             println!("Source: {sf}");
+        }
+        if let Some(sb) = entry.superseded_by {
+            println!("Superseded by: #{sb}");
         }
         println!("Created: {}", entry.created_at);
         println!("Updated: {}", entry.updated_at);
@@ -645,14 +676,23 @@ fn cmd_edit(
     title: Option<&str>,
     keywords_str: Option<&str>,
     content: Option<&str>,
+    status: Option<&str>,
+    superseded_by: Option<i64>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let _entry = db::get_entry(&conn, id)?
         .ok_or_else(|| format!("Entry #{id} not found"))?;
 
-    if title.is_none() && keywords_str.is_none() && content.is_none() {
-        return Err("Nothing to update. Specify --title, --keywords, or --content.".into());
+    if title.is_none() && keywords_str.is_none() && content.is_none() && status.is_none() && superseded_by.is_none() {
+        return Err("Nothing to update. Specify --title, --keywords, --content, --status, or --superseded-by.".into());
+    }
+
+    // Validate status
+    if let Some(s) = status {
+        if s != "active" && s != "deprecated" {
+            return Err("Status must be 'active' or 'deprecated'.".into());
+        }
     }
 
     let kws = keywords_str.map(|s| {
@@ -668,23 +708,49 @@ fn cmd_edit(
         &now_iso(),
     )?;
 
+    if status.is_some() || superseded_by.is_some() {
+        let current = db::get_entry(&conn, id)?.unwrap();
+        // --superseded-by 0 clears the field (sets to None)
+        let new_superseded = match superseded_by {
+            Some(0) => None,
+            Some(v) => Some(v),
+            None => current.superseded_by,
+        };
+        db::update_entry_status(
+            &conn,
+            id,
+            status.unwrap_or(&current.status),
+            new_superseded,
+        )?;
+    }
+
     let updated = db::get_entry(&conn, id)?.unwrap();
     let updated_kws = db::get_keywords(&conn, id)?;
 
     if json_output {
-        let out = serde_json::json!({
+        let mut out = serde_json::json!({
             "id": updated.id,
             "title": updated.title,
             "content": updated.content,
             "keywords": updated_kws,
             "category": updated.category,
             "source": updated.source,
+            "status": updated.status,
             "updated_at": updated.updated_at,
         });
+        if let Some(sb) = updated.superseded_by {
+            out["superseded_by"] = serde_json::json!(sb);
+        }
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         println!("Updated entry #{id}: {}", updated.title);
         println!("Keywords: {}", updated_kws.join(", "));
+        if updated.status == "deprecated" {
+            println!("Status: DEPRECATED");
+        }
+        if let Some(sb) = updated.superseded_by {
+            println!("Superseded by: #{sb}");
+        }
     }
     Ok(())
 }
@@ -731,13 +797,18 @@ fn cmd_list(category: Option<&str>, source: Option<&str>, json_output: bool) -> 
         let output: Vec<serde_json::Value> = entries
             .iter()
             .map(|e| {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "id": e.id,
                     "title": e.title,
                     "category": e.category,
                     "source": e.source,
+                    "status": e.status,
                     "updated_at": e.updated_at,
-                })
+                });
+                if let Some(sb) = e.superseded_by {
+                    obj["superseded_by"] = serde_json::json!(sb);
+                }
+                obj
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
