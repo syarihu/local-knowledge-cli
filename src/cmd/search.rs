@@ -94,6 +94,21 @@ fn log_search(query: &str, results: &[db::Entry]) {
     let _ = (|| -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
         let log_path = get_project_root().join(".knowledge").join("search.log");
+
+        const MAX_LOG_BYTES: u64 = 1_048_576; // 1 MB
+        const KEEP_LINES: usize = 500;
+
+        if let Ok(meta) = std::fs::metadata(&log_path) {
+            if meta.len() > MAX_LOG_BYTES {
+                if let Ok(content) = std::fs::read_to_string(&log_path) {
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start = lines.len().saturating_sub(KEEP_LINES);
+                    let truncated = lines[start..].join("\n") + "\n";
+                    let _ = std::fs::write(&log_path, truncated);
+                }
+            }
+        }
+
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
