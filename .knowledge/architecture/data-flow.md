@@ -8,7 +8,7 @@ category: architecture
 ## Entry: Markdown to DB Pipeline
 keywords: [sync, import, parse, MdEntry]
 
-Markdown files in `.knowledge/` are parsed by `parse_md_entries()` in `src/markdown.rs:40-96` which extracts YAML frontmatter (keywords, category) and splits content by `## Entry:` headings into `MdEntry` structs. Each entry is then inserted via `db::add_entry()` with file-level and entry-level keywords merged. SHA256 file hashes (computed at `markdown.rs:119-123`) track changes for incremental sync.
+Markdown files in `.knowledge/` are parsed by `parse_md_entries()` in `src/markdown.rs` which extracts YAML frontmatter (keywords, category) and splits content by `## Entry:` headings into `MdEntry` structs. Each entry is then inserted via `db::add_entry()` with file-level and entry-level keywords merged. SHA256 file hashes track changes for incremental sync.
 
 ## Entry: Sync Workflow
 keywords: [sync, hash, shared, unchanged, updated]
