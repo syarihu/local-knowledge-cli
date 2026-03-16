@@ -49,7 +49,11 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Update .gitignore
     let gitignore_path = root.join(".gitignore");
-    let gitignore_entries = [".knowledge/knowledge.db", ".knowledge/search.log"];
+    let gitignore_entries = [
+        ".knowledge/knowledge.db",
+        ".knowledge/search.log",
+        ".knowledge/command.log",
+    ];
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(&gitignore_path)?;
         let mut added = Vec::new();
@@ -79,7 +83,29 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         println!("Created .gitignore");
     }
 
-    // 5. Add instructions to CLAUDE.md (or AGENTS.md)
+    // 5. Write instructions to .claude/lk-instructions.md and add import to CLAUDE.md
+    let claude_dir = root.join(".claude");
+    std::fs::create_dir_all(&claude_dir)?;
+    let instructions_path = claude_dir.join("lk-instructions.md");
+    let instructions_content = LK_INSTRUCTIONS_CONTENT;
+
+    if instructions_path.exists() {
+        let existing = std::fs::read_to_string(&instructions_path)?;
+        if existing.trim() != instructions_content.trim() {
+            std::fs::write(&instructions_path, instructions_content)?;
+            println!("Updated {}", instructions_path.display());
+        } else {
+            println!(
+                "{} is already up-to-date",
+                instructions_path.display()
+            );
+        }
+    } else {
+        std::fs::write(&instructions_path, instructions_content)?;
+        println!("Created {}", instructions_path.display());
+    }
+
+    // Add import line to CLAUDE.md (or AGENTS.md)
     // Priority: root CLAUDE.md > root AGENTS.md > .claude/CLAUDE.md > create root CLAUDE.md
     let candidates = [
         root.join("CLAUDE.md"),
@@ -91,38 +117,35 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         .find(|p| p.exists())
         .cloned()
         .unwrap_or_else(|| root.join("CLAUDE.md"));
-    let marker = "## Knowledge Base (local-knowledge-cli)";
+
+    let import_line = "@.claude/lk-instructions.md";
+    let old_marker = "## Knowledge Base (local-knowledge-cli)";
 
     if claude_md_path.exists() {
         let content = std::fs::read_to_string(&claude_md_path)?;
-        if content.contains(marker) {
-            // Check if the section is outdated and replace if so
-            let section_start = content.find(marker).unwrap();
-            let rest = &content[section_start + marker.len()..];
+
+        if content.contains(old_marker) {
+            // Migrate: replace old inline section with import line
+            let section_start = content.find(old_marker).unwrap();
+            let rest = &content[section_start + old_marker.len()..];
             let section_end = rest
                 .match_indices("\n## ")
                 .find(|(i, _)| !rest[i + 4..].starts_with('#'))
-                .map(|(i, _)| section_start + marker.len() + i)
+                .map(|(i, _)| section_start + old_marker.len() + i)
                 .unwrap_or(content.len());
 
-            let existing = content[section_start..section_end].trim();
-            let expected = CLAUDE_MD_SECTION.trim();
-
-            if existing != expected {
-                let mut new_content = content[..section_start].to_string();
-                new_content.push_str(CLAUDE_MD_SECTION.trim_start());
-                if section_end < content.len() {
-                    new_content.push_str(&content[section_end..]);
-                }
-                std::fs::write(&claude_md_path, new_content)?;
-                println!(
-                    "Updated knowledge base instructions in {}",
-                    claude_md_path.display()
-                );
-            } else {
-                println!("CLAUDE.md already contains up-to-date knowledge base instructions");
+            let mut new_content = content[..section_start].to_string();
+            new_content.push_str(import_line);
+            new_content.push('\n');
+            if section_end < content.len() {
+                new_content.push_str(&content[section_end..]);
             }
-        } else {
+            std::fs::write(&claude_md_path, new_content)?;
+            println!(
+                "Migrated inline instructions to import in {}",
+                claude_md_path.display()
+            );
+        } else if !content.contains(import_line) {
             use std::io::Write;
             let mut f = std::fs::OpenOptions::new()
                 .append(true)
@@ -130,28 +153,37 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
             if !content.ends_with('\n') {
                 writeln!(f)?;
             }
-            write!(f, "{CLAUDE_MD_SECTION}")?;
+            writeln!(f, "{import_line}")?;
             println!(
-                "Added knowledge base instructions to {}",
+                "Added import to {}",
+                claude_md_path.display()
+            );
+        } else {
+            println!(
+                "{} already contains lk import",
                 claude_md_path.display()
             );
         }
     } else {
-        std::fs::write(&claude_md_path, CLAUDE_MD_SECTION.trim_start())?;
+        std::fs::write(&claude_md_path, format!("{import_line}\n"))?;
         println!(
-            "Created {} with knowledge base instructions",
+            "Created {} with lk import",
             claude_md_path.display()
         );
     }
 
-    // 6. Install embedded Claude commands
+    // 6. Write .knowledge/.lk-version
+    let version_path = knowledge_dir.join(".lk-version");
+    std::fs::write(&version_path, format!("{}\n", crate::util::VERSION))?;
+
+    // 7. Install embedded Claude commands
     install_embedded_commands()?;
 
     println!("\nInitialization complete!");
     Ok(())
 }
 
-const CLAUDE_MD_SECTION: &str = "\n\
+const LK_INSTRUCTIONS_CONTENT: &str = "\
 ## Knowledge Base (local-knowledge-cli)\n\
 \n\
 This project has a local knowledge base.\n\

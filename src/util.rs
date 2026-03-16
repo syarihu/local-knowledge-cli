@@ -56,7 +56,35 @@ pub fn open_db_with_migrate() -> Result<rusqlite::Connection, Box<dyn std::error
     if migrated {
         eprintln!("Note: DB schema was migrated to the latest version.");
     }
+    check_lk_version();
     Ok(conn)
+}
+
+/// Check .knowledge/.lk-version and warn if the current binary is older than the project requires.
+fn check_lk_version() {
+    let version_path = get_knowledge_dir().join(".lk-version");
+    if let Ok(content) = std::fs::read_to_string(&version_path) {
+        let required = content.trim();
+        if !required.is_empty() && compare_versions(VERSION, required).is_some_and(|o| o == std::cmp::Ordering::Less) {
+            eprintln!(
+                "Warning: This project requires lk >= {required}, but you have {VERSION}. Run `lk update` or `brew upgrade lk` to update."
+            );
+        }
+    }
+}
+
+/// Compare two semver strings (e.g., "0.7.2" vs "0.8.0"). Returns None on parse failure.
+fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let parse = |s: &str| -> Option<(u32, u32, u32)> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        Some((parts[0].parse().ok()?, parts[1].parse().ok()?, parts[2].parse().ok()?))
+    };
+    let a = parse(a)?;
+    let b = parse(b)?;
+    Some(a.cmp(&b))
 }
 
 /// Prompt user for confirmation. Returns true if confirmed.
