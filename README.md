@@ -5,7 +5,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 ## Features
 
 - Project-local knowledge base stored in `.knowledge/knowledge.db`
-- Full-text search across titles, content, and keywords with relevance scoring
+- Full-text search with trigram tokenizer (supports Japanese/CJK) and LIKE fallback
 - Duplicate detection when adding entries (skip with `--force`)
 - Sync knowledge from `.knowledge/` markdown files (shareable via Git)
 - Export local entries to markdown for team sharing
@@ -99,20 +99,24 @@ Commands:
 
 ### Storage
 
-All lk-managed files are stored under the `.knowledge/` directory:
+All lk-managed files are stored under the `.knowledge/` and `.claude/` directories:
 
 - **SQLite DB** at `.knowledge/knowledge.db` (git-ignored) - local search index
 - **Markdown files** in `.knowledge/` (git-tracked) - shareable knowledge
-- **Search log** at `.knowledge/search.log` (git-ignored) - optional search logging
+- **Version file** at `.knowledge/.lk-version` (git-tracked) - minimum required lk version for the project
+- **Instructions** at `.claude/lk-instructions.md` (git-tracked) - Claude Code instructions, imported via `@` syntax
+- **Command log** at `.knowledge/command.log` (git-ignored) - optional command logging
 
 ### What to commit
 
-| Path | Git管理 | Description |
-|------|---------|-------------|
-| `.knowledge/` | Yes | Shared knowledge (markdown files) |
-| `CLAUDE.md` or `.claude/CLAUDE.md` | Yes | Claude Code instructions (root takes priority) |
+| Path | Git | Description |
+|------|-----|-------------|
+| `.knowledge/*.md` | Yes | Shared knowledge (markdown files) |
+| `.knowledge/.lk-version` | Yes | Minimum required lk version |
+| `.claude/lk-instructions.md` | Yes | Claude Code instructions |
+| `CLAUDE.md` or `.claude/CLAUDE.md` | Yes | Contains `@.claude/lk-instructions.md` import |
 | `.knowledge/knowledge.db` | No (auto-ignored) | Local search index |
-| `.knowledge/search.log` | No (auto-ignored) | Search log |
+| `.knowledge/command.log` | No (auto-ignored) | Command log |
 
 ### Shared vs local knowledge
 
@@ -130,6 +134,16 @@ Not everything needs to be shared. A good rule of thumb: if it would help a new 
 3. Run `lk export` to write local knowledge to `.knowledge/` markdown files, then commit and push — only export knowledge worth sharing with the team
 4. When pulling changes, run `lk sync` to import new/updated `.knowledge/` files into your local DB
 5. Use `/lk-knowledge-discover` to bootstrap knowledge for a new project, or `/lk-knowledge-refresh` to update stale entries
+
+### Version alignment
+
+`lk init` writes the current version to `.knowledge/.lk-version`. When a team member runs any `lk` command with an older binary, they'll see a warning:
+
+```
+Warning: This project requires lk >= 0.8.0, but you have 0.7.2. Run `lk update` or `brew upgrade lk` to update.
+```
+
+Commit `.lk-version` to keep the team on a compatible version.
 
 ### Markdown Format
 
@@ -155,6 +169,8 @@ Rate limit is 100 requests per minute per API key...
 ```
 
 ## Claude Code Integration
+
+`lk init` creates `.claude/lk-instructions.md` with Claude Code instructions and adds an `@.claude/lk-instructions.md` import line to your CLAUDE.md. This keeps your CLAUDE.md minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
 
 After `lk init`, Claude Code will automatically:
 
