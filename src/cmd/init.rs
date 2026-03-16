@@ -103,62 +103,74 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         println!("Created {}", instructions_path.display());
     }
 
-    // Add import line to CLAUDE.md (or AGENTS.md)
-    // Priority: root CLAUDE.md > root AGENTS.md > .claude/CLAUDE.md > create root CLAUDE.md
+    // Add import line to AGENTS.md or CLAUDE.md
+    // Priority: root AGENTS.md > root CLAUDE.md > .claude/CLAUDE.md > create root AGENTS.md
     let candidates = [
-        root.join("CLAUDE.md"),
         root.join("AGENTS.md"),
+        root.join("CLAUDE.md"),
         root.join(".claude").join("CLAUDE.md"),
     ];
-    let claude_md_path = candidates
-        .iter()
-        .find(|p| p.exists())
-        .cloned()
-        .unwrap_or_else(|| root.join("CLAUDE.md"));
 
     let import_line = "@.claude/lk-instructions.md";
     let old_marker = "## Knowledge Base (local-knowledge-cli)";
 
-    if claude_md_path.exists() {
-        let content = std::fs::read_to_string(&claude_md_path)?;
+    // Check if any candidate already contains the import line
+    let already_imported = candidates.iter().any(|p| {
+        p.exists()
+            && std::fs::read_to_string(p)
+                .map(|c| c.contains(import_line))
+                .unwrap_or(false)
+    });
 
-        if content.contains(old_marker) {
-            // Migrate: replace old inline section with import line
-            let section_start = content.find(old_marker).unwrap();
-            let rest = &content[section_start + old_marker.len()..];
-            let section_end = rest
-                .match_indices("\n## ")
-                .find(|(i, _)| !rest[i + 4..].starts_with('#'))
-                .map(|(i, _)| section_start + old_marker.len() + i)
-                .unwrap_or(content.len());
-
-            let mut new_content = content[..section_start].to_string();
-            new_content.push_str(import_line);
-            new_content.push('\n');
-            if section_end < content.len() {
-                new_content.push_str(&content[section_end..]);
-            }
-            std::fs::write(&claude_md_path, new_content)?;
-            println!(
-                "Migrated inline instructions to import in {}",
-                claude_md_path.display()
-            );
-        } else if !content.contains(import_line) {
-            use std::io::Write;
-            let mut f = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&claude_md_path)?;
-            if !content.ends_with('\n') {
-                writeln!(f)?;
-            }
-            writeln!(f, "{import_line}")?;
-            println!("Added import to {}", claude_md_path.display());
-        } else {
-            println!("{} already contains lk import", claude_md_path.display());
-        }
+    if already_imported {
+        println!("lk import already exists in a project config file");
     } else {
-        std::fs::write(&claude_md_path, format!("{import_line}\n"))?;
-        println!("Created {} with lk import", claude_md_path.display());
+        // Find the first existing file, or create AGENTS.md
+        let target_path = candidates
+            .iter()
+            .find(|p| p.exists())
+            .cloned()
+            .unwrap_or_else(|| root.join("AGENTS.md"));
+
+        if target_path.exists() {
+            let content = std::fs::read_to_string(&target_path)?;
+
+            if content.contains(old_marker) {
+                // Migrate: replace old inline section with import line
+                let section_start = content.find(old_marker).unwrap();
+                let rest = &content[section_start + old_marker.len()..];
+                let section_end = rest
+                    .match_indices("\n## ")
+                    .find(|(i, _)| !rest[i + 4..].starts_with('#'))
+                    .map(|(i, _)| section_start + old_marker.len() + i)
+                    .unwrap_or(content.len());
+
+                let mut new_content = content[..section_start].to_string();
+                new_content.push_str(import_line);
+                new_content.push('\n');
+                if section_end < content.len() {
+                    new_content.push_str(&content[section_end..]);
+                }
+                std::fs::write(&target_path, new_content)?;
+                println!(
+                    "Migrated inline instructions to import in {}",
+                    target_path.display()
+                );
+            } else {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&target_path)?;
+                if !content.ends_with('\n') {
+                    writeln!(f)?;
+                }
+                writeln!(f, "{import_line}")?;
+                println!("Added import to {}", target_path.display());
+            }
+        } else {
+            std::fs::write(&target_path, format!("{import_line}\n"))?;
+            println!("Created {} with lk import", target_path.display());
+        }
     }
 
     // 6. Create config.toml if it doesn't exist

@@ -45,8 +45,8 @@ fn test_init() {
     // Verify .gitignore was created
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(gitignore.contains(".knowledge/knowledge.db"));
-    // Verify CLAUDE.md was created with import line
-    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    // Verify AGENTS.md was created with import line
+    let claude_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
     assert!(claude_md.contains("@.claude/lk-instructions.md"));
     // Verify .claude/lk-instructions.md was created with full instructions
     let instructions =
@@ -74,10 +74,10 @@ fn test_init_idempotent() {
         .unwrap();
     assert!(output.status.success());
 
-    // CLAUDE.md should not have duplicate import lines
-    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
-    let count = claude_md.matches("@.claude/lk-instructions.md").count();
-    assert_eq!(count, 1, "CLAUDE.md should not have duplicate import lines");
+    // AGENTS.md should not have duplicate import lines
+    let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+    let count = agents_md.matches("@.claude/lk-instructions.md").count();
+    assert_eq!(count, 1, "AGENTS.md should not have duplicate import lines");
 }
 
 #[test]

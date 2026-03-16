@@ -120,7 +120,7 @@ All lk-managed files are stored under the `.knowledge/` and `.claude/` directori
 | `.knowledge/config.toml` | Yes | Project settings |
 | `.knowledge/.lk-version` | Yes | Minimum required lk version |
 | `.claude/lk-instructions.md` | Yes | Claude Code instructions |
-| `CLAUDE.md` or `.claude/CLAUDE.md` | Yes | Contains `@.claude/lk-instructions.md` import |
+| `AGENTS.md`, `CLAUDE.md`, or `.claude/CLAUDE.md` | Yes | Contains `@.claude/lk-instructions.md` import |
 | `.knowledge/knowledge.db` | No (auto-ignored) | Local search index |
 | `.knowledge/command.log` | No (auto-ignored) | Command log |
 
@@ -176,7 +176,7 @@ Rate limit is 100 requests per minute per API key...
 
 ## Claude Code Integration
 
-`lk init` creates `.claude/lk-instructions.md` with Claude Code instructions and adds an `@.claude/lk-instructions.md` import line to your CLAUDE.md. This keeps your CLAUDE.md minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
+`lk init` creates `.claude/lk-instructions.md` with Claude Code instructions and adds an `@.claude/lk-instructions.md` import line to your `AGENTS.md` (or `CLAUDE.md` if it exists). This keeps your config file minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
 
 After `lk init`, Claude Code will automatically:
 
