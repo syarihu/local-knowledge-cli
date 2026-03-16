@@ -411,6 +411,7 @@ When launching Explore or general-purpose agents for code investigation, always 
 - After investigating code or design, save noteworthy discoveries with `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\"`\n\
 - If `lk add` returns `\"added\": false` with `similar_entries`, use `lk edit <id>` to update the existing entry instead of creating a duplicate\n\
 - Use `--force` to skip duplicate check when you are certain a new entry is needed\n\
+- When adding knowledge that replaces an older approach, mark the old entry: `lk edit <old_id> --status deprecated --superseded-by <new_id>`\n\
 - Do not save trivial or obvious facts\n\
 - Briefly report what was saved (e.g., \"Added to knowledge base: <title>\")\n\
 \n\

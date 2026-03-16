@@ -17,7 +17,9 @@ $ARGUMENTS contains a description of what knowledge to save, or is empty to auto
 3. Show the proposed entries to the user for confirmation
 4. For each confirmed entry, run:
    `lk add "<title>" --keywords "<kw1>,<kw2>" --content "<content>"`
-5. Report what was saved
+5. If a new entry replaces or supersedes an existing entry, mark the old one:
+   `lk edit <old_id> --status deprecated --superseded-by <new_id>`
+6. Report what was saved
 
 ## Guidelines
 - Keep entries granular: one concept per entry
@@ -29,3 +31,4 @@ $ARGUMENTS contains a description of what knowledge to save, or is empty to auto
 - Reference function/struct names instead of line numbers
 - Include **why** (design decisions, rationale) alongside **what** when possible
 - Keywords should include both English and Japanese terms if applicable
+- When adding knowledge that replaces an older approach, check `lk add` output for `similar_entries` and mark old entries as deprecated with `lk edit <id> --status deprecated --superseded-by <new_id>`

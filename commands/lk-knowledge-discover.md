@@ -72,7 +72,11 @@ Organize files into subdirectories:
 - `.knowledge/conventions/` - coding patterns, style, testing approach
 - `.knowledge/infrastructure/` - build, deploy, config, CI/CD
 
-### Phase 4: Sync & Report
+### Phase 4: Deprecate superseded entries
+1. After syncing, check if any newly created entries replace existing ones
+2. If so, mark old entries as deprecated: `lk edit <old_id> --status deprecated --superseded-by <new_id>`
+
+### Phase 5: Sync & Report
 1. Run `lk sync` to import all new markdown files into the DB
 2. Run `lk stats` to show the updated knowledge base status
 3. Present a summary to the user:

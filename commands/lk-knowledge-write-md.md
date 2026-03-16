@@ -45,3 +45,5 @@ keywords: [specific, keywords]
 4. Show the draft to the user for review
 5. After approval, save to the appropriate .knowledge/ subdirectory
 6. Run `lk sync` to import the new file into the DB
+7. If the new entries replace existing ones, mark old entries as deprecated:
+   `lk edit <old_id> --status deprecated --superseded-by <new_id>`
