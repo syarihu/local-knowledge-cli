@@ -27,13 +27,28 @@ This project has a local knowledge base.
 When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:
 > Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. If useful results are found, use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
 
+### Content Safety Rule
+- NEVER save API keys, tokens, passwords, or secrets in knowledge entries
+- Before running `lk add`, verify the content does not contain sensitive data
+- If content references credentials, describe them abstractly (e.g., "uses OAuth token from env var AUTH_TOKEN")
+
+### Category/Keyword Consistency Rule
+- Before adding, check existing categories and keywords with `lk list --json` or `lk search` to align naming
+- Prefer existing category names over creating new ones
+- Use lowercase, hyphen-separated keywords (e.g., "auth-flow", not "AuthFlow" or "auth_flow")
+
+### Staleness Management Rule
+- When modifying code that relates to an existing knowledge entry, update that entry with `lk edit <id>`
+- Use `--touch` flag when reviewing an entry and confirming it is still accurate
+- Mark outdated entries with `lk edit <id> --status deprecated --superseded_by <new_id>`
+
 ### Available Commands
 - `lk search "<query>" --json` - Search knowledge (use `--since`, `--category`, `--source`, `--full` to filter)
 - `lk search "<query>" --json --full` - Search with full content (no need for `lk get`)
 - `lk get <id> --json` - Get entry details
 - `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"` - Add knowledge (checks duplicates)
 - `lk add "<title>" --force --content "..."` - Add knowledge (skip duplicate check)
-- `lk list --category "features" --source "local" --json` - List entries with filters
+- `lk list --category "features" --source "local" --json` - List entries with filters (supports `--limit N` and `--offset N` for pagination)
 - `lk edit <id> --title "..." --keywords "..." --content "..."` - Edit existing entry
 - `lk purge --source local` / `lk purge --category features` - Bulk delete entries
 - `lk sync` - Sync markdown files with DB

@@ -186,6 +186,21 @@ When launching Explore or general-purpose agents for code investigation, always 
 - Reference function/struct names instead of line numbers\n\
 - Include **why** (design decisions, rationale) alongside **what** when possible\n\
 \n\
+### Content Safety Rule\n\
+- NEVER save API keys, tokens, passwords, or secrets in knowledge entries\n\
+- Before running `lk add`, verify the content does not contain sensitive data\n\
+- If content references credentials, describe them abstractly (e.g., \"uses OAuth token from env var AUTH_TOKEN\")\n\
+\n\
+### Category/Keyword Consistency Rule\n\
+- Before adding, check existing categories and keywords with `lk list --json` or `lk search` to align naming\n\
+- Prefer existing category names over creating new ones\n\
+- Use lowercase, hyphen-separated keywords (e.g., \"auth-flow\", not \"AuthFlow\" or \"auth_flow\")\n\
+\n\
+### Staleness Management Rule\n\
+- When modifying code that relates to an existing knowledge entry, update that entry with `lk edit <id>`\n\
+- Use `--touch` flag when reviewing an entry and confirming it is still accurate\n\
+- Mark outdated entries with `lk edit <id> --status deprecated --superseded_by <new_id>`\n\
+\n\
 ### Keywords Rule (when adding)\n\
 - Include feature names, screen names, or module names as keywords\n\
   (e.g., \"login\", \"settings-screen\", \"auth-module\")\n\
@@ -200,7 +215,7 @@ When launching Explore or general-purpose agents for code investigation, always 
 - `lk get <id> --json` - Get entry details\n\
 - `lk add \"<title>\" --keywords \"kw1,kw2\" --content \"...\" --category \"features\"` - Add knowledge (checks duplicates)\n\
 - `lk add \"<title>\" --force --content \"...\"` - Add knowledge (skip duplicate check)\n\
-- `lk list --category \"features\" --source \"local\" --json` - List entries with filters\n\
+- `lk list --category \"features\" --source \"local\" --json` - List entries with filters (supports `--limit N` and `--offset N` for pagination)\n\
 - `lk edit <id> --title \"...\" --keywords \"...\" --content \"...\"` - Edit existing entry\n\
 - `lk edit <id> --status deprecated --superseded-by <new_id>` - Mark entry as deprecated\n\
 - `lk purge --source local` / `lk purge --category features` - Bulk delete entries\n\
