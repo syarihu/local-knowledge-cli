@@ -8,7 +8,10 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Full-text search with trigram tokenizer (supports Japanese/CJK) and LIKE fallback
 - Duplicate detection when adding entries (skip with `--force`)
 - Sync knowledge from `.knowledge/` markdown files (shareable via Git)
-- Export local entries to markdown for team sharing
+- Auto-sync on command execution — no manual `lk sync` needed after `git pull`
+- Export local entries to markdown for team sharing (stable output order)
+- Secret detection — warns when content contains API keys, tokens, or credentials
+- Project config via `.knowledge/config.toml` (git-tracked, team-shareable)
 - Bulk delete with `purge` by category or source
 - Auto-extract keywords from entries
 - Self-update from GitHub Releases
@@ -94,6 +97,7 @@ Commands:
 - `--since <YYYY-MM-DD>` - Only return entries updated since this date (for `search`)
 - `--full` - Include full content in JSON output, eliminating the need for `lk get` (for `search`)
 - `--force` - Skip duplicate check when adding (for `add`)
+- `--allow-secrets` - Allow content that contains potential secrets (for `add`, `export`)
 
 ## How It Works
 
@@ -103,6 +107,7 @@ All lk-managed files are stored under the `.knowledge/` and `.claude/` directori
 
 - **SQLite DB** at `.knowledge/knowledge.db` (git-ignored) - local search index
 - **Markdown files** in `.knowledge/` (git-tracked) - shareable knowledge
+- **Config file** at `.knowledge/config.toml` (git-tracked) - project settings
 - **Version file** at `.knowledge/.lk-version` (git-tracked) - minimum required lk version for the project
 - **Instructions** at `.claude/lk-instructions.md` (git-tracked) - Claude Code instructions, imported via `@` syntax
 - **Command log** at `.knowledge/command.log` (git-ignored) - optional command logging
@@ -112,6 +117,7 @@ All lk-managed files are stored under the `.knowledge/` and `.claude/` directori
 | Path | Git | Description |
 |------|-----|-------------|
 | `.knowledge/*.md` | Yes | Shared knowledge (markdown files) |
+| `.knowledge/config.toml` | Yes | Project settings |
 | `.knowledge/.lk-version` | Yes | Minimum required lk version |
 | `.claude/lk-instructions.md` | Yes | Claude Code instructions |
 | `CLAUDE.md` or `.claude/CLAUDE.md` | Yes | Contains `@.claude/lk-instructions.md` import |
@@ -132,7 +138,7 @@ Not everything needs to be shared. A good rule of thumb: if it would help a new 
 1. Run `lk init` in your project — each team member runs this once after cloning
 2. Claude Code automatically discovers and saves knowledge as you work (`lk add`)
 3. Run `lk export` to write local knowledge to `.knowledge/` markdown files, then commit and push — only export knowledge worth sharing with the team
-4. When pulling changes, run `lk sync` to import new/updated `.knowledge/` files into your local DB
+4. After pulling changes, shared knowledge is **auto-synced** on the next `lk` command — no manual `lk sync` needed
 5. Use `/lk-knowledge-discover` to bootstrap knowledge for a new project, or `/lk-knowledge-refresh` to update stale entries
 
 ### Version alignment
@@ -178,25 +184,53 @@ After `lk init`, Claude Code will automatically:
 2. Add new discoveries via `/lk-knowledge-add-db`
 3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`
 
-## Search Logging
+## Configuration
 
-Search logging is disabled by default. To enable it, set the `LK_SEARCH_LOG` environment variable:
+`lk init` creates `.knowledge/config.toml` with project-level settings. This file is git-tracked so the whole team shares the same configuration.
 
-```bash
-# Enable search logging for a single command
-LK_SEARCH_LOG=1 lk search "query"
+```toml
+# .knowledge/config.toml
 
-# Or export it to enable for the entire session
-export LK_SEARCH_LOG=1
+# Days before an entry is considered stale (default: 90)
+stale_threshold_days = 90
+
+# Default limit for `lk search` results (default: 5)
+search_default_limit = 5
+
+# Auto-sync .knowledge/ markdown files before read commands (default: true)
+# Override with LK_NO_AUTO_SYNC=1
+auto_sync = true
+
+# Detect potential secrets in content when adding/exporting entries (default: true)
+secret_detection = true
+
+# Enable command logging to .knowledge/command.log (default: false)
+# Override with LK_COMMAND_LOG=1
+command_log = false
 ```
 
-Logs are written to `.knowledge/search.log` with timestamp, query, result count, and matched titles:
+### Environment variable overrides
 
-```
-[2026-03-14T13:57:48] query="database" results=2 titles=["Database Configuration", "Project Root Detection"]
-```
+Environment variables take precedence over config file values:
 
-View recent log entries:
+| Variable | Effect |
+|----------|--------|
+| `LK_NO_AUTO_SYNC=1` | Disable auto-sync |
+| `LK_COMMAND_LOG=1` | Enable command logging |
+
+### Auto-sync
+
+When enabled (default), `lk` automatically syncs `.knowledge/` markdown files before commands like `search`, `get`, `list`, etc. This means after `git pull`, the next `lk` command picks up shared knowledge changes without manual `lk sync`.
+
+The sync is hash-based — if no files have changed, the overhead is negligible.
+
+### Secret detection
+
+When enabled (default), `lk add` and `lk export` scan content for potential secrets (API keys, tokens, private keys, credentials). If detected, the command is blocked with a warning. Use `--allow-secrets` to override.
+
+### Command logging
+
+When enabled, all `lk` commands are logged to `.knowledge/command.log` with timestamps. View recent entries:
 
 ```bash
 lk search-log        # Show last 20 entries
