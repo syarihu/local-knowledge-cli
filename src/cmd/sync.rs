@@ -12,6 +12,7 @@ pub struct SyncStats {
 }
 
 pub fn cmd_sync(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
+    super::log_command("sync", &[]);
     let conn = open_db_with_migrate()?;
     let root = get_project_root();
     let stats = sync_knowledge_dir(&conn, &get_knowledge_dir(), &root)?;

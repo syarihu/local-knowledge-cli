@@ -1,6 +1,6 @@
 use crate::db;
 use crate::util::{
-    STALE_THRESHOLD_DAYS, days_since, get_project_root, now_iso, open_db_with_migrate, truncate_str,
+    STALE_THRESHOLD_DAYS, days_since, get_project_root, open_db_with_migrate, truncate_str,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -17,7 +17,8 @@ pub fn cmd_search(
     let conn = open_db_with_migrate()?;
     let results = db::search_entries(&conn, query, keyword_only, category, source, since, limit)?;
 
-    log_search(query, &results);
+    let result_count = results.len().to_string();
+    super::log_command("search", &[("query", query), ("results", &result_count)]);
 
     if json_output {
         let output: Vec<serde_json::Value> = results
@@ -87,49 +88,10 @@ pub fn cmd_search(
     Ok(())
 }
 
-fn log_search(query: &str, results: &[db::Entry]) {
-    if std::env::var("LK_SEARCH_LOG").unwrap_or_default() != "1" {
-        return;
-    }
-    let _ = (|| -> Result<(), Box<dyn std::error::Error>> {
-        use std::io::Write;
-        let log_path = get_project_root().join(".knowledge").join("search.log");
-
-        const MAX_LOG_BYTES: u64 = 1_048_576; // 1 MB
-        const KEEP_LINES: usize = 500;
-
-        if let Ok(meta) = std::fs::metadata(&log_path) {
-            if meta.len() > MAX_LOG_BYTES {
-                if let Ok(content) = std::fs::read_to_string(&log_path) {
-                    let lines: Vec<&str> = content.lines().collect();
-                    let start = lines.len().saturating_sub(KEEP_LINES);
-                    let truncated = lines[start..].join("\n") + "\n";
-                    let _ = std::fs::write(&log_path, truncated);
-                }
-            }
-        }
-
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
-        let titles: Vec<&str> = results.iter().take(5).map(|r| r.title.as_str()).collect();
-        writeln!(
-            f,
-            "[{}] query=\"{}\" results={} titles={:?}",
-            now_iso(),
-            query,
-            results.len(),
-            titles,
-        )?;
-        Ok(())
-    })();
-}
-
-pub fn cmd_search_log(lines: usize) -> Result<(), Box<dyn std::error::Error>> {
-    let log_path = get_project_root().join(".knowledge").join("search.log");
+pub fn cmd_command_log(lines: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let log_path = get_project_root().join(".knowledge").join("command.log");
     if !log_path.exists() {
-        println!("No search log found.");
+        println!("No command log found. Set LK_COMMAND_LOG=1 to enable.");
         return Ok(());
     }
     let content = std::fs::read_to_string(&log_path)?;

@@ -177,8 +177,9 @@ enum Commands {
         #[arg(long, short)]
         verbose: bool,
     },
-    /// Show recent search log entries
-    SearchLog {
+    /// Show recent command log entries
+    #[command(alias = "search-log")]
+    CommandLog {
         /// Number of log lines to show
         #[arg(short, long, default_value = "20")]
         lines: usize,
@@ -278,7 +279,7 @@ fn main() {
         Commands::Import { path } => cmd::cmd_import(&path),
         Commands::Keywords { json } => cmd::cmd_keywords(json),
         Commands::Stats { json, verbose } => cmd::cmd_stats(json, verbose),
-        Commands::SearchLog { lines } => cmd::cmd_search_log(lines),
+        Commands::CommandLog { lines } => cmd::cmd_command_log(lines),
         Commands::Update { skip_verify } => cmd::cmd_update(skip_verify),
         Commands::InstallCommands => cmd::install_embedded_commands(),
         Commands::Uninstall { yes } => cmd::cmd_uninstall(yes),
