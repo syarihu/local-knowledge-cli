@@ -64,7 +64,9 @@ fn check_lk_version() {
     let version_path = get_knowledge_dir().join(".lk-version");
     if let Ok(content) = std::fs::read_to_string(&version_path) {
         let required = content.trim();
-        if !required.is_empty() && compare_versions(VERSION, required).is_some_and(|o| o == std::cmp::Ordering::Less) {
+        if !required.is_empty()
+            && compare_versions(VERSION, required).is_some_and(|o| o == std::cmp::Ordering::Less)
+        {
             eprintln!(
                 "Warning: This project requires lk >= {required}, but you have {VERSION}. Run `lk update` or `brew upgrade lk` to update."
             );
@@ -79,7 +81,11 @@ fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
         if parts.len() != 3 {
             return None;
         }
-        Some((parts[0].parse().ok()?, parts[1].parse().ok()?, parts[2].parse().ok()?))
+        Some((
+            parts[0].parse().ok()?,
+            parts[1].parse().ok()?,
+            parts[2].parse().ok()?,
+        ))
     };
     let a = parse(a)?;
     let b = parse(b)?;

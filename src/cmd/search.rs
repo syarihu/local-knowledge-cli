@@ -1,5 +1,7 @@
 use crate::db;
-use crate::util::{days_since, get_knowledge_dir, get_project_root, open_db_with_migrate, truncate_str};
+use crate::util::{
+    days_since, get_knowledge_dir, get_project_root, open_db_with_migrate, truncate_str,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_search(

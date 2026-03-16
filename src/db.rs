@@ -472,16 +472,17 @@ pub fn search_entries(
             let remaining = limit - results.len();
 
             let words: Vec<&str> = query.split_whitespace().collect();
-            let mut like_sql = format!(
-                "SELECT {ENTRY_COLS} FROM entries e WHERE ("
-            );
+            let mut like_sql = format!("SELECT {ENTRY_COLS} FROM entries e WHERE (");
             let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             for (i, word) in words.iter().enumerate() {
                 if i > 0 {
                     like_sql.push_str(" OR ");
                 }
                 let idx = i * 2 + 1;
-                like_sql.push_str(&format!("e.title LIKE ?{idx} OR e.content LIKE ?{}", idx + 1));
+                like_sql.push_str(&format!(
+                    "e.title LIKE ?{idx} OR e.content LIKE ?{}",
+                    idx + 1
+                ));
                 let pattern = format!("%{word}%");
                 like_params.push(Box::new(pattern.clone()));
                 like_params.push(Box::new(pattern));
@@ -1094,7 +1095,10 @@ mod tests {
 
         // 2-char Japanese query falls back to LIKE
         let results = search_entries(&conn, "認証", false, None, None, None, 10).unwrap();
-        assert!(!results.is_empty(), "LIKE fallback should match 2-char Japanese");
+        assert!(
+            !results.is_empty(),
+            "LIKE fallback should match 2-char Japanese"
+        );
         assert_eq!(results[0].title, "認証フロー");
 
         // Multi-word Japanese query

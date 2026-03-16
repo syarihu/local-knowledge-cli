@@ -96,10 +96,7 @@ pub fn cmd_uninstall(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
                 );
             } else {
                 std::fs::write(claude_md_path, &new_content)?;
-                println!(
-                    "  Cleaned up {}",
-                    claude_md_path.display()
-                );
+                println!("  Cleaned up {}", claude_md_path.display());
             }
         }
     }

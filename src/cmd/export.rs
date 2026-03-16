@@ -67,7 +67,10 @@ pub fn cmd_export(
             if !all_matches.is_empty() {
                 eprintln!("Potential secrets detected in entries to export:");
                 for (id, title, m) in &all_matches {
-                    eprintln!("  Entry #{id} \"{title}\": {} ({})", m.pattern_name, m.matched);
+                    eprintln!(
+                        "  Entry #{id} \"{title}\": {} ({})",
+                        m.pattern_name, m.matched
+                    );
                 }
                 eprintln!("\nUse --allow-secrets to override this check.");
                 return Err("secret_detected".into());

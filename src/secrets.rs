@@ -86,7 +86,9 @@ mod tests {
 
     #[test]
     fn test_detect_private_key() {
-        let matches = check_for_secrets("-----BEGIN RSA PRIVATE KEY-----\nblah\n-----END RSA PRIVATE KEY-----");
+        let matches = check_for_secrets(
+            "-----BEGIN RSA PRIVATE KEY-----\nblah\n-----END RSA PRIVATE KEY-----",
+        );
         assert!(!matches.is_empty());
         assert_eq!(matches[0].pattern_name, "Private key");
     }
@@ -100,13 +102,16 @@ mod tests {
 
     #[test]
     fn test_no_false_positive_on_normal_text() {
-        let matches = check_for_secrets("The API uses JWT tokens for authentication. Rate limit is 100 req/min.");
+        let matches = check_for_secrets(
+            "The API uses JWT tokens for authentication. Rate limit is 100 req/min.",
+        );
         assert!(matches.is_empty());
     }
 
     #[test]
     fn test_no_false_positive_on_env_var_reference() {
-        let matches = check_for_secrets("Set AUTH_TOKEN environment variable before running the app");
+        let matches =
+            check_for_secrets("Set AUTH_TOKEN environment variable before running the app");
         assert!(matches.is_empty());
     }
 }

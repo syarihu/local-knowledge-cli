@@ -49,7 +49,8 @@ fn test_init() {
     let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
     assert!(claude_md.contains("@.claude/lk-instructions.md"));
     // Verify .claude/lk-instructions.md was created with full instructions
-    let instructions = std::fs::read_to_string(dir.path().join(".claude/lk-instructions.md")).unwrap();
+    let instructions =
+        std::fs::read_to_string(dir.path().join(".claude/lk-instructions.md")).unwrap();
     assert!(instructions.contains("Knowledge Base (local-knowledge-cli)"));
     // Verify .knowledge/.lk-version was created
     let version = std::fs::read_to_string(dir.path().join(".knowledge/.lk-version")).unwrap();
@@ -75,9 +76,7 @@ fn test_init_idempotent() {
 
     // CLAUDE.md should not have duplicate import lines
     let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
-    let count = claude_md
-        .matches("@.claude/lk-instructions.md")
-        .count();
+    let count = claude_md.matches("@.claude/lk-instructions.md").count();
     assert_eq!(count, 1, "CLAUDE.md should not have duplicate import lines");
 }
 

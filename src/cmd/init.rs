@@ -96,10 +96,7 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::write(&instructions_path, instructions_content)?;
             println!("Updated {}", instructions_path.display());
         } else {
-            println!(
-                "{} is already up-to-date",
-                instructions_path.display()
-            );
+            println!("{} is already up-to-date", instructions_path.display());
         }
     } else {
         std::fs::write(&instructions_path, instructions_content)?;
@@ -155,22 +152,13 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(f)?;
             }
             writeln!(f, "{import_line}")?;
-            println!(
-                "Added import to {}",
-                claude_md_path.display()
-            );
+            println!("Added import to {}", claude_md_path.display());
         } else {
-            println!(
-                "{} already contains lk import",
-                claude_md_path.display()
-            );
+            println!("{} already contains lk import", claude_md_path.display());
         }
     } else {
         std::fs::write(&claude_md_path, format!("{import_line}\n"))?;
-        println!(
-            "Created {} with lk import",
-            claude_md_path.display()
-        );
+        println!("Created {} with lk import", claude_md_path.display());
     }
 
     // 6. Create config.toml if it doesn't exist
