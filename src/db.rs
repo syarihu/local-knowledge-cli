@@ -151,7 +151,12 @@ fn set_schema_version(conn: &Connection, version: i64) -> Result<(), Box<dyn std
 
 /// Create a backup of the DB file before migration.
 pub fn backup_db(db_path: &Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    let backup_path = db_path.with_extension("db.bak");
+    let timestamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string())
+        .replace(':', "-");
+    let backup_name = format!("knowledge.db.bak.{timestamp}");
+    let backup_path = db_path.with_file_name(backup_name);
     std::fs::copy(db_path, &backup_path)?;
     Ok(backup_path)
 }
@@ -258,6 +263,7 @@ pub fn search_entries(
     query: &str,
     keyword_only: bool,
     category: Option<&str>,
+    source: Option<&str>,
     since: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
@@ -268,12 +274,18 @@ pub fn search_entries(
         sql: &mut String,
         params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
         category: Option<&str>,
+        source: Option<&str>,
         since: Option<&str>,
     ) {
         if let Some(cat) = category {
             let idx = params.len() + 1;
             sql.push_str(&format!(" AND e.category = ?{idx}"));
             params.push(Box::new(cat.to_string()));
+        }
+        if let Some(src) = source {
+            let idx = params.len() + 1;
+            sql.push_str(&format!(" AND e.source = ?{idx}"));
+            params.push(Box::new(src.to_string()));
         }
         if let Some(s) = since {
             let idx = params.len() + 1;
@@ -299,7 +311,7 @@ pub fn search_entries(
         }
         sql.push(')');
 
-        append_filters(&mut sql, &mut param_values, category, since);
+        append_filters(&mut sql, &mut param_values, category, source, since);
         sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
         param_values.push(Box::new(limit as i64));
 
@@ -311,16 +323,18 @@ pub fn search_entries(
             results.push(row?);
         }
     } else {
-        // FTS search
+        // FTS search — sanitize query to prevent FTS5 syntax injection
+        let sanitized = sanitize_fts_query(query);
+
         let fts_sql_base = format!(
             "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at, fts.rank \
              FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1"
         );
         let mut fts_sql = fts_sql_base;
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(query.to_string())];
+            vec![Box::new(sanitized)];
 
-        append_filters(&mut fts_sql, &mut param_values, category, since);
+        append_filters(&mut fts_sql, &mut param_values, category, source, since);
         fts_sql.push_str(" ORDER BY rank, e.updated_at DESC LIMIT ?");
         param_values.push(Box::new(limit as i64));
 
@@ -369,7 +383,7 @@ pub fn search_entries(
             }
             kw_sql.push(')');
 
-            append_filters(&mut kw_sql, &mut kw_params, category, since);
+            append_filters(&mut kw_sql, &mut kw_params, category, source, since);
             kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
             kw_params.push(Box::new(remaining as i64));
 
@@ -686,6 +700,25 @@ pub fn find_similar_entries(
     Ok(results)
 }
 
+/// Sanitize a user query for FTS5 MATCH.
+/// Wraps each word in double quotes to treat it as a literal phrase token,
+/// preventing FTS5 operators (OR, NOT, NEAR, *, etc.) from being interpreted.
+fn sanitize_fts_query(query: &str) -> String {
+    let words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| {
+            // Escape any embedded double quotes
+            let escaped = w.replace('"', "\"\"");
+            format!("\"{escaped}\"")
+        })
+        .collect();
+    if words.is_empty() {
+        "\"\"".to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
 fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
     Ok(Entry {
         id: row.get(0)?,
@@ -813,7 +846,7 @@ mod tests {
         add_entry(&conn, "OAuth Login", "OAuth 2.0 PKCE flow for authentication", &["oauth".to_string()], "", "local", None, None).unwrap();
         add_entry(&conn, "Database Schema", "SQLite with FTS5", &["database".to_string()], "", "local", None, None).unwrap();
 
-        let results = search_entries(&conn, "OAuth", false, None, None, 10).unwrap();
+        let results = search_entries(&conn, "OAuth", false, None, None, None, 10).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "OAuth Login");
     }
@@ -823,7 +856,7 @@ mod tests {
         let (conn, _tmp) = setup_test_db();
         add_entry(&conn, "A", "content", &["mykey".to_string()], "", "local", None, None).unwrap();
 
-        let results = search_entries(&conn, "mykey", true, None, None, 10).unwrap();
+        let results = search_entries(&conn, "mykey", true, None, None, None, 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "A");
     }

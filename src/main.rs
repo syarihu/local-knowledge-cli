@@ -563,10 +563,7 @@ fn cmd_search(
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
-    let mut results = db::search_entries(&conn, query, keyword_only, category, since, limit)?;
-    if let Some(src) = source {
-        results.retain(|e| e.source == src);
-    }
+    let results = db::search_entries(&conn, query, keyword_only, category, source, since, limit)?;
 
     log_search(query, &results);
 
@@ -971,8 +968,8 @@ fn cmd_export(dir: Option<PathBuf>, ids: Option<&str>, query: Option<&str>) -> R
         selected
     } else if let Some(q) = query {
         // Export entries matching a search query
-        let results = db::search_entries(&conn, q, false, None, None, 100)?;
-        results.into_iter().filter(|e| e.source == "local").collect()
+        let results = db::search_entries(&conn, q, false, None, Some("local"), None, 100)?;
+        results
     } else {
         // Export all local entries
         db::list_entries_by_source(&conn, "local")?
