@@ -56,39 +56,53 @@ pub fn sync_knowledge_dir(
         removed: 0,
         unchanged: 0,
     };
-    let existing = db::get_shared_file_hashes(conn)?;
-    let mut found_files = std::collections::HashSet::new();
 
-    for entry in walkdir_md(knowledge_dir) {
-        if entry.file_name().and_then(|n| n.to_str()) == Some("README.md") {
-            continue;
-        }
-        let rel_path = entry
-            .strip_prefix(root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| entry.to_string_lossy().to_string());
-        found_files.insert(rel_path.clone());
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let existing = db::get_shared_file_hashes(conn)?;
+        let mut found_files = std::collections::HashSet::new();
 
-        let current_hash = markdown::file_hash(&entry)?;
-
-        if let Some(old_hash) = existing.get(&rel_path) {
-            if *old_hash != current_hash {
-                db::delete_entries_by_source_file(conn, &rel_path)?;
-                let count = import_md_file(conn, &entry, root)?;
-                stats.updated += count;
-            } else {
-                stats.unchanged += 1;
+        for entry in walkdir_md(knowledge_dir) {
+            if entry.file_name().and_then(|n| n.to_str()) == Some("README.md") {
+                continue;
             }
-        } else {
-            let count = import_md_file(conn, &entry, root)?;
-            stats.added += count;
-        }
-    }
+            let rel_path = entry
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| entry.to_string_lossy().to_string());
+            found_files.insert(rel_path.clone());
 
-    for rel_path in existing.keys() {
-        if !found_files.contains(rel_path) {
-            db::delete_entries_by_source_file(conn, rel_path)?;
-            stats.removed += 1;
+            let current_hash = markdown::file_hash(&entry)?;
+
+            if let Some(old_hash) = existing.get(&rel_path) {
+                if *old_hash != current_hash {
+                    db::delete_entries_by_source_file(conn, &rel_path)?;
+                    let count = import_md_file(conn, &entry, root)?;
+                    stats.updated += count;
+                } else {
+                    stats.unchanged += 1;
+                }
+            } else {
+                let count = import_md_file(conn, &entry, root)?;
+                stats.added += count;
+            }
+        }
+
+        for rel_path in existing.keys() {
+            if !found_files.contains(rel_path) {
+                db::delete_entries_by_source_file(conn, rel_path)?;
+                stats.removed += 1;
+            }
+        }
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            conn.execute_batch("ROLLBACK").ok();
+            return Err(e);
         }
     }
 

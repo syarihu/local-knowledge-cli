@@ -121,6 +121,14 @@ pub fn open_db(db_path: &Path) -> Result<(Connection, bool), Box<dyn std::error:
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     )?;
     let migrated = migrate(db_path, &conn)?;
+    if migrated {
+        // Keep only the 3 most recent backups
+        if let Ok(removed) = cleanup_backups(db_path, 3) {
+            if removed > 0 {
+                eprintln!("Note: Removed {removed} old backup(s).");
+            }
+        }
+    }
     Ok((conn, migrated))
 }
 
@@ -169,6 +177,35 @@ pub fn backup_db(db_path: &Path) -> Result<std::path::PathBuf, Box<dyn std::erro
     let backup_path = db_path.with_file_name(backup_name);
     std::fs::copy(db_path, &backup_path)?;
     Ok(backup_path)
+}
+
+/// Remove old backup files, keeping only the most recent `keep` backups.
+pub fn cleanup_backups(db_path: &Path, keep: usize) -> Result<usize, Box<dyn std::error::Error>> {
+    let parent = db_path.parent().ok_or("no parent directory")?;
+    let mut backups: Vec<std::path::PathBuf> = std::fs::read_dir(parent)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("knowledge.db.bak."))
+        })
+        .collect();
+
+    if backups.len() <= keep {
+        return Ok(0);
+    }
+
+    // Sort by filename (contains timestamp) descending — newest first
+    backups.sort();
+    backups.reverse();
+
+    let mut removed = 0;
+    for old in &backups[keep..] {
+        std::fs::remove_file(old)?;
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error::Error>> {
@@ -474,17 +511,27 @@ pub fn update_entry(
         )?;
     }
     if let Some(kws) = keywords {
-        conn.execute("DELETE FROM keywords WHERE entry_id = ?1", params![id])?;
-        for kw in kws {
+        conn.execute_batch("SAVEPOINT update_keywords")?;
+        match (|| -> Result<(), Box<dyn std::error::Error>> {
+            conn.execute("DELETE FROM keywords WHERE entry_id = ?1", params![id])?;
+            for kw in kws {
+                conn.execute(
+                    "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
+                    params![id, kw],
+                )?;
+            }
             conn.execute(
-                "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
-                params![id, kw],
+                "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
+                params![now, id],
             )?;
+            Ok(())
+        })() {
+            Ok(()) => conn.execute_batch("RELEASE update_keywords")?,
+            Err(e) => {
+                conn.execute_batch("ROLLBACK TO update_keywords").ok();
+                return Err(e);
+            }
         }
-        conn.execute(
-            "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
-            params![now, id],
-        )?;
     }
     Ok(())
 }
