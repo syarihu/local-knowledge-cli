@@ -37,15 +37,14 @@ fn log_command(cmd: &str, meta: &[(&str, &str)]) {
         const MAX_LOG_BYTES: u64 = 1_048_576; // 1 MB
         const KEEP_LINES: usize = 500;
 
-        if let Ok(file_meta) = std::fs::metadata(&log_path) {
-            if file_meta.len() > MAX_LOG_BYTES {
-                if let Ok(content) = std::fs::read_to_string(&log_path) {
-                    let lines: Vec<&str> = content.lines().collect();
-                    let start = lines.len().saturating_sub(KEEP_LINES);
-                    let truncated = lines[start..].join("\n") + "\n";
-                    let _ = std::fs::write(&log_path, truncated);
-                }
-            }
+        if let Ok(file_meta) = std::fs::metadata(&log_path)
+            && file_meta.len() > MAX_LOG_BYTES
+            && let Ok(content) = std::fs::read_to_string(&log_path)
+        {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(KEEP_LINES);
+            let truncated = lines[start..].join("\n") + "\n";
+            let _ = std::fs::write(&log_path, truncated);
         }
 
         let mut f = std::fs::OpenOptions::new()

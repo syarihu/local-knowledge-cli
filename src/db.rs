@@ -123,10 +123,10 @@ pub fn open_db(db_path: &Path) -> Result<(Connection, bool), Box<dyn std::error:
     let migrated = migrate(db_path, &conn)?;
     if migrated {
         // Keep only the 3 most recent backups
-        if let Ok(removed) = cleanup_backups(db_path, 3) {
-            if removed > 0 {
-                eprintln!("Note: Removed {removed} old backup(s).");
-            }
+        if let Ok(removed) = cleanup_backups(db_path, 3)
+            && removed > 0
+        {
+            eprintln!("Note: Removed {removed} old backup(s).");
         }
     }
     Ok((conn, migrated))
