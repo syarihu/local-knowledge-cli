@@ -336,7 +336,31 @@ fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
 
     if claude_md_path.exists() {
         let content = std::fs::read_to_string(&claude_md_path)?;
-        if !content.contains(marker) {
+        if content.contains(marker) {
+            // Check if the section is outdated and replace if so
+            let section_start = content.find(marker).unwrap();
+            let rest = &content[section_start + marker.len()..];
+            let section_end = rest
+                .match_indices("\n## ")
+                .find(|(i, _)| !rest[i + 4..].starts_with('#'))
+                .map(|(i, _)| section_start + marker.len() + i)
+                .unwrap_or(content.len());
+
+            let existing = content[section_start..section_end].trim();
+            let expected = CLAUDE_MD_SECTION.trim();
+
+            if existing != expected {
+                let mut new_content = content[..section_start].to_string();
+                new_content.push_str(CLAUDE_MD_SECTION.trim_start());
+                if section_end < content.len() {
+                    new_content.push_str(&content[section_end..]);
+                }
+                std::fs::write(&claude_md_path, new_content)?;
+                println!("Updated knowledge base instructions in {}", claude_md_path.display());
+            } else {
+                println!("CLAUDE.md already contains up-to-date knowledge base instructions");
+            }
+        } else {
             use std::io::Write;
             let mut f = std::fs::OpenOptions::new().append(true).open(&claude_md_path)?;
             if !content.ends_with('\n') {
@@ -344,8 +368,6 @@ fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
             }
             write!(f, "{CLAUDE_MD_SECTION}")?;
             println!("Added knowledge base instructions to {}", claude_md_path.display());
-        } else {
-            println!("CLAUDE.md already contains knowledge base instructions");
         }
     } else {
         std::fs::write(&claude_md_path, CLAUDE_MD_SECTION.trim_start())?;
@@ -869,6 +891,18 @@ fn cmd_stats(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Detect if the currently running binary was installed via Homebrew.
+fn is_homebrew_install() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| {
+            let s = p.to_string_lossy();
+            s.contains("/homebrew/") || s.contains("/Cellar/") || s.contains("/linuxbrew/")
+        })
+        .unwrap_or(false)
+}
+
 fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = home_dir().join(".config").join("lk");
     let config_path = config_dir.join("config.json");
@@ -884,78 +918,102 @@ fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
         DEFAULT_REPO.to_string()
     };
 
-    let target = detect_target()?;
-    let asset_name = format!("lk-{target}.tar.gz");
-    let checksum_name = "checksums.txt";
+    let homebrew = is_homebrew_install();
 
-    println!("Checking for updates...");
-
-    let latest_tag = fetch_latest_tag(&repo)?;
-    println!("Latest version: {latest_tag}");
-
-    let base_url = format!("https://github.com/{repo}/releases/download/{latest_tag}");
-
-    // Use tempfile crate for secure temporary directory
-    let tmpdir = tempfile::tempdir()?;
-    let tmppath = tmpdir.path();
-
-    // Download binary archive
-    let download_url = format!("{base_url}/{asset_name}");
-    println!("Downloading {download_url}...");
-
-    let archive_path = tmppath.join(&asset_name);
-    let dl = std::process::Command::new("curl")
-        .args(["-fSL", &download_url, "-o"])
-        .arg(&archive_path)
-        .output()?;
-
-    if !dl.status.success() {
-        return Err(format!(
-            "Download failed: {}",
-            String::from_utf8_lossy(&dl.stderr)
-        )
-        .into());
-    }
-
-    // Download and verify checksum
-    let checksum_url = format!("{base_url}/{checksum_name}");
-    let checksum_path = tmppath.join(checksum_name);
-    let dl_checksum = std::process::Command::new("curl")
-        .args(["-fsSL", &checksum_url, "-o"])
-        .arg(&checksum_path)
-        .output()?;
-
-    if dl_checksum.status.success() {
-        verify_checksum(&archive_path, &checksum_path, &asset_name)?;
-        println!("Checksum verified.");
+    let dest = if homebrew {
+        // Homebrew installation: use brew upgrade
+        println!("Homebrew installation detected. Running brew upgrade...");
+        let status = std::process::Command::new("brew")
+            .args(["upgrade", "syarihu/tap/lk"])
+            .status()?;
+        if !status.success() {
+            return Err("brew upgrade failed. Try: brew update && brew upgrade syarihu/tap/lk".into());
+        }
+        // Use the current exe path (symlink resolves to new version after upgrade)
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.canonicalize().ok())
+            .unwrap_or_else(|| PathBuf::from("lk"))
     } else {
-        eprintln!("Warning: checksums.txt not found in release, skipping verification.");
-    }
+        // Manual installation: download from GitHub releases
+        let target = detect_target()?;
+        let asset_name = format!("lk-{target}.tar.gz");
+        let checksum_name = "checksums.txt";
 
-    // Extract
-    let extract = std::process::Command::new("tar")
-        .args(["xzf"])
-        .arg(&archive_path)
-        .arg("-C")
-        .arg(tmppath)
-        .output()?;
+        println!("Checking for updates...");
 
-    if !extract.status.success() {
-        return Err("Failed to extract archive".into());
-    }
+        let latest_tag = fetch_latest_tag(&repo)?;
+        println!("Latest version: {latest_tag}");
 
-    // Install binary
-    let bin_dir = home_dir().join(".local").join("bin");
-    std::fs::create_dir_all(&bin_dir)?;
-    let dest = bin_dir.join("lk");
-    std::fs::remove_file(&dest).ok();
-    std::fs::copy(tmppath.join("lk"), &dest)?;
+        let base_url = format!("https://github.com/{repo}/releases/download/{latest_tag}");
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
-    }
+        // Use tempfile crate for secure temporary directory
+        let tmpdir = tempfile::tempdir()?;
+        let tmppath = tmpdir.path();
+
+        // Download binary archive
+        let download_url = format!("{base_url}/{asset_name}");
+        println!("Downloading {download_url}...");
+
+        let archive_path = tmppath.join(&asset_name);
+        let dl = std::process::Command::new("curl")
+            .args(["-fSL", &download_url, "-o"])
+            .arg(&archive_path)
+            .output()?;
+
+        if !dl.status.success() {
+            return Err(format!(
+                "Download failed: {}",
+                String::from_utf8_lossy(&dl.stderr)
+            )
+            .into());
+        }
+
+        // Download and verify checksum
+        let checksum_url = format!("{base_url}/{checksum_name}");
+        let checksum_path = tmppath.join(checksum_name);
+        let dl_checksum = std::process::Command::new("curl")
+            .args(["-fsSL", &checksum_url, "-o"])
+            .arg(&checksum_path)
+            .output()?;
+
+        if dl_checksum.status.success() {
+            verify_checksum(&archive_path, &checksum_path, &asset_name)?;
+            println!("Checksum verified.");
+        } else {
+            eprintln!("Warning: checksums.txt not found in release, skipping verification.");
+        }
+
+        // Extract
+        let extract = std::process::Command::new("tar")
+            .args(["xzf"])
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(tmppath)
+            .output()?;
+
+        if !extract.status.success() {
+            return Err("Failed to extract archive".into());
+        }
+
+        // Install binary
+        let bin_dir = home_dir().join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir)?;
+        let d = bin_dir.join("lk");
+        std::fs::remove_file(&d).ok();
+        std::fs::copy(tmppath.join("lk"), &d)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755))?;
+        }
+
+        // tmpdir is automatically cleaned up when dropped
+        d
+    };
+
+    // === Shared post-update logic ===
 
     // Install embedded Claude commands
     install_embedded_commands()?;
@@ -968,6 +1026,8 @@ fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.trim().strip_prefix("lk ").map(|v| v.to_string()))
         .unwrap_or_else(|| VERSION.to_string());
+
+    // Update config
     std::fs::create_dir_all(&config_dir)?;
     let config_json = serde_json::json!({
         "install_dir": "",
@@ -983,7 +1043,6 @@ fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
         let _ = open_db_with_migrate(); // run migration + auto-sync if needed
     }
 
-    // tmpdir is automatically cleaned up when dropped
     println!("\nUpdate complete! (lk {new_version})");
     Ok(())
 }
