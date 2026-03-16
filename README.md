@@ -4,10 +4,12 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 
 ## Features
 
-- Project-local knowledge base stored in `.claude/knowledge.db`
-- Full-text search across titles, content, and keywords
+- Project-local knowledge base stored in `.knowledge/knowledge.db`
+- Full-text search across titles, content, and keywords with relevance scoring
+- Duplicate detection when adding entries (skip with `--force`)
 - Sync knowledge from `.knowledge/` markdown files (shareable via Git)
 - Export local entries to markdown for team sharing
+- Bulk delete with `purge` by category or source
 - Auto-extract keywords from entries
 - Self-update from GitHub Releases
 - Installs Claude Code slash commands for seamless integration
@@ -64,11 +66,12 @@ lk <COMMAND>
 
 Commands:
   init              Initialize knowledge base for current project
-  add <title>       Add a knowledge entry
-  search <query>    Search knowledge entries
+  add <title>       Add a knowledge entry (with duplicate detection)
+  search <query>    Search knowledge entries (with relevance scoring)
   get <id>          Get a single entry by ID
   edit <id>         Edit an existing entry
   delete <id>       Delete an entry
+  purge             Delete all entries by category or source
   list              List all entries
   sync              Sync .knowledge/ files with DB
   export            Export local entries to markdown
@@ -85,16 +88,22 @@ Commands:
 - `--json` - Output as JSON (available on most commands)
 - `--keywords "kw1,kw2"` - Comma-separated keywords (for `add`)
 - `--content "..."` - Entry content (for `add`)
-- `--category <cat>` - Filter by category (for `search`, `list`)
+- `--category <cat>` - Filter by category (for `search`, `list`, `purge`)
+- `--source <src>` - Filter by source: `local` or `shared` (for `search`, `list`, `purge`)
 - `--limit <n>` - Max results, default 5 (for `search`)
 - `--since <YYYY-MM-DD>` - Only return entries updated since this date (for `search`)
+- `--full` - Include full content in JSON output, eliminating the need for `lk get` (for `search`)
+- `--force` - Skip duplicate check when adding (for `add`)
 
 ## How It Works
 
 ### Storage
 
-- **SQLite DB** at `.claude/knowledge.db` (git-ignored) - local search index
+All lk-managed files are stored under the `.knowledge/` directory:
+
+- **SQLite DB** at `.knowledge/knowledge.db` (git-ignored) - local search index
 - **Markdown files** in `.knowledge/` (git-tracked) - shareable knowledge
+- **Search log** at `.knowledge/search.log` (git-ignored) - optional search logging
 
 ### What to commit
 
@@ -151,7 +160,7 @@ After `lk init`, Claude Code will automatically:
 
 1. Search the knowledge base before exploring code
 2. Add new discoveries via `/lk-knowledge-add-db`
-3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`
+3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`
 
 ## Search Logging
 
