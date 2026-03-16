@@ -22,5 +22,8 @@ $ARGUMENTS contains a description of what knowledge to save, or is empty to auto
 ## Guidelines
 - Keep entries granular: one concept per entry
 - Content should be 2-5 sentences, factual and concise
-- Include file paths and class/function names when relevant
+- Focus on **why** (design decisions, rationale, trade-offs) rather than **what** (line numbers, counts, implementation details that can be read from code)
+  - BAD: "The schema has 3 tables at db.rs:34-78" — goes stale when code changes
+  - GOOD: "FTS5 is used for full-text search to avoid external dependencies" — stays true
+- Reference function/struct names rather than line numbers
 - Keywords should include both English and Japanese terms if applicable

@@ -35,7 +35,10 @@ keywords: [specific, keywords]
 3. Key rules for entries:
    - Each `## Entry:` should cover ONE concept/fact
    - 2-5 sentences per entry (keeps context consumption low)
-   - Include concrete references: file paths, class names, config keys
+   - Focus on **why** (design decisions, rationale, trade-offs) rather than **what** (line numbers, counts, implementation details that Grep/Read can reveal)
+     - BAD: "15 commands defined at main.rs:18-157" — goes stale on every addition
+     - GOOD: "Commands use clap derive API for type-safe argument parsing"
+   - Reference function/struct names rather than line numbers when pointing to code
    - Keywords should cover both the concept and implementation terms
 4. Show the draft to the user for review
 5. After approval, save to the appropriate .knowledge/ subdirectory
