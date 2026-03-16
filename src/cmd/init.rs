@@ -51,6 +51,7 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
     let gitignore_path = root.join(".gitignore");
     let gitignore_entries = [
         ".knowledge/knowledge.db",
+        ".knowledge/knowledge.db.bak.*",
         ".knowledge/search.log",
         ".knowledge/command.log",
     ];

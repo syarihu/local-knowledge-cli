@@ -1,4 +1,5 @@
 .knowledge/knowledge.db
+.knowledge/knowledge.db.bak.*
 .knowledge/search.log
 .knowledge/command.log
 .claude/search.log
