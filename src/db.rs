@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::keywords;
-use crate::now_iso;
+use crate::util::now_iso;
 
 const ENTRY_COLS: &str = "id, title, content, category, source, source_file, file_hash, status, superseded_by, created_at, updated_at";
 
