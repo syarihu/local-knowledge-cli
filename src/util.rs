@@ -10,7 +10,7 @@ pub fn get_project_root() -> PathBuf {
     let cwd = std::env::current_dir().expect("Cannot get current directory");
     let mut current = cwd.as_path();
     loop {
-        for marker in [".git", ".knowledge", ".claude"] {
+        for marker in [".git", ".knowledge"] {
             if current.join(marker).exists() {
                 return current.to_path_buf();
             }
