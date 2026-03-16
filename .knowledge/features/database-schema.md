@@ -13,7 +13,7 @@ The DB schema (defined in `init_db()` in `src/db.rs`) has 3 tables: `entries` (i
 ## Entry: Search Implementation
 keywords: [search, fts, keyword-fallback, search_entries, relevance-scoring, stale-detection]
 
-The `search_entries()` function in `src/db.rs` implements a two-phase search: first FTS5 full-text search with relevance scoring via `fts.rank`, then a supplementary keyword table search for additional matches. Results include a normalized `score` (0.0–1.0) and `stale` flag (true if not updated in 90+ days). Deprecated entries show a warning with `superseded_by` link. Results can be filtered by category, source, and date via `--since`. The `--full` flag includes full content in JSON output.
+The `search_entries()` function in `src/db.rs` implements a three-phase search: (1) FTS5 full-text search with trigram tokenizer and relevance scoring via `fts.rank`, (2) supplementary keyword table search for additional matches, and (3) LIKE fallback for short queries (e.g., 2-char CJK words) that trigram FTS cannot match. Results include a normalized `score` (0.0–1.0) and `stale` flag (true if not updated within the configurable `stale_threshold_days`, default 90). Deprecated entries show a warning with `superseded_by` link. Results can be filtered by category, source, and date via `--since`. The `--full` flag includes full content in JSON output.
 
 ## Entry: Database Configuration
 keywords: [wal, foreign-keys, open_db, init_db, migration]

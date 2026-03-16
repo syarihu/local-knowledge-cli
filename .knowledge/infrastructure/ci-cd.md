@@ -13,4 +13,4 @@ The `.github/workflows/release.yml` triggers on `v*` tags and has 2 jobs. The `b
 ## Entry: Setup Script
 keywords: [setup.sh, install, curl, checksum-verify]
 
-The `setup.sh` (109 lines) installer detects the platform, downloads the binary from GitHub Releases, verifies the SHA256 checksum, installs to `~/.local/bin/lk`, runs `lk install-commands`, saves config to `~/.config/lk/config.json`, and warns if `~/.local/bin` is not in PATH. Supports specifying a version argument or defaults to latest.
+The `setup.sh` installer detects the platform, downloads the binary from GitHub Releases, verifies the SHA256 checksum, installs to `~/.local/bin/lk`, runs `lk install-commands`, saves config to `~/.config/lk/config.json`, and warns if `~/.local/bin` is not in PATH. Supports specifying a version argument or defaults to latest.
