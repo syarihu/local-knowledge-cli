@@ -128,10 +128,10 @@ All lk-managed files are stored under the `.knowledge/` and `.claude/` directori
 
 Knowledge entries have two categories:
 
-- **Shared** (`.knowledge/` markdown files, git-tracked) — Architecture, design decisions, team conventions, and other knowledge that the whole team should know. Export with `lk export` and commit.
-- **Local** (DB only, git-ignored) — Personal investigation notes, debugging findings, and frequently used facts specific to your workflow. These stay on your machine and don't need to be shared.
+- **Shared** (`.knowledge/` markdown files, git-tracked) — Architecture, design decisions, team conventions, and other stable knowledge that the whole team should know. Write with `/lk-knowledge-write-md` or `/lk-knowledge-from-branch` and commit. Stale after 30 days (configurable).
+- **Local** (DB only, git-ignored) — LLM investigation cache that reduces context consumption when working on similar tasks repeatedly. These stay on your machine as disposable cache. Stale after 14 days (configurable). When stale, re-investigate rather than updating.
 
-Not everything needs to be shared. A good rule of thumb: if it would help a new team member or Claude understand the project, export it. If it's only useful to you during active development, keep it local.
+A good rule of thumb: shared knowledge is for stable facts that would help a new team member or Claude understand the project. Local knowledge is a performance optimization — it lets Claude skip re-reading code it recently investigated.
 
 ### Team workflow
 
@@ -191,8 +191,11 @@ After `lk init`, Claude Code will automatically:
 ```toml
 # .knowledge/config.toml
 
-# Days before an entry is considered stale (default: 90)
-stale_threshold_days = 90
+# Days before a shared entry is considered stale (default: 30)
+stale_threshold_days = 30
+
+# Days before a local entry is considered stale (default: 14)
+local_stale_threshold_days = 14
 
 # Default limit for `lk search` results (default: 5)
 search_default_limit = 5

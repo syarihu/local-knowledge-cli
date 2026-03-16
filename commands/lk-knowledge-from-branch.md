@@ -1,9 +1,9 @@
 ---
 description: Extract knowledge entries from the current branch diff before merging
-allowed-tools: Bash(lk *), Bash(git *), Bash(gh *), Bash(wc *), Read, Glob, Grep, Agent
+allowed-tools: Bash(lk *), Bash(git *), Bash(gh *), Bash(wc *), Read, Write, Glob, Grep, Agent
 ---
 
-Extract knowledge entries from the current branch's diff compared to the base branch. Useful before merging a feature branch to capture what was built, changed, or learned.
+Extract knowledge from the current branch's diff and write it as shared markdown files in `.knowledge/`. Useful before merging a feature branch to capture what was built, changed, or learned as team-shared knowledge.
 
 ## Arguments
 $ARGUMENTS optionally specifies the base branch to diff against (e.g., "main", "develop"). If empty, auto-detect.
@@ -43,29 +43,51 @@ $ARGUMENTS optionally specifies the base branch to diff against (e.g., "main", "
 
 For each perspective, read the changed files and surrounding code to understand context, not just the diff lines.
 
-### Phase 3: Generate Knowledge Entries
+### Phase 3: Generate Shared Knowledge Markdown
 
-For each noteworthy discovery, register it via `lk add`:
+Write knowledge as `.knowledge/` markdown files (NOT `lk add` to local DB). These files are git-tracked and shared with the team.
 
-```bash
-lk add "<title>" --keywords "kw1,kw2,..." --content "<2-5 sentences>" --category "<category>" --json
+**File naming**: `.knowledge/{topic}.md` — use a descriptive topic name derived from the branch or feature (e.g., `auth-refactor.md`, `payment-module.md`).
+
+**File format**:
+```markdown
+---
+keywords: [keyword1, keyword2]
+category: features
+---
+
+# Topic Title
+
+## Entry: Subtopic 1
+keywords: [specific, keywords]
+
+2-5 sentences of factual content about this subtopic.
+Reference function/struct names, not line numbers.
+
+## Entry: Subtopic 2
+keywords: [specific, keywords]
+
+2-5 sentences of factual content about this subtopic.
 ```
 
 Rules:
 - Choose appropriate categories: `features`, `architecture`, `conventions`, `infrastructure`
 - Include the branch name or ticket number in keywords if identifiable from branch name or commit messages
 - Each entry should be self-contained and useful to someone unfamiliar with this branch
-- If `lk add` returns `"added": false` with `similar_entries`, use `lk edit <id>` to update the existing entry instead
 - Do NOT create entries for trivial changes (version bumps, typo fixes, dependency updates with no logic change)
-- Aim for 2-5 sentences per entry, including concrete file paths and function/struct names
+- Aim for 2-5 sentences per entry — stable facts, not volatile details
+- Reference function/struct names instead of line numbers
+- Check existing `.knowledge/` files first — update existing files if the topic already exists, rather than creating duplicates
+- Run `lk sync` after writing files to import them into the local DB
 
 ### Phase 4: Report
 
-1. Present a summary of what was added/updated:
-   - List each knowledge entry with its title and category
-   - Note any entries that were updated (via `lk edit`) rather than created new
-2. Run `lk stats` to show overall knowledge base status
-3. If there are aspects of the branch that are hard to capture as knowledge (e.g., UX decisions, business context), mention them as suggestions for manual documentation
+1. Present a summary of what was created/updated:
+   - List each markdown file with its entries and categories
+   - Note any existing files that were updated rather than created new
+2. Run `lk sync` to import the new files, then `lk stats` to show overall knowledge base status
+3. Remind the user to review the generated files and commit them with the PR
+4. If there are aspects of the branch that are hard to capture as knowledge (e.g., UX decisions, business context), mention them as suggestions for manual documentation
 
 ## Guidelines
 - Focus on knowledge that would help someone understand this branch's changes WITHOUT reading the full diff

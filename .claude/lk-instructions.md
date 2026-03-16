@@ -4,6 +4,11 @@ This project has a local knowledge base.
 If `lk` command is not available, install it first: `brew install syarihu/tap/lk && lk init`
 Always run `lk` by command name (not full path) so it resolves via PATH.
 
+### Design Philosophy
+- **Shared knowledge** (`.knowledge/*.md`, git-tracked): Stable project knowledge — architecture, design decisions, conventions. Stale after 30 days (configurable).
+- **Local knowledge** (DB only, git-ignored): LLM investigation cache — reduces context consumption when working on similar tasks repeatedly. Stale after 14 days (configurable). Do NOT export local cache to markdown; if stale, re-investigate instead.
+- When capturing knowledge from a completed feature branch, use `/lk-knowledge-from-branch` to write shared markdown directly (not `lk add`).
+
 ### Pre-investigation Rule
 - Before reading code with Read, Grep, or Glob tools, first run `lk search "<keyword>" --json --limit 5` to check existing knowledge
 - Use `--full` to include full content directly: `lk search "<keyword>" --json --full --limit 5`
@@ -17,7 +22,7 @@ When launching Explore or general-purpose agents for code investigation, always 
 > Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. If useful results are found, use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
 
 ### Auto-accumulation of Knowledge
-- After investigating code or design, save noteworthy discoveries with `lk add "<title>" --keywords "kw1,kw2" --content "..."`
+- After investigating code or design, save noteworthy discoveries with `lk add "<title>" --keywords "kw1,kw2" --content "..."` — these go to the local DB as cache
 - If `lk add` returns `"added": false` with `similar_entries`, use `lk edit <id>` to update the existing entry instead of creating a duplicate
 - Use `--force` to skip duplicate check when you are certain a new entry is needed
 - When adding knowledge that replaces an older approach, mark the old entry: `lk edit <old_id> --status deprecated --superseded-by <new_id>`
@@ -46,6 +51,7 @@ When launching Explore or general-purpose agents for code investigation, always 
 - When modifying code that relates to an existing knowledge entry, update that entry with `lk edit <id>`
 - Use `--touch` flag when reviewing an entry and confirming it is still accurate
 - Mark outdated entries with `lk edit <id> --status deprecated --superseded_by <new_id>`
+- Local cache entries (source=local) become stale after 14 days — when stale, prefer re-investigation over updating
 
 ### Keywords Rule (when adding)
 - Include feature names, screen names, or module names as keywords
@@ -59,7 +65,7 @@ When launching Explore or general-purpose agents for code investigation, always 
 - `lk search "<query>" --json` - Search knowledge (use `--since`, `--category`, `--source`, `--full` to filter)
 - `lk search "<query>" --json --full` - Search with full content (no need for `lk get`)
 - `lk get <id> --json` - Get entry details
-- `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"` - Add knowledge (checks duplicates)
+- `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"` - Add knowledge to local cache (checks duplicates)
 - `lk add "<title>" --force --content "..."` - Add knowledge (skip duplicate check)
 - `lk list --category "features" --source "local" --json` - List entries with filters (supports `--limit N` and `--offset N` for pagination)
 - `lk edit <id> --title "..." --keywords "..." --content "..."` - Edit existing entry
@@ -67,4 +73,4 @@ When launching Explore or general-purpose agents for code investigation, always 
 - `lk purge --source local` / `lk purge --category features` - Bulk delete entries
 - `lk export` - Export all local entries / `lk export --ids 1,2,3` - Export specific entries / `lk export --query "auth"` - Export by search
 - `lk sync` - Sync markdown files with DB
-- `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` - Claude skills
+- `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` - Claude skills

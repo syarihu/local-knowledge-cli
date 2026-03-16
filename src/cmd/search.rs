@@ -14,7 +14,6 @@ pub fn cmd_search(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let config = crate::config::Config::load(&get_knowledge_dir());
-    let stale_threshold_days = config.stale_threshold_days;
     let results = db::search_entries(&conn, query, keyword_only, category, source, since, limit)?;
 
     let result_count = results.len().to_string();
@@ -26,7 +25,8 @@ pub fn cmd_search(
             .map(|r| {
                 let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
                 let days = days_since(&r.updated_at);
-                let stale = days.map(|d| d >= stale_threshold_days).unwrap_or(false);
+                let threshold = config.stale_threshold_for(&r.source);
+                let stale = days.map(|d| d >= threshold).unwrap_or(false);
                 let mut obj = serde_json::json!({
                     "id": r.id,
                     "title": r.title,
@@ -59,7 +59,8 @@ pub fn cmd_search(
             let snippet = truncate_str(&r.content, 80);
             let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
             let days = days_since(&r.updated_at);
-            let stale = days.map(|d| d >= stale_threshold_days).unwrap_or(false);
+            let threshold = config.stale_threshold_for(&r.source);
+            let stale = days.map(|d| d >= threshold).unwrap_or(false);
             if r.status == "deprecated" {
                 print!(
                     "  \u{26a0} [{}] {} ({}) [DEPRECATED]",

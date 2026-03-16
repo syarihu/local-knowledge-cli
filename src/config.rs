@@ -2,8 +2,10 @@ use std::path::Path;
 
 /// Project-level configuration loaded from `.knowledge/config.toml`.
 pub struct Config {
-    /// Days before an entry is considered stale (default: 90)
+    /// Days before a shared entry is considered stale (default: 30)
     pub stale_threshold_days: i64,
+    /// Days before a local entry is considered stale (default: 14)
+    pub local_stale_threshold_days: i64,
     /// Default limit for `lk search` results (default: 5)
     pub search_default_limit: usize,
     /// Auto-sync .knowledge/ markdown files before read commands (default: true)
@@ -17,7 +19,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            stale_threshold_days: 90,
+            stale_threshold_days: 30,
+            local_stale_threshold_days: 14,
             search_default_limit: 5,
             auto_sync: true,
             secret_detection: true,
@@ -27,6 +30,15 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Return the stale threshold for the given entry source.
+    pub fn stale_threshold_for(&self, source: &str) -> i64 {
+        if source == "local" {
+            self.local_stale_threshold_days
+        } else {
+            self.stale_threshold_days
+        }
+    }
+
     /// Load config from `.knowledge/config.toml`. Returns defaults if file doesn't exist.
     /// Environment variables override file values:
     /// - `LK_NO_AUTO_SYNC=1` → auto_sync = false
@@ -51,6 +63,13 @@ impl Config {
                                 && v > 0
                             {
                                 config.stale_threshold_days = v;
+                            }
+                        }
+                        "local_stale_threshold_days" => {
+                            if let Ok(v) = value.parse::<i64>()
+                                && v > 0
+                            {
+                                config.local_stale_threshold_days = v;
                             }
                         }
                         "search_default_limit" => {
@@ -94,8 +113,11 @@ pub const DEFAULT_CONFIG_CONTENT: &str = "\
 # lk configuration
 # This file is read by lk commands. Environment variables override these values.
 
-# Days before an entry is considered stale (default: 90)
-stale_threshold_days = 90
+# Days before a shared entry is considered stale (default: 30)
+stale_threshold_days = 30
+
+# Days before a local entry is considered stale (default: 14)
+local_stale_threshold_days = 14
 
 # Default limit for `lk search` results (default: 5)
 search_default_limit = 5
@@ -120,7 +142,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.stale_threshold_days, 90);
+        assert_eq!(config.stale_threshold_days, 30);
+        assert_eq!(config.local_stale_threshold_days, 14);
         assert_eq!(config.search_default_limit, 5);
         assert!(config.auto_sync);
         assert!(config.secret_detection);
@@ -131,7 +154,8 @@ mod tests {
     fn test_load_missing_file() {
         let dir = TempDir::new().unwrap();
         let config = Config::load(dir.path());
-        assert_eq!(config.stale_threshold_days, 90);
+        assert_eq!(config.stale_threshold_days, 30);
+        assert_eq!(config.local_stale_threshold_days, 14);
     }
 
     #[test]
@@ -139,11 +163,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "stale_threshold_days = 30\nsearch_default_limit = 10\nauto_sync = false\ncommand_log = true\n",
+            "stale_threshold_days = 60\nlocal_stale_threshold_days = 7\nsearch_default_limit = 10\nauto_sync = false\ncommand_log = true\n",
         )
         .unwrap();
         let config = Config::load(dir.path());
-        assert_eq!(config.stale_threshold_days, 30);
+        assert_eq!(config.stale_threshold_days, 60);
+        assert_eq!(config.local_stale_threshold_days, 7);
         assert_eq!(config.search_default_limit, 10);
         assert!(!config.auto_sync);
         assert!(config.command_log);
@@ -159,6 +184,7 @@ mod tests {
         .unwrap();
         let config = Config::load(dir.path());
         assert_eq!(config.stale_threshold_days, 60);
+        assert_eq!(config.local_stale_threshold_days, 14); // default
         assert_eq!(config.search_default_limit, 5); // default
     }
 
@@ -167,11 +193,20 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "stale_threshold_days = -1\nsearch_default_limit = 0\n",
+            "stale_threshold_days = -1\nsearch_default_limit = 0\nlocal_stale_threshold_days = 0\n",
         )
         .unwrap();
         let config = Config::load(dir.path());
-        assert_eq!(config.stale_threshold_days, 90); // default because -1 <= 0
+        assert_eq!(config.stale_threshold_days, 30); // default because -1 <= 0
+        assert_eq!(config.local_stale_threshold_days, 14); // default because 0 <= 0
         assert_eq!(config.search_default_limit, 5); // default because 0 <= 0
+    }
+
+    #[test]
+    fn test_stale_threshold_for_source() {
+        let config = Config::default();
+        assert_eq!(config.stale_threshold_for("local"), 14);
+        assert_eq!(config.stale_threshold_for("shared"), 30);
+        assert_eq!(config.stale_threshold_for("unknown"), 30);
     }
 }

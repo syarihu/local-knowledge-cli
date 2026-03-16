@@ -9,7 +9,8 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
     let kws = db::get_keywords(&conn, id)?;
 
     let days = days_since(&entry.updated_at);
-    let stale = days.map(|d| d >= config.stale_threshold_days).unwrap_or(false);
+    let threshold = config.stale_threshold_for(&entry.source);
+    let stale = days.map(|d| d >= threshold).unwrap_or(false);
 
     if json_output {
         let mut out = serde_json::json!({
