@@ -59,7 +59,7 @@ enum Commands {
         /// Filter by source ("local" or "shared")
         #[arg(long)]
         source: Option<String>,
-        /// Only return entries updated since this date (e.g., 2026-01-01)
+        /// Only return entries updated since this date (ISO 8601, e.g., 2026-01-01 or 2026-01-01T09:00:00)
         #[arg(long)]
         since: Option<String>,
         /// Max results
@@ -208,8 +208,25 @@ enum Commands {
     },
 }
 
+impl Commands {
+    fn is_json_mode(&self) -> bool {
+        match self {
+            Commands::Add { json, .. }
+            | Commands::Search { json, .. }
+            | Commands::Get { json, .. }
+            | Commands::Edit { json, .. }
+            | Commands::List { json, .. }
+            | Commands::Sync { json, .. }
+            | Commands::Keywords { json, .. }
+            | Commands::Stats { json, .. } => *json,
+            _ => false,
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
+    let json_mode = cli.command.is_json_mode();
 
     // Auto-sync before read commands (if enabled)
     let needs_auto_sync = matches!(
@@ -318,7 +335,12 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("Error: {e}");
+        if json_mode {
+            let err = serde_json::json!({ "error": e.to_string() });
+            eprintln!("{}", serde_json::to_string(&err).unwrap_or_default());
+        } else {
+            eprintln!("Error: {e}");
+        }
         std::process::exit(1);
     }
 }
