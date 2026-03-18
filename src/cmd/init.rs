@@ -218,7 +218,7 @@ Always run `lk` by command name (not full path) so it resolves via PATH.\n\
 \n\
 ### Design Philosophy\n\
 - **Shared knowledge** (`.knowledge/*.md`, git-tracked): Stable project knowledge — architecture, design decisions, conventions. Stale after 30 days (configurable).\n\
-- **Local knowledge** (DB only, git-ignored): LLM investigation cache — reduces context consumption when working on similar tasks repeatedly. Stale after 14 days (configurable). Do NOT export local cache to markdown; if stale, re-investigate instead.\n\
+- **Local knowledge** (DB only, git-ignored): LLM investigation cache — reduces context consumption when working on similar tasks repeatedly. Stale after 7 days (configurable). Do NOT export local cache to markdown; if stale, re-investigate instead.\n\
 - When capturing knowledge from a completed feature branch, use `/lk-knowledge-from-branch` to write shared markdown directly (not `lk add`).\n\
 \n\
 ### Pre-investigation Rule\n\
@@ -226,7 +226,9 @@ Always run `lk` by command name (not full path) so it resolves via PATH.\n\
 - Use `--full` to include full content directly: `lk search \"<keyword>\" --json --full --limit 5`\n\
 - If results are found and `--full` was not used, use `lk get <id> --json` for details\n\
 - If a result has `\"status\": \"deprecated\"` with `\"superseded_by\": <id>`, use the superseding entry instead\n\
-- If a result has `\"stale\": true`, verify against the current code; if outdated update with `lk edit <id>`, if still correct run `lk edit <id> --touch` to reset the stale warning\n\
+- If a result has `\"stale\": true`, **do not use it as-is**. Verify against current code with Grep/Read, then **must** run one of:\n\
+  - `lk edit <id> --content \"...\" --keywords \"...\"` if outdated\n\
+  - `lk edit <id> --touch` if still correct\n\
 - If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read\n\
 \n\
 ### Agent Launch Rule\n\
@@ -289,7 +291,7 @@ After an Explore or general-purpose agent returns results containing a `## Knowl
 - Use lowercase, hyphen-separated keywords (e.g., \"auth-flow\", not \"AuthFlow\" or \"auth_flow\")\n\
 \n\
 ### Staleness Management Rule\n\
-- When modifying code that relates to an existing knowledge entry, update that entry with `lk edit <id>`\n\
+- When modifying code that relates to an existing knowledge entry, **must** update that entry with `lk edit <id>`\n\
 - Use `--touch` flag when reviewing an entry and confirming it is still accurate\n\
 - Mark outdated entries with `lk edit <id> --status deprecated --superseded_by <new_id>`\n\
 - Local cache entries (source=local) become stale after 14 days — when stale, prefer re-investigation over updating\n\

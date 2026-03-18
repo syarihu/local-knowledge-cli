@@ -4,7 +4,7 @@ use std::path::Path;
 pub struct Config {
     /// Days before a shared entry is considered stale (default: 30)
     pub stale_threshold_days: i64,
-    /// Days before a local entry is considered stale (default: 14)
+    /// Days before a local entry is considered stale (default: 7)
     pub local_stale_threshold_days: i64,
     /// Default limit for `lk search` results (default: 5)
     pub search_default_limit: usize,
@@ -20,7 +20,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             stale_threshold_days: 30,
-            local_stale_threshold_days: 14,
+            local_stale_threshold_days: 7,
             search_default_limit: 5,
             auto_sync: true,
             secret_detection: true,
@@ -116,8 +116,8 @@ pub const DEFAULT_CONFIG_CONTENT: &str = "\
 # Days before a shared entry is considered stale (default: 30)
 stale_threshold_days = 30
 
-# Days before a local entry is considered stale (default: 14)
-local_stale_threshold_days = 14
+# Days before a local entry is considered stale (default: 7)
+local_stale_threshold_days = 7
 
 # Default limit for `lk search` results (default: 5)
 search_default_limit = 5
@@ -143,7 +143,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.stale_threshold_days, 30);
-        assert_eq!(config.local_stale_threshold_days, 14);
+        assert_eq!(config.local_stale_threshold_days, 7);
         assert_eq!(config.search_default_limit, 5);
         assert!(config.auto_sync);
         assert!(config.secret_detection);
@@ -155,7 +155,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config = Config::load(dir.path());
         assert_eq!(config.stale_threshold_days, 30);
-        assert_eq!(config.local_stale_threshold_days, 14);
+        assert_eq!(config.local_stale_threshold_days, 7);
     }
 
     #[test]
@@ -184,7 +184,7 @@ mod tests {
         .unwrap();
         let config = Config::load(dir.path());
         assert_eq!(config.stale_threshold_days, 60);
-        assert_eq!(config.local_stale_threshold_days, 14); // default
+        assert_eq!(config.local_stale_threshold_days, 7); // default
         assert_eq!(config.search_default_limit, 5); // default
     }
 
@@ -198,14 +198,14 @@ mod tests {
         .unwrap();
         let config = Config::load(dir.path());
         assert_eq!(config.stale_threshold_days, 30); // default because -1 <= 0
-        assert_eq!(config.local_stale_threshold_days, 14); // default because 0 <= 0
+        assert_eq!(config.local_stale_threshold_days, 7); // default because 0 <= 0
         assert_eq!(config.search_default_limit, 5); // default because 0 <= 0
     }
 
     #[test]
     fn test_stale_threshold_for_source() {
         let config = Config::default();
-        assert_eq!(config.stale_threshold_for("local"), 14);
+        assert_eq!(config.stale_threshold_for("local"), 7);
         assert_eq!(config.stale_threshold_for("shared"), 30);
         assert_eq!(config.stale_threshold_for("unknown"), 30);
     }

@@ -6,7 +6,7 @@ Always run `lk` by command name (not full path) so it resolves via PATH.
 
 ### Design Philosophy
 - **Shared knowledge** (`.knowledge/*.md`, git-tracked): Stable project knowledge — architecture, design decisions, conventions. Stale after 30 days (configurable).
-- **Local knowledge** (DB only, git-ignored): LLM investigation cache — reduces context consumption when working on similar tasks repeatedly. Stale after 14 days (configurable). Do NOT export local cache to markdown; if stale, re-investigate instead.
+- **Local knowledge** (DB only, git-ignored): LLM investigation cache — reduces context consumption when working on similar tasks repeatedly. Stale after 7 days (configurable). Do NOT export local cache to markdown; if stale, re-investigate instead.
 - When capturing knowledge from a completed feature branch, use `/lk-knowledge-from-branch` to write shared markdown directly (not `lk add`).
 
 ### Pre-investigation Rule
@@ -14,7 +14,9 @@ Always run `lk` by command name (not full path) so it resolves via PATH.
 - Use `--full` to include full content directly: `lk search "<keyword>" --json --full --limit 5`
 - If results are found and `--full` was not used, use `lk get <id> --json` for details
 - If a result has `"status": "deprecated"` with `"superseded_by": <id>`, use the superseding entry instead
-- If a result has `"stale": true`, verify against the current code; if outdated update with `lk edit <id>`, if still correct run `lk edit <id> --touch` to reset the stale warning
+- If a result has `"stale": true`, **do not use it as-is**. Verify against current code with Grep/Read, then **must** run one of:
+  - `lk edit <id> --content "..." --keywords "..."` if outdated
+  - `lk edit <id> --touch` if still correct
 - If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read
 
 ### Agent Launch Rule
@@ -77,10 +79,10 @@ After an Explore or general-purpose agent returns results containing a `## Knowl
 - Use lowercase, hyphen-separated keywords (e.g., "auth-flow", not "AuthFlow" or "auth_flow")
 
 ### Staleness Management Rule
-- When modifying code that relates to an existing knowledge entry, update that entry with `lk edit <id>`
+- When modifying code that relates to an existing knowledge entry, **must** update that entry with `lk edit <id>`
 - Use `--touch` flag when reviewing an entry and confirming it is still accurate
 - Mark outdated entries with `lk edit <id> --status deprecated --superseded_by <new_id>`
-- Local cache entries (source=local) become stale after 14 days — when stale, prefer re-investigation over updating
+- Local cache entries (source=local) become stale after 7 days — when stale, prefer re-investigation over updating
 
 ### Keywords Rule (when adding)
 - Include feature names, screen names, or module names as keywords
