@@ -73,6 +73,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
         CREATE INDEX IF NOT EXISTS idx_entries_category ON entries(category);
         CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
         CREATE INDEX IF NOT EXISTS idx_entries_source_file ON entries(source_file);
+        CREATE INDEX IF NOT EXISTS idx_entries_source_status ON entries(source, status);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
             title,
