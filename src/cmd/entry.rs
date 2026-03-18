@@ -144,7 +144,12 @@ pub fn cmd_edit(
         // --superseded-by 0 clears the field (sets to None)
         let new_superseded = match superseded_by {
             Some(0) => None,
-            Some(v) => Some(v),
+            Some(v) => {
+                if db::get_entry(&conn, v)?.is_none() {
+                    return Err(format!("Entry #{v} not found. Cannot set superseded-by to a non-existent entry.").into());
+                }
+                Some(v)
+            }
             None => current.superseded_by,
         };
         db::update_entry_status(&conn, id, status.unwrap_or(&current.status), new_superseded)?;
