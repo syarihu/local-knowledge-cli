@@ -209,5 +209,4 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-const LK_INSTRUCTIONS_CONTENT: &str =
-    include_str!("../../.knowledge/lk-instructions.md");
+const LK_INSTRUCTIONS_CONTENT: &str = include_str!("../../.knowledge/lk-instructions.md");

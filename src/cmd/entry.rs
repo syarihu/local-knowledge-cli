@@ -146,7 +146,10 @@ pub fn cmd_edit(
             Some(0) => None,
             Some(v) => {
                 if db::get_entry(&conn, v)?.is_none() {
-                    return Err(format!("Entry #{v} not found. Cannot set superseded-by to a non-existent entry.").into());
+                    return Err(format!(
+                        "Entry #{v} not found. Cannot set superseded-by to a non-existent entry."
+                    )
+                    .into());
                 }
                 Some(v)
             }
