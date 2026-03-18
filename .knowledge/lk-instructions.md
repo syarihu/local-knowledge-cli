@@ -5,8 +5,8 @@ If `lk` command is not available, install it first: `brew install syarihu/tap/lk
 Always run `lk` by command name (not full path) so it resolves via PATH.
 
 ### Design Philosophy
-- **Shared knowledge** (`.knowledge/*.md`, git-tracked): Stable project knowledge — architecture, design decisions, conventions. Stale after 30 days (configurable).
-- **Local knowledge** (DB only, git-ignored): LLM investigation cache — reduces context consumption when working on similar tasks repeatedly. Stale after 7 days (configurable). Do NOT export local cache to markdown; if stale, re-investigate instead.
+- **Shared knowledge** (`.knowledge/*.md`, git-tracked): Stable project knowledge — architecture, design decisions, conventions. Staleness threshold configurable in `config.toml`.
+- **Local knowledge** (DB only, git-ignored): LLM investigation cache — reduces context consumption when working on similar tasks repeatedly. Staleness threshold configurable in `config.toml`. Do NOT export local cache to markdown; if stale, re-investigate instead.
 - When capturing knowledge from a completed feature branch, use `/lk-knowledge-from-branch` to write shared markdown directly (not `lk add`).
 
 ### Pre-investigation Rule
@@ -21,7 +21,7 @@ Always run `lk` by command name (not full path) so it resolves via PATH.
 
 ### Agent Launch Rule
 When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:
-> Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. If useful results are found, use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
+> Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. If useful results are found, use that as your starting point. If a result has `"stale": true`, verify it against current code and include the correction in your `## Knowledge to Save` section. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
 >
 > After completing your investigation, append a `## Knowledge to Save` section at the end of your response. This section captures reusable discoveries for the local knowledge base. Follow these rules:
 > - Only include knowledge that is **non-trivial and reusable** — architectural patterns, design decisions, non-obvious behavior, key function/struct roles. Skip obvious or task-specific-only findings.
@@ -81,8 +81,8 @@ After an Explore or general-purpose agent returns results containing a `## Knowl
 ### Staleness Management Rule
 - When modifying code that relates to an existing knowledge entry, **must** update that entry with `lk edit <id>`
 - Use `--touch` flag when reviewing an entry and confirming it is still accurate
-- Mark outdated entries with `lk edit <id> --status deprecated --superseded_by <new_id>`
-- Local cache entries (source=local) become stale after 7 days — when stale, prefer re-investigation over updating
+- Mark outdated entries with `lk edit <id> --status deprecated --superseded-by <new_id>`
+- Local cache entries (source=local) have a shorter stale threshold — when stale, prefer re-investigation over updating
 
 ### Keywords Rule (when adding)
 - Include feature names, screen names, or module names as keywords
