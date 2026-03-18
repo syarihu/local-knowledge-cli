@@ -20,6 +20,35 @@ Always run `lk` by command name (not full path) so it resolves via PATH.
 ### Agent Launch Rule
 When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:
 > Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. If useful results are found, use that as your starting point. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
+>
+> After completing your investigation, append a `## Knowledge to Save` section at the end of your response. This section captures reusable discoveries for the local knowledge base. Follow these rules:
+> - Only include knowledge that is **non-trivial and reusable** — architectural patterns, design decisions, non-obvious behavior, key function/struct roles. Skip obvious or task-specific-only findings.
+> - If `lk search` already returned an entry covering the same topic, do NOT re-include it. Only include genuinely new or corrected knowledge.
+> - Follow Content Guidelines: use stable identifiers (function/struct names, module names), avoid volatile details (line numbers, exact counts, specific file paths).
+> - NEVER include API keys, tokens, passwords, or secrets.
+> - If no noteworthy new knowledge was discovered, write `## Knowledge to Save` followed by `None.` instead.
+> - Use this exact format for each entry:
+>
+> ```
+> ## Knowledge to Save
+>
+> ### Entry 1: <title>
+> - **keywords**: kw1, kw2, kw3
+> - **category**: <category-name>
+> - **content**: <2-5 sentence description of the discovery. Include "why" alongside "what" when possible.>
+>
+> ### Entry 2: <title>
+> ...
+> ```
+
+### Post-Explore Knowledge Capture Rule
+After an Explore or general-purpose agent returns results containing a `## Knowledge to Save` section:
+1. If the section says `None.`, skip — no action needed.
+2. For each entry listed, run:
+   `lk add "<title>" --keywords "<kw1,kw2>" --category "<category>" --content "<content>" --json`
+3. If `lk add` returns `"added": false` with `similar_entries`, use `lk edit <id>` to merge the new information into the existing entry instead of creating a duplicate.
+4. Before running `lk add`, check keywords and categories against existing conventions using `lk list --json --limit 10` if unsure.
+5. Briefly report what was saved (e.g., "Saved 2 knowledge entries from Explore results: <title1>, <title2>").
 
 ### Auto-accumulation of Knowledge
 - After investigating code or design, save noteworthy discoveries with `lk add "<title>" --keywords "kw1,kw2" --content "..."` — these go to the local DB as cache
