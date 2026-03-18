@@ -4,7 +4,8 @@ pub fn cmd_uninstall(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = get_project_root();
     let knowledge_dir = root.join(".knowledge");
     let old_marker = "## Knowledge Base (local-knowledge-cli)";
-    let import_line = "@.claude/lk-instructions.md";
+    let import_line = "@.knowledge/lk-instructions.md";
+    let legacy_import_line = "@.claude/lk-instructions.md";
 
     if !yes
         && !confirm(&format!(
@@ -25,11 +26,16 @@ pub fn cmd_uninstall(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("  Removed .knowledge/");
     }
 
-    // 2. Remove .claude/lk-instructions.md
-    let instructions_path = root.join(".claude").join("lk-instructions.md");
+    // 2. Remove .knowledge/lk-instructions.md (and legacy .claude/lk-instructions.md)
+    let instructions_path = root.join(".knowledge").join("lk-instructions.md");
     if instructions_path.exists() {
         std::fs::remove_file(&instructions_path)?;
-        println!("  Removed .claude/lk-instructions.md");
+        println!("  Removed .knowledge/lk-instructions.md");
+    }
+    let legacy_instructions_path = root.join(".claude").join("lk-instructions.md");
+    if legacy_instructions_path.exists() {
+        std::fs::remove_file(&legacy_instructions_path)?;
+        println!("  Removed .claude/lk-instructions.md (legacy)");
     }
 
     // 3. Remove import line and old inline section from CLAUDE.md / AGENTS.md
@@ -46,11 +52,11 @@ pub fn cmd_uninstall(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
         let mut modified = false;
         let mut new_content = content.clone();
 
-        // Remove @import line
-        if new_content.contains(import_line) {
+        // Remove @import line (current and legacy)
+        if new_content.contains(import_line) || new_content.contains(legacy_import_line) {
             let lines: Vec<&str> = new_content
                 .lines()
-                .filter(|line| line.trim() != import_line)
+                .filter(|line| line.trim() != import_line && line.trim() != legacy_import_line)
                 .collect();
             new_content = lines.join("\n");
             if !new_content.ends_with('\n') && !new_content.is_empty() {

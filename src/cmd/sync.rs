@@ -64,7 +64,8 @@ pub fn sync_knowledge_dir(
         let mut found_files = std::collections::HashSet::new();
 
         for entry in walkdir_md(knowledge_dir) {
-            if entry.file_name().and_then(|n| n.to_str()) == Some("README.md") {
+            let fname = entry.file_name().and_then(|n| n.to_str());
+            if fname == Some("README.md") || fname == Some("lk-instructions.md") {
                 continue;
             }
             let rel_path = entry

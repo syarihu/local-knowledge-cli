@@ -1,1 +1,1 @@
-@.claude/lk-instructions.md
+@.knowledge/lk-instructions.md

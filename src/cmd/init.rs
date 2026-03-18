@@ -84,10 +84,8 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         println!("Created .gitignore");
     }
 
-    // 5. Write instructions to .claude/lk-instructions.md and add import to CLAUDE.md
-    let claude_dir = root.join(".claude");
-    std::fs::create_dir_all(&claude_dir)?;
-    let instructions_path = claude_dir.join("lk-instructions.md");
+    // 5. Write instructions to .knowledge/lk-instructions.md and add import to CLAUDE.md
+    let instructions_path = knowledge_dir.join("lk-instructions.md");
     let instructions_content = LK_INSTRUCTIONS_CONTENT;
 
     if instructions_path.exists() {
@@ -111,8 +109,28 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         root.join(".claude").join("CLAUDE.md"),
     ];
 
-    let import_line = "@.claude/lk-instructions.md";
+    let import_line = "@.knowledge/lk-instructions.md";
+    let old_import_line = "@.claude/lk-instructions.md";
     let old_marker = "## Knowledge Base (local-knowledge-cli)";
+
+    // Migrate from legacy .claude/lk-instructions.md if it exists
+    let legacy_instructions_path = root.join(".claude").join("lk-instructions.md");
+    if legacy_instructions_path.exists() {
+        std::fs::remove_file(&legacy_instructions_path)?;
+        println!("Migrated .claude/lk-instructions.md -> .knowledge/lk-instructions.md");
+    }
+
+    // Migrate legacy import line in AGENTS.md / CLAUDE.md
+    for candidate in &candidates {
+        if candidate.exists() {
+            let content = std::fs::read_to_string(candidate)?;
+            if content.contains(old_import_line) {
+                let new_content = content.replace(old_import_line, import_line);
+                std::fs::write(candidate, new_content)?;
+                println!("Updated import path in {}", candidate.display());
+            }
+        }
+    }
 
     // Check if any candidate already contains the import line
     let already_imported = candidates.iter().any(|p| {
