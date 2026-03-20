@@ -21,26 +21,21 @@ Always run `lk` by command name (not full path) so it resolves via PATH.
 
 ### Agent Launch Rule
 When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:
-> Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. Always use spaces to separate search terms (e.g., "auth API" not "auth-API"). If useful results are found, use that as your starting point. If a result has `"stale": true`, verify it against current code and include the correction in your `## Knowledge to Save` section. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
+> **lk search first:** Before using Read/Grep/Glob, run `lk search "<keywords>" --json --full --limit 5`.
+> - Use 1–3 space-separated keywords (e.g., "auth API" not "auth-API" or "AuthAPI")
+> - Try both English and Japanese if first search finds nothing
+> - If a result has `"stale": true`, verify against current code and include correction in `## Knowledge to Save`
+> - If no useful results, proceed with Glob/Grep/Read
 >
-> After completing your investigation, append a `## Knowledge to Save` section at the end of your response. This section captures reusable discoveries for the local knowledge base. Follow these rules:
-> - Only include knowledge that is **non-trivial and reusable** — architectural patterns, design decisions, non-obvious behavior, key function/struct roles. Skip obvious or task-specific-only findings.
-> - If `lk search` already returned an entry covering the same topic, do NOT re-include it. Only include genuinely new or corrected knowledge.
-> - Follow Content Guidelines: use stable identifiers (function/struct names, module names), avoid volatile details (line numbers, exact counts, specific file paths).
-> - NEVER include API keys, tokens, passwords, or secrets.
-> - If no noteworthy new knowledge was discovered, write `## Knowledge to Save` followed by `None.` instead.
-> - Use this exact format for each entry:
->
+> **After investigation**, append a `## Knowledge to Save` section (or `None.` if nothing new). Only include non-trivial, reusable discoveries. Do not duplicate existing entries. Never include secrets.
+> Format:
 > ```
 > ## Knowledge to Save
 >
 > ### Entry 1: <title>
 > - **keywords**: kw1, kw2, kw3
 > - **category**: <category-name>
-> - **content**: <2-5 sentence description of the discovery. Include "why" alongside "what" when possible.>
->
-> ### Entry 2: <title>
-> ...
+> - **content**: <2-5 sentences. Use stable identifiers (function/struct names), not line numbers. Include "why" alongside "what".>
 > ```
 
 ### Post-Explore Knowledge Capture Rule
@@ -89,11 +84,14 @@ After an Explore or general-purpose agent returns results containing a `## Knowl
 (e.g., "login", "settings-screen", "auth-module")
 
 ### Search Rule (when searching)
-- **Always use spaces to separate search terms** (never hyphens or underscores)
-  - BAD: `lk search "auth-API"`, `lk search "settings_screen"`
-  - GOOD: `lk search "auth API"`, `lk search "settings screen"`
-- Search by both abstract topic AND concrete names
-  (e.g., `lk search "word book detail"` and `lk search "navigation"`)
+- **Use 1–3 short keywords per search** (do not use long phrases or sentences)
+  - BAD: `lk search "ユーザー認証APIのエンドポイント設計について"`
+  - GOOD: `lk search "auth API"`
+- **Always use spaces to separate search terms** (never hyphens, underscores, or CamelCase)
+  - BAD: `lk search "auth-API"`, `lk search "settings_screen"`, `lk search "AuthFlow"`
+  - GOOD: `lk search "auth API"`, `lk search "settings screen"`, `lk search "auth flow"`
+- **Try both English and Japanese keywords** — knowledge may be stored in either language
+  - Example: `lk search "auth"` finds nothing → also try `lk search "認証"`
 - If no results found, broaden by using fewer or more general keywords
   (e.g., `lk search "auth API endpoint"` → `lk search "auth"`)
 
