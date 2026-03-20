@@ -371,7 +371,7 @@ pub fn search_entries(
     }
 
     if keyword_only {
-        let words: Vec<&str> = query.split_whitespace().collect();
+        let words = split_query_words(query);
         let mut sql = String::from(
             "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
              FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (",
@@ -435,7 +435,7 @@ pub fn search_entries(
             let seen_ids: std::collections::HashSet<i64> = results.iter().map(|r| r.id).collect();
             let remaining = limit - results.len();
 
-            let words: Vec<&str> = query.split_whitespace().collect();
+            let words = split_query_words(query);
             let mut kw_sql = String::from(
                 "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
                  FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (",
@@ -472,7 +472,7 @@ pub fn search_entries(
             let seen_ids: std::collections::HashSet<i64> = results.iter().map(|r| r.id).collect();
             let remaining = limit - results.len();
 
-            let words: Vec<&str> = query.split_whitespace().collect();
+            let words = split_query_words(query);
             let mut like_sql = format!("SELECT {ENTRY_COLS} FROM entries e WHERE (");
             let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             for (i, word) in words.iter().enumerate() {
@@ -833,9 +833,19 @@ pub fn find_similar_entries(
 /// Sanitize a user query for FTS5 MATCH.
 /// Wraps each word in double quotes to treat it as a literal phrase token,
 /// preventing FTS5 operators (OR, NOT, NEAR, *, etc.) from being interpreted.
+/// Split a query into words by whitespace, hyphens, and underscores.
+/// This ensures queries like "auth-API" or "feature_name" are split into
+/// individual tokens for better search coverage.
+fn split_query_words(query: &str) -> Vec<&str> {
+    query
+        .split(|c: char| c.is_whitespace() || c == '-' || c == '_')
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
 fn sanitize_fts_query(query: &str) -> String {
-    let words: Vec<String> = query
-        .split_whitespace()
+    let words: Vec<String> = split_query_words(query)
+        .into_iter()
         .map(|w| {
             // Escape any embedded double quotes
             let escaped = w.replace('"', "\"\"");
@@ -1227,5 +1237,66 @@ mod tests {
         assert!(backup_path.exists());
         // Clean up
         std::fs::remove_file(&backup_path).ok();
+    }
+
+    #[test]
+    fn test_split_query_words_whitespace() {
+        assert_eq!(split_query_words("auth API"), vec!["auth", "API"]);
+    }
+
+    #[test]
+    fn test_split_query_words_hyphen() {
+        assert_eq!(split_query_words("auth-API"), vec!["auth", "API"]);
+    }
+
+    #[test]
+    fn test_split_query_words_underscore() {
+        assert_eq!(split_query_words("auth_flow"), vec!["auth", "flow"]);
+    }
+
+    #[test]
+    fn test_split_query_words_mixed_separators() {
+        assert_eq!(
+            split_query_words("auth-flow API_key test"),
+            vec!["auth", "flow", "API", "key", "test"]
+        );
+    }
+
+    #[test]
+    fn test_split_query_words_empty() {
+        assert!(split_query_words("").is_empty());
+        assert!(split_query_words("  - _ ").is_empty());
+    }
+
+    #[test]
+    fn test_sanitize_fts_query_splits_hyphens() {
+        assert_eq!(sanitize_fts_query("auth-API"), "\"auth\" \"API\"");
+    }
+
+    #[test]
+    fn test_sanitize_fts_query_splits_underscores() {
+        assert_eq!(sanitize_fts_query("auth_flow"), "\"auth\" \"flow\"");
+    }
+
+    #[test]
+    fn test_search_finds_entry_with_hyphenated_query() {
+        let (conn, _tmp) = setup_test_db();
+        let kws = vec!["auth".to_string(), "api".to_string()];
+        add_entry(
+            &conn,
+            "Auth API design",
+            "Authentication API endpoint design",
+            &kws,
+            "arch",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Hyphenated query should still find the entry
+        let results = search_entries(&conn, "auth-API", false, None, None, None, 10).unwrap();
+        assert!(!results.is_empty(), "hyphenated query should find entry");
+        assert!(results[0].title.contains("Auth"));
     }
 }

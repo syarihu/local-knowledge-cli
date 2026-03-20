@@ -21,7 +21,7 @@ Always run `lk` by command name (not full path) so it resolves via PATH.
 
 ### Agent Launch Rule
 When launching Explore or general-purpose agents for code investigation, always prepend the following instruction to the agent prompt:
-> Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. If useful results are found, use that as your starting point. If a result has `"stale": true`, verify it against current code and include the correction in your `## Knowledge to Save` section. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
+> Before using Read/Grep/Glob, first run `lk search "<relevant keywords>" --json --full --limit 5` to check existing knowledge. Always use spaces to separate search terms (e.g., "auth API" not "auth-API"). If useful results are found, use that as your starting point. If a result has `"stale": true`, verify it against current code and include the correction in your `## Knowledge to Save` section. If no results are found or the knowledge is insufficient, proceed with normal code exploration using Glob/Grep/Read.
 >
 > After completing your investigation, append a `## Knowledge to Save` section at the end of your response. This section captures reusable discoveries for the local knowledge base. Follow these rules:
 > - Only include knowledge that is **non-trivial and reusable** — architectural patterns, design decisions, non-obvious behavior, key function/struct roles. Skip obvious or task-specific-only findings.
@@ -89,8 +89,13 @@ After an Explore or general-purpose agent returns results containing a `## Knowl
 (e.g., "login", "settings-screen", "auth-module")
 
 ### Search Rule (when searching)
+- **Always use spaces to separate search terms** (never hyphens or underscores)
+  - BAD: `lk search "auth-API"`, `lk search "settings_screen"`
+  - GOOD: `lk search "auth API"`, `lk search "settings screen"`
 - Search by both abstract topic AND concrete names
-(e.g., `lk search "word book detail"` and `lk search "navigation"`)
+  (e.g., `lk search "word book detail"` and `lk search "navigation"`)
+- If no results found, broaden by using fewer or more general keywords
+  (e.g., `lk search "auth API endpoint"` → `lk search "auth"`)
 
 ### Available Commands
 - `lk search "<query>" --json` - Search knowledge (use `--since`, `--category`, `--source`, `--full` to filter)
