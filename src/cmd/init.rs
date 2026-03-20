@@ -93,9 +93,7 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
     // Migrate legacy pattern if present
     if gitattributes_path.exists() {
         let content = std::fs::read_to_string(&gitattributes_path)?;
-        if content.contains(legacy_gitattributes_entry)
-            && !content.contains(gitattributes_entry)
-        {
+        if content.contains(legacy_gitattributes_entry) && !content.contains(gitattributes_entry) {
             let new_content = content.replace(legacy_gitattributes_entry, gitattributes_entry);
             std::fs::write(&gitattributes_path, new_content)?;
             println!("Migrated .gitattributes pattern to {gitattributes_entry}");
