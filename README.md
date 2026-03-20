@@ -5,7 +5,8 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 ## Features
 
 - Project-local knowledge base stored in `.knowledge/knowledge.db`
-- Full-text search with trigram tokenizer (supports Japanese/CJK) and LIKE fallback
+- Full-text search with trigram tokenizer (supports Japanese/CJK), keyword search, and LIKE fallback
+- Smart query splitting — hyphens, underscores, and CamelCase are automatically split into separate tokens (e.g., `auth-API` → `auth` + `API`)
 - Duplicate detection when adding entries (skip with `--force`)
 - Sync knowledge from `.knowledge/` markdown files (shareable via Git)
 - Auto-sync on command execution — no manual `lk sync` needed after `git pull`
@@ -103,13 +104,13 @@ Commands:
 
 ### Storage
 
-All lk-managed files are stored under the `.knowledge/` and `.claude/` directories:
+All lk-managed files are stored under the `.knowledge/` directory:
 
 - **SQLite DB** at `.knowledge/knowledge.db` (git-ignored) - local search index
 - **Markdown files** in `.knowledge/` (git-tracked) - shareable knowledge
 - **Config file** at `.knowledge/config.toml` (git-tracked) - project settings
 - **Version file** at `.knowledge/.lk-version` (git-tracked) - minimum required lk version for the project
-- **Instructions** at `.claude/lk-instructions.md` (git-tracked) - Claude Code instructions, imported via `@` syntax
+- **Instructions** at `.knowledge/lk-instructions.md` (git-tracked) - Claude Code instructions, imported via `@` syntax
 - **Command log** at `.knowledge/command.log` (git-ignored) - optional command logging
 
 ### What to commit
@@ -119,8 +120,9 @@ All lk-managed files are stored under the `.knowledge/` and `.claude/` directori
 | `.knowledge/*.md` | Yes | Shared knowledge (markdown files) |
 | `.knowledge/config.toml` | Yes | Project settings |
 | `.knowledge/.lk-version` | Yes | Minimum required lk version |
-| `.claude/lk-instructions.md` | Yes | Claude Code instructions |
-| `AGENTS.md`, `CLAUDE.md`, or `.claude/CLAUDE.md` | Yes | Contains `@.claude/lk-instructions.md` import |
+| `.knowledge/lk-instructions.md` | Yes | Claude Code instructions |
+| `.gitattributes` | Yes | Marks `.knowledge/*.md` as generated (configurable) |
+| `AGENTS.md`, `CLAUDE.md`, or `.claude/CLAUDE.md` | Yes | Contains `@.knowledge/lk-instructions.md` import |
 | `.knowledge/knowledge.db` | No (auto-ignored) | Local search index |
 | `.knowledge/command.log` | No (auto-ignored) | Command log |
 
@@ -129,7 +131,7 @@ All lk-managed files are stored under the `.knowledge/` and `.claude/` directori
 Knowledge entries have two categories:
 
 - **Shared** (`.knowledge/` markdown files, git-tracked) — Architecture, design decisions, team conventions, and other stable knowledge that the whole team should know. Write with `/lk-knowledge-write-md` or `/lk-knowledge-from-branch` and commit. Stale after 30 days (configurable).
-- **Local** (DB only, git-ignored) — LLM investigation cache that reduces context consumption when working on similar tasks repeatedly. These stay on your machine as disposable cache. Stale after 14 days (configurable). When stale, re-investigate rather than updating.
+- **Local** (DB only, git-ignored) — LLM investigation cache that reduces context consumption when working on similar tasks repeatedly. These stay on your machine as disposable cache. Stale after 7 days (configurable). When stale, re-investigate rather than updating.
 
 A good rule of thumb: shared knowledge is for stable facts that would help a new team member or Claude understand the project. Local knowledge is a performance optimization — it lets Claude skip re-reading code it recently investigated.
 
@@ -176,13 +178,13 @@ Rate limit is 100 requests per minute per API key...
 
 ## Claude Code Integration
 
-`lk init` creates `.claude/lk-instructions.md` with Claude Code instructions and adds an `@.claude/lk-instructions.md` import line to your `AGENTS.md` (or `CLAUDE.md` if it exists). This keeps your config file minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
+`lk init` creates `.knowledge/lk-instructions.md` with Claude Code instructions and adds an `@.knowledge/lk-instructions.md` import line to your `AGENTS.md` (or `CLAUDE.md` if it exists). This keeps your config file minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
 
 After `lk init`, Claude Code will automatically:
 
 1. Search the knowledge base before exploring code
 2. Add new discoveries via `/lk-knowledge-add-db`
-3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`
+3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-export-select`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`
 
 ## Configuration
 
@@ -194,8 +196,8 @@ After `lk init`, Claude Code will automatically:
 # Days before a shared entry is considered stale (default: 30)
 stale_threshold_days = 30
 
-# Days before a local entry is considered stale (default: 14)
-local_stale_threshold_days = 14
+# Days before a local entry is considered stale (default: 7)
+local_stale_threshold_days = 7
 
 # Default limit for `lk search` results (default: 5)
 search_default_limit = 5
@@ -210,6 +212,10 @@ secret_detection = true
 # Enable command logging to .knowledge/command.log (default: false)
 # Override with LK_COMMAND_LOG=1
 command_log = false
+
+# Mark .knowledge/*.md as linguist-generated in .gitattributes (default: true)
+# Set to false to show full diffs for .knowledge/*.md in GitHub PRs
+gitattributes_generated = true
 ```
 
 ### Environment variable overrides
@@ -230,6 +236,10 @@ The sync is hash-based — if no files have changed, the overhead is negligible.
 ### Secret detection
 
 When enabled (default), `lk add` and `lk export` scan content for potential secrets (API keys, tokens, private keys, credentials). If detected, the command is blocked with a warning. Use `--allow-secrets` to override.
+
+### GitHub PR diff collapsing
+
+By default, `lk init` adds `.knowledge/**/*.md linguist-generated=true` to `.gitattributes`, which collapses knowledge markdown diffs in GitHub PRs (they can still be expanded by clicking). To disable this and show full diffs, set `gitattributes_generated = false` in `config.toml` and re-run `lk init`.
 
 ### Command logging
 
