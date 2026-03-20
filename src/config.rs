@@ -14,6 +14,8 @@ pub struct Config {
     pub secret_detection: bool,
     /// Enable command logging to .knowledge/command.log (default: false)
     pub command_log: bool,
+    /// Mark .knowledge/*.md as linguist-generated in .gitattributes (default: true)
+    pub gitattributes_generated: bool,
 }
 
 impl Default for Config {
@@ -25,6 +27,7 @@ impl Default for Config {
             auto_sync: true,
             secret_detection: true,
             command_log: false,
+            gitattributes_generated: true,
         }
     }
 }
@@ -88,6 +91,9 @@ impl Config {
                         "command_log" => {
                             config.command_log = value == "true";
                         }
+                        "gitattributes_generated" => {
+                            config.gitattributes_generated = value == "true";
+                        }
                         _ => {} // Ignore unknown keys
                     }
                 }
@@ -132,6 +138,10 @@ secret_detection = true
 # Enable command logging to .knowledge/command.log (default: false)
 # Override with LK_COMMAND_LOG=1
 command_log = false
+
+# Mark .knowledge/*.md as linguist-generated in .gitattributes (default: true)
+# Set to false to show full diffs for .knowledge/*.md in GitHub PRs
+gitattributes_generated = true
 ";
 
 #[cfg(test)]
@@ -148,6 +158,7 @@ mod tests {
         assert!(config.auto_sync);
         assert!(config.secret_detection);
         assert!(!config.command_log);
+        assert!(config.gitattributes_generated);
     }
 
     #[test]

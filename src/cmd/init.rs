@@ -84,7 +84,45 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         println!("Created .gitignore");
     }
 
-    // 5. Write instructions to .knowledge/lk-instructions.md and add import to CLAUDE.md
+    // 5. Update .gitattributes based on gitattributes_generated config
+    let config = crate::config::Config::load(&knowledge_dir);
+    let gitattributes_path = root.join(".gitattributes");
+    let gitattributes_entry = ".knowledge/*.md linguist-generated=true";
+    if config.gitattributes_generated {
+        // Add the entry
+        if gitattributes_path.exists() {
+            let content = std::fs::read_to_string(&gitattributes_path)?;
+            if !content.contains(gitattributes_entry) {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&gitattributes_path)?;
+                if !content.ends_with('\n') {
+                    writeln!(f)?;
+                }
+                writeln!(f, "{gitattributes_entry}")?;
+                println!("Added {gitattributes_entry} to .gitattributes");
+            }
+        } else {
+            std::fs::write(&gitattributes_path, format!("{gitattributes_entry}\n"))?;
+            println!("Created .gitattributes");
+        }
+    } else if gitattributes_path.exists() {
+        // Remove the entry if it exists
+        let content = std::fs::read_to_string(&gitattributes_path)?;
+        if content.contains(gitattributes_entry) {
+            let new_content = content
+                .lines()
+                .filter(|line| line.trim() != gitattributes_entry)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            std::fs::write(&gitattributes_path, new_content)?;
+            println!("Removed {gitattributes_entry} from .gitattributes");
+        }
+    }
+
+    // 6. Write instructions to .knowledge/lk-instructions.md and add import to CLAUDE.md
     let instructions_path = knowledge_dir.join("lk-instructions.md");
     let instructions_content = LK_INSTRUCTIONS_CONTENT;
 
@@ -191,18 +229,18 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 6. Create config.toml if it doesn't exist
+    // 7. Create config.toml if it doesn't exist
     let config_path = knowledge_dir.join("config.toml");
     if !config_path.exists() {
         std::fs::write(&config_path, crate::config::DEFAULT_CONFIG_CONTENT)?;
         println!("Created {}", config_path.display());
     }
 
-    // 7. Write .knowledge/.lk-version
+    // 8. Write .knowledge/.lk-version
     let version_path = knowledge_dir.join(".lk-version");
     std::fs::write(&version_path, format!("{}\n", crate::util::VERSION))?;
 
-    // 8. Install embedded Claude commands
+    // 9. Install embedded Claude commands
     install_embedded_commands()?;
 
     println!("\nInitialization complete!");
