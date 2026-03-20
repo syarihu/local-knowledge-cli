@@ -833,14 +833,42 @@ pub fn find_similar_entries(
 /// Sanitize a user query for FTS5 MATCH.
 /// Wraps each word in double quotes to treat it as a literal phrase token,
 /// preventing FTS5 operators (OR, NOT, NEAR, *, etc.) from being interpreted.
-/// Split a query into words by whitespace, hyphens, and underscores.
-/// This ensures queries like "auth-API" or "feature_name" are split into
+/// Split a query into words by whitespace, hyphens, underscores, and CamelCase boundaries.
+/// This ensures queries like "auth-API", "feature_name", and "AuthAPI" are split into
 /// individual tokens for better search coverage.
 fn split_query_words(query: &str) -> Vec<&str> {
-    query
-        .split(|c: char| c.is_whitespace() || c == '-' || c == '_')
-        .filter(|w| !w.is_empty())
-        .collect()
+    let mut words = Vec::new();
+    for segment in query.split(|c: char| c.is_whitespace() || c == '-' || c == '_') {
+        if segment.is_empty() {
+            continue;
+        }
+        // Split CamelCase: find boundaries where lowercase->uppercase transition occurs
+        let bytes = segment.as_bytes();
+        let mut start = 0;
+        for i in 1..bytes.len() {
+            let prev = bytes[i - 1] as char;
+            let curr = bytes[i] as char;
+            // Split at lowercase->uppercase boundary (e.g., "auth" | "API")
+            // Also split at uppercase->uppercase+lowercase boundary (e.g., "API" | "Key")
+            let split_here = (prev.is_lowercase() && curr.is_uppercase())
+                || (i + 1 < bytes.len()
+                    && prev.is_uppercase()
+                    && curr.is_uppercase()
+                    && (bytes[i + 1] as char).is_lowercase());
+            if split_here {
+                let part = &segment[start..i];
+                if !part.is_empty() {
+                    words.push(part);
+                }
+                start = i;
+            }
+        }
+        let rest = &segment[start..];
+        if !rest.is_empty() {
+            words.push(rest);
+        }
+    }
+    words
 }
 
 fn sanitize_fts_query(query: &str) -> String {
@@ -1257,8 +1285,26 @@ mod tests {
     #[test]
     fn test_split_query_words_mixed_separators() {
         assert_eq!(
-            split_query_words("auth-flow API_key test"),
-            vec!["auth", "flow", "API", "key", "test"]
+            split_query_words("auth-flow test"),
+            vec!["auth", "flow", "test"]
+        );
+    }
+
+    #[test]
+    fn test_split_query_words_camel_case() {
+        assert_eq!(split_query_words("AuthAPI"), vec!["Auth", "API"]);
+        assert_eq!(split_query_words("authFlow"), vec!["auth", "Flow"]);
+        assert_eq!(
+            split_query_words("APIKeyManager"),
+            vec!["API", "Key", "Manager"]
+        );
+    }
+
+    #[test]
+    fn test_split_query_words_camel_case_with_separators() {
+        assert_eq!(
+            split_query_words("AuthFlow-apiKey"),
+            vec!["Auth", "Flow", "api", "Key"]
         );
     }
 
@@ -1276,6 +1322,11 @@ mod tests {
     #[test]
     fn test_sanitize_fts_query_splits_underscores() {
         assert_eq!(sanitize_fts_query("auth_flow"), "\"auth\" \"flow\"");
+    }
+
+    #[test]
+    fn test_sanitize_fts_query_splits_camel_case() {
+        assert_eq!(sanitize_fts_query("AuthAPI"), "\"Auth\" \"API\"");
     }
 
     #[test]

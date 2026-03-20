@@ -54,8 +54,15 @@ pub fn cmd_search(
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
+        if results.is_empty() {
+            eprintln!(
+                "Hint: No results found. Try fewer keywords, synonyms, or search in both English and Japanese."
+            );
+        }
     } else if results.is_empty() {
-        println!("No results found.");
+        println!(
+            "No results found. Try: use fewer keywords, try synonyms, or search in both English and Japanese."
+        );
     } else {
         for r in &results {
             let snippet = truncate_str(&r.content, 80);
