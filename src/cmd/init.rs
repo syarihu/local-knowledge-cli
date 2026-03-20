@@ -87,7 +87,21 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Update .gitattributes based on gitattributes_generated config
     let config = crate::config::Config::load(&knowledge_dir);
     let gitattributes_path = root.join(".gitattributes");
-    let gitattributes_entry = ".knowledge/*.md linguist-generated=true";
+    let gitattributes_entry = ".knowledge/**/*.md linguist-generated=true";
+    let legacy_gitattributes_entry = ".knowledge/*.md linguist-generated=true";
+
+    // Migrate legacy pattern if present
+    if gitattributes_path.exists() {
+        let content = std::fs::read_to_string(&gitattributes_path)?;
+        if content.contains(legacy_gitattributes_entry)
+            && !content.contains(gitattributes_entry)
+        {
+            let new_content = content.replace(legacy_gitattributes_entry, gitattributes_entry);
+            std::fs::write(&gitattributes_path, new_content)?;
+            println!("Migrated .gitattributes pattern to {gitattributes_entry}");
+        }
+    }
+
     if config.gitattributes_generated {
         // Add the entry
         if gitattributes_path.exists() {
@@ -108,17 +122,20 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
             println!("Created .gitattributes");
         }
     } else if gitattributes_path.exists() {
-        // Remove the entry if it exists
+        // Remove the entry (and legacy pattern) if they exist
         let content = std::fs::read_to_string(&gitattributes_path)?;
-        if content.contains(gitattributes_entry) {
+        if content.contains(gitattributes_entry) || content.contains(legacy_gitattributes_entry) {
             let new_content = content
                 .lines()
-                .filter(|line| line.trim() != gitattributes_entry)
+                .filter(|line| {
+                    let trimmed = line.trim();
+                    trimmed != gitattributes_entry && trimmed != legacy_gitattributes_entry
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
                 + "\n";
             std::fs::write(&gitattributes_path, new_content)?;
-            println!("Removed {gitattributes_entry} from .gitattributes");
+            println!("Removed linguist-generated entry from .gitattributes");
         }
     }
 

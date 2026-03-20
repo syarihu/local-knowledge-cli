@@ -1,2 +1,2 @@
 # Collapse auto-generated knowledge markdown files in GitHub PR diffs
-.knowledge/*.md linguist-generated=true
+.knowledge/**/*.md linguist-generated=true

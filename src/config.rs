@@ -14,7 +14,7 @@ pub struct Config {
     pub secret_detection: bool,
     /// Enable command logging to .knowledge/command.log (default: false)
     pub command_log: bool,
-    /// Mark .knowledge/*.md as linguist-generated in .gitattributes (default: true)
+    /// Mark .knowledge/**/*.md as linguist-generated in .gitattributes (default: true)
     pub gitattributes_generated: bool,
 }
 
@@ -139,8 +139,8 @@ secret_detection = true
 # Override with LK_COMMAND_LOG=1
 command_log = false
 
-# Mark .knowledge/*.md as linguist-generated in .gitattributes (default: true)
-# Set to false to show full diffs for .knowledge/*.md in GitHub PRs
+# Mark .knowledge/**/*.md as linguist-generated in .gitattributes (default: true)
+# Set to false to show full diffs for .knowledge/**/*.md in GitHub PRs
 gitattributes_generated = true
 ";
 
