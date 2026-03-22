@@ -172,6 +172,95 @@ fn log_mcp_command(tool: &str, meta: &[(&str, &str)], knowledge_dir: &Path) {
     })();
 }
 
+// ── update check ─────────────────────────────────────────────────────
+
+/// Check if a newer version of lk is available.
+/// Checks at most once per day using a file-based cache.
+/// Returns Some(latest_version) if update available, None otherwise.
+/// Never fails — all errors return None.
+fn check_update_available() -> Option<String> {
+    (|| -> Option<String> {
+        let config_dir = util::home_dir().join(".config").join("lk");
+        let cache_path = config_dir.join("update_check.json");
+
+        // Try reading cache
+        if let Ok(content) = std::fs::read_to_string(&cache_path)
+            && let Ok(cached) = serde_json::from_str::<Value>(&content)
+        {
+            let last_checked = cached["last_checked"].as_str()?;
+            let latest = cached["latest_version"].as_str()?;
+
+            // If checked today, use cache
+            if util::days_since(last_checked) == Some(0) {
+                return if is_newer(latest) {
+                    Some(latest.to_string())
+                } else {
+                    None
+                };
+            }
+        }
+
+        // Fetch latest version via curl (no auth required)
+        let latest = fetch_latest_tag_quiet()?;
+
+        // Save cache
+        let _ = std::fs::create_dir_all(&config_dir);
+        let cache = json!({
+            "last_checked": util::now_iso(),
+            "latest_version": latest,
+        });
+        let _ = std::fs::write(&cache_path, serde_json::to_string(&cache).ok()?);
+
+        if is_newer(&latest) {
+            Some(latest)
+        } else {
+            None
+        }
+    })()
+}
+
+/// Fetch the latest release tag from GitHub using curl (no auth needed).
+fn fetch_latest_tag_quiet() -> Option<String> {
+    let url = format!(
+        "https://github.com/{}/releases/latest",
+        util::DEFAULT_REPO
+    );
+    let output = std::process::Command::new("curl")
+        .args(["-sL", "-o", "/dev/null", "-w", "%{url_effective}", &url])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    // url_effective looks like: https://github.com/.../releases/tag/v0.10.2
+    let effective_url = String::from_utf8_lossy(&output.stdout).to_string();
+    let tag = effective_url.trim().rsplit('/').next()?.to_string();
+    if tag.is_empty() {
+        return None;
+    }
+    Some(tag)
+}
+
+/// Check if a version tag (e.g. "v0.11.0") is newer than current VERSION.
+fn is_newer(tag: &str) -> bool {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    util::compare_versions(version, util::VERSION)
+        .is_some_and(|ord| ord == std::cmp::Ordering::Greater)
+}
+
+/// Build the update_available field for MCP responses.
+fn update_info() -> Option<Value> {
+    let latest = check_update_available()?;
+    let version = latest.strip_prefix('v').unwrap_or(&latest);
+    Some(json!({
+        "current": util::VERSION,
+        "latest": version,
+        "message": format!("A new version of lk is available ({} → {}). Run 'lk update' or 'brew upgrade syarihu/tap/lk' to update.", util::VERSION, version),
+    }))
+}
+
 // ── tool definitions ─────────────────────────────────────────────────
 
 fn tool_definitions(registry: &ProjectRegistry) -> Value {
@@ -457,12 +546,15 @@ fn resolve_project(
     Ok((conn, config, knowledge_dir, project_name))
 }
 
-/// Add "project" key to a result Value if in multi-project mode.
+/// Add "project" and "update_available" keys to a result Value.
 fn decorate_result(mut result: Value, project_name: &Option<String>) -> Value {
-    if let Some(name) = project_name
-        && let Some(obj) = result.as_object_mut()
-    {
-        obj.insert("project".to_string(), json!(name));
+    if let Some(obj) = result.as_object_mut() {
+        if let Some(name) = project_name {
+            obj.insert("project".to_string(), json!(name));
+        }
+        if let Some(update) = update_info() {
+            obj.insert("update_available".to_string(), update);
+        }
     }
     result
 }

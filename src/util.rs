@@ -75,7 +75,7 @@ fn check_lk_version() {
 }
 
 /// Compare two semver strings (e.g., "0.7.2" vs "0.8.0"). Returns None on parse failure.
-fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+pub fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     let parse = |s: &str| -> Option<(u32, u32, u32)> {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
