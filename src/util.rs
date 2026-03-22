@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::db;
 
@@ -21,9 +21,43 @@ pub fn get_project_root() -> PathBuf {
     }
 }
 
+/// Resolve the root directory for DB storage.
+/// In a git worktree, returns the main worktree's root so all worktrees share one DB.
+/// In a normal repo or non-git project, returns the given project_root as-is.
+pub fn resolve_db_root(project_root: &Path) -> PathBuf {
+    let git_path = project_root.join(".git");
+    // Normal repo: .git is a directory → use project_root
+    if git_path.is_dir() {
+        return project_root.to_path_buf();
+    }
+    // Worktree: .git is a file containing "gitdir: <path>"
+    if git_path.is_file()
+        && let Ok(content) = std::fs::read_to_string(&git_path)
+        && let Some(gitdir) = content.trim().strip_prefix("gitdir: ")
+    {
+        let gitdir_path = if Path::new(gitdir).is_absolute() {
+            PathBuf::from(gitdir)
+        } else {
+            project_root.join(gitdir)
+        };
+        // gitdir points to .git/worktrees/<name>
+        // Go up to .git, then up to main worktree root
+        if let Some(main_git) = gitdir_path.parent().and_then(|p| p.parent()) {
+            let main_root = main_git.parent().unwrap_or(main_git);
+            if let Ok(canonical) = std::fs::canonicalize(main_root)
+                && canonical.join(".knowledge").exists()
+            {
+                return canonical;
+            }
+        }
+    }
+    project_root.to_path_buf()
+}
+
 pub fn get_db_path() -> PathBuf {
     let root = get_project_root();
-    let new_path = root.join(".knowledge").join("knowledge.db");
+    let db_root = resolve_db_root(&root);
+    let new_path = db_root.join(".knowledge").join("knowledge.db");
     if new_path.exists() {
         return new_path;
     }

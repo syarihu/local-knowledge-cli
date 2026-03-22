@@ -59,7 +59,8 @@ impl ProjectRegistry {
         for path in &paths {
             let canonical = std::fs::canonicalize(path)
                 .map_err(|e| format!("Cannot resolve project path '{}': {e}", path.display()))?;
-            let db_path = canonical.join(".knowledge").join("knowledge.db");
+            let db_root = util::resolve_db_root(&canonical);
+            let db_path = db_root.join(".knowledge").join("knowledge.db");
             if !db_path.exists() {
                 return Err(format!(
                     "No knowledge DB found at {}. Run 'lk init' in that project first.",
@@ -522,7 +523,8 @@ fn resolve_project(
     let project_param = params["project"].as_str();
     let project_root = registry.resolve(project_param)?;
     let knowledge_dir = project_root.join(".knowledge");
-    let db_path = knowledge_dir.join("knowledge.db");
+    let db_root = util::resolve_db_root(&project_root);
+    let db_path = db_root.join(".knowledge").join("knowledge.db");
 
     maybe_auto_sync_for(&project_root);
 

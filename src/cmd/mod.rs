@@ -83,7 +83,8 @@ pub fn maybe_auto_sync_for(project_root: &std::path::Path) {
             return Ok(());
         }
 
-        let db_path = knowledge_dir.join("knowledge.db");
+        let db_root = crate::util::resolve_db_root(project_root);
+        let db_path = db_root.join(".knowledge").join("knowledge.db");
         if !db_path.exists() {
             return Ok(());
         }
