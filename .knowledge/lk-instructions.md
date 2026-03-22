@@ -6,32 +6,49 @@ Always run `lk` by command name (not full path) so it resolves via PATH.
 - **Shared knowledge** (`.knowledge/*.md`, git-tracked): Stable project knowledge. Use `/lk-knowledge-from-branch` to write shared markdown from a feature branch.
 - **Local knowledge** (DB only, git-ignored): LLM investigation cache. If stale, re-investigate instead of updating.
 
-### When to Use lk search
-Run `lk search "<keywords>" --json --full --limit 5` **before investigating unfamiliar code or architecture**.
+### MCP Tools vs CLI
 
-**Skip lk search when:**
+If the `lk-knowledge` MCP server is available, **prefer MCP tools over CLI commands** — they are faster (no per-call process spawn) and provide structured input/output natively.
+
+| Action | MCP tool (preferred) | CLI fallback |
+|--------|---------------------|-------------|
+| Search | `search_knowledge` | `lk search "<query>" --json --full` |
+| Add | `add_knowledge` | `lk add "<title>" --keywords "kw1,kw2" --content "..."` |
+| List | `list_knowledge` | `lk list --json` |
+| Get by ID | `get_knowledge` | `lk get <id> --json` |
+| Update | `update_knowledge` | `lk edit <id> --content "..."` |
+| Stats | `get_stats` | `lk stats --json` |
+
+Slash commands (`/lk-knowledge-discover`, `/lk-knowledge-refresh`, etc.) provide complex multi-step workflows that are not available as MCP tools — continue using those as slash commands.
+
+### When to Search Knowledge
+
+Search **before investigating unfamiliar code or architecture**.
+
+**Skip when:**
 - The user specifies an exact file path or line to edit
 - The task is mechanical (formatting, renaming, version bumps, git operations)
 - You already have sufficient context from the current conversation
 
 **Using results:**
 - If a result has `"status": "deprecated"` with `"superseded_by": <id>`, use the superseding entry
-- If a result has `"stale": true`, verify against current code, then run `lk edit <id> --content "..."` (if outdated) or `lk edit <id> --touch` (if still correct)
+- If a result has `"stale": true`, verify against current code, then update content (if outdated) or touch (if still correct)
 - If no results found, proceed with normal code exploration (Glob/Grep/Read)
 
 ### How to Search
 - **Use 1–3 short keywords**, separated by spaces
   - BAD: `lk search "ユーザー認証APIのエンドポイント設計について"`, `lk search "auth-API"`
-  - GOOD: `lk search "auth API"`
+  - GOOD: `search_knowledge(query: "auth API")` or `lk search "auth API"`
 - **Try both English and Japanese** — knowledge may be stored in either language
-- If no results, broaden by using fewer keywords (e.g., `lk search "auth API endpoint"` → `lk search "auth"`)
+- If no results, broaden by using fewer keywords (e.g., "auth API endpoint" → "auth")
 
 ### Saving Knowledge
 After investigating unfamiliar code, save noteworthy discoveries. Skip for mechanical tasks.
 
-- `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"` — saves to local DB
-- If `lk add` returns `"added": false` with `similar_entries`, use `lk edit <id>` to update instead
-- Use `--force` to skip duplicate check when certain a new entry is needed
+- MCP: `add_knowledge(title: "...", content: "...", keywords: ["kw1", "kw2"], category: "features")`
+- CLI: `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"`
+- If add returns duplicate/similar entries, use `update_knowledge` / `lk edit <id>` to update instead
+- Use `force: true` / `--force` to skip duplicate check when certain a new entry is needed
 - Use lowercase, hyphen-separated keywords (e.g., "auth-flow")
 - **Content rules:** Use stable identifiers (function/struct names), not line numbers. Include "why" alongside "what". NEVER include secrets.
 
@@ -57,10 +74,10 @@ When launching Explore or general-purpose agents **to investigate unfamiliar cod
 ### Post-Explore Knowledge Capture
 After an agent returns a `## Knowledge to Save` section:
 1. If `None.`, skip.
-2. For each entry: `lk add "<title>" --keywords "<kw1,kw2>" --category "<category>" --content "<content>" --json`
-3. If `lk add` returns `"added": false`, use `lk edit <id>` to merge instead.
+2. For each entry, use `add_knowledge` (MCP) or `lk add "<title>" --keywords "<kw1,kw2>" --category "<category>" --content "<content>" --json` (CLI).
+3. If add returns similar entries, use `update_knowledge` / `lk edit <id>` to merge instead.
 
-### Available Commands
+### Available CLI Commands
 - `lk search "<query>" --json --full` - Search with full content
 - `lk get <id> --json` - Get entry details
 - `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "cat"` - Add (checks duplicates; use `--force` to skip)
