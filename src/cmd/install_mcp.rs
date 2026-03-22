@@ -121,11 +121,9 @@ fn resolve_projects_for_desktop(
 
     // Report changes
     for p in &merged {
-        let is_new = !existing.iter().any(|e| {
-            std::fs::canonicalize(e)
-                .map(|c| c == *p)
-                .unwrap_or(false)
-        });
+        let is_new = !existing
+            .iter()
+            .any(|e| std::fs::canonicalize(e).map(|c| c == *p).unwrap_or(false));
         if is_new {
             eprintln!("  Added: {}", p.display());
         }
