@@ -16,6 +16,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Bulk delete with `purge` by category or source
 - Auto-extract keywords from entries
 - Self-update from GitHub Releases
+- MCP (Model Context Protocol) server — Claude Code / Claude Desktop can autonomously search, add, and manage knowledge
 - Installs Claude Code slash commands for seamless integration
 
 ## Installation
@@ -85,6 +86,9 @@ Commands:
   search-log        Show recent search log entries
   update            Update lk to latest version
   install-commands  Install Claude Code slash commands
+  mcp               Start MCP server (JSON-RPC 2.0 over stdio)
+  install-mcp       Install lk as MCP server for Claude Code / Claude Desktop
+  uninstall-mcp     Uninstall lk MCP server from Claude Code / Claude Desktop
 ```
 
 ### Common Options
@@ -178,6 +182,39 @@ Rate limit is 100 requests per minute per API key...
 
 ## Claude Code Integration
 
+There are two ways to integrate lk with Claude Code:
+
+### MCP Server (recommended)
+
+Register lk as an MCP server so Claude can autonomously search, add, and manage knowledge:
+
+```bash
+# Install for both Claude Code and Claude Desktop
+lk install-mcp
+
+# Or install for a specific target
+lk install-mcp --target claude-code
+lk install-mcp --target claude-desktop
+
+# To uninstall
+lk uninstall-mcp
+```
+
+Once installed, Claude has access to these tools:
+
+| Tool | Description |
+|------|-------------|
+| `search_knowledge` | Search the knowledge base with full-text or keyword search |
+| `add_knowledge` | Add new entries with duplicate detection |
+| `list_knowledge` | Browse entries with source/category filtering and pagination |
+| `get_knowledge` | Retrieve full content of an entry by ID |
+| `update_knowledge` | Update title, content, keywords, or status of an entry |
+| `get_stats` | Get knowledge base statistics |
+
+No manual server startup is needed — Claude Code / Claude Desktop automatically launches `lk mcp` when a tool is called.
+
+### Slash Commands
+
 `lk init` creates `.knowledge/lk-instructions.md` with Claude Code instructions and adds an `@.knowledge/lk-instructions.md` import line to your `AGENTS.md` (or `CLAUDE.md` if it exists). This keeps your config file minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
 
 After `lk init`, Claude Code will automatically:
@@ -185,6 +222,10 @@ After `lk init`, Claude Code will automatically:
 1. Search the knowledge base before exploring code
 2. Add new discoveries via `/lk-knowledge-add-db`
 3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-export-select`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`
+
+### MCP + Slash Commands
+
+Both methods can be used together. MCP lets Claude use knowledge tools autonomously during any conversation, while slash commands provide explicit user-invoked workflows like `/lk-knowledge-discover` (project-wide knowledge generation) and `/lk-knowledge-refresh` (stale entry updates).
 
 ## Configuration
 
