@@ -211,14 +211,13 @@ fn project_property(registry: &ProjectRegistry) -> Option<(String, Value)> {
 }
 
 fn inject_project_prop(schema: &mut Value, registry: &ProjectRegistry) {
-    if let Some((key, val)) = project_property(registry) {
-        if let Some(props) = schema
+    if let Some((key, val)) = project_property(registry)
+        && let Some(props) = schema
             .get_mut("inputSchema")
             .and_then(|s| s.get_mut("properties"))
             .and_then(|p| p.as_object_mut())
-        {
-            props.insert(key, val);
-        }
+    {
+        props.insert(key, val);
     }
 }
 
@@ -413,7 +412,7 @@ fn tool_def_list_projects() -> Value {
 fn entry_to_json(e: &db::Entry, kws: &[String], config: &Config) -> Value {
     let days = util::days_since(&e.updated_at);
     let threshold = config.stale_threshold_for(&e.source);
-    let stale = days.map_or(false, |d| d > threshold);
+    let stale = days.is_some_and(|d| d > threshold);
     json!({
         "id": e.id,
         "title": e.title,
@@ -460,10 +459,10 @@ fn resolve_project(
 
 /// Add "project" key to a result Value if in multi-project mode.
 fn decorate_result(mut result: Value, project_name: &Option<String>) -> Value {
-    if let Some(name) = project_name {
-        if let Some(obj) = result.as_object_mut() {
-            obj.insert("project".to_string(), json!(name));
-        }
+    if let Some(name) = project_name
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("project".to_string(), json!(name));
     }
     result
 }
@@ -599,7 +598,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 .iter()
                 .filter(|e| {
                     if source.is_some() && category.is_some() {
-                        category.map_or(true, |c| e.category == c)
+                        category.is_none_or(|c| e.category == c)
                     } else {
                         true
                     }
