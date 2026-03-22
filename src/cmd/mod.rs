@@ -66,8 +66,14 @@ fn log_command(cmd: &str, meta: &[(&str, &str)]) {
 /// Auto-sync .knowledge/ markdown files if enabled and changes are detected.
 /// Runs silently — errors are ignored since this is a best-effort optimization.
 pub fn maybe_auto_sync() {
+    maybe_auto_sync_for(&crate::util::get_project_root());
+}
+
+/// Auto-sync for a specific project root path.
+/// Used by MCP server to sync a resolved project instead of CWD-based resolution.
+pub fn maybe_auto_sync_for(project_root: &std::path::Path) {
     let _ = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let knowledge_dir = crate::util::get_knowledge_dir();
+        let knowledge_dir = project_root.join(".knowledge");
         if !knowledge_dir.exists() {
             return Ok(());
         }
@@ -77,14 +83,13 @@ pub fn maybe_auto_sync() {
             return Ok(());
         }
 
-        let db_path = crate::util::get_db_path();
+        let db_path = knowledge_dir.join("knowledge.db");
         if !db_path.exists() {
             return Ok(());
         }
 
         let (conn, _) = crate::db::open_db(&db_path)?;
         let existing = crate::db::get_shared_file_hashes(&conn)?;
-        let root = crate::util::get_project_root();
 
         // Quick check: are there any changes?
         let mut has_changes = false;
@@ -94,7 +99,7 @@ pub fn maybe_auto_sync() {
 
         for filepath in &md_files {
             let rel_path = filepath
-                .strip_prefix(&root)
+                .strip_prefix(project_root)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| filepath.to_string_lossy().to_string());
             found_files.insert(rel_path.clone());
@@ -120,7 +125,7 @@ pub fn maybe_auto_sync() {
         }
 
         if has_changes {
-            let stats = sync::sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
+            let stats = sync::sync_knowledge_dir(&conn, &knowledge_dir, project_root)?;
             let total = stats.added + stats.updated + stats.removed;
             if total > 0 {
                 eprintln!(

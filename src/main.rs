@@ -208,12 +208,19 @@ enum Commands {
         yes: bool,
     },
     /// Start MCP (Model Context Protocol) server over stdio
-    Mcp,
+    Mcp {
+        /// Project directories to serve (can be specified multiple times)
+        #[arg(long)]
+        project: Vec<PathBuf>,
+    },
     /// Install lk as an MCP server for Claude Code and/or Claude Desktop
     InstallMcp {
         /// Target: "claude-code", "claude-desktop", or "all"
         #[arg(long, default_value = "all")]
         target: String,
+        /// Project directories to register (can be specified multiple times)
+        #[arg(long)]
+        project: Vec<PathBuf>,
     },
     /// Uninstall lk MCP server from Claude Code and/or Claude Desktop
     UninstallMcp {
@@ -347,8 +354,8 @@ fn main() {
         Commands::Update { skip_verify } => cmd::cmd_update(skip_verify),
         Commands::InstallCommands => cmd::install_embedded_commands(),
         Commands::Uninstall { yes } => cmd::cmd_uninstall(yes),
-        Commands::Mcp => mcp::run_server(),
-        Commands::InstallMcp { target } => cmd::cmd_install_mcp(&target),
+        Commands::Mcp { project } => mcp::run_server(project),
+        Commands::InstallMcp { target, project } => cmd::cmd_install_mcp(&target, &project),
         Commands::UninstallMcp { target } => cmd::cmd_uninstall_mcp(&target),
     };
 
