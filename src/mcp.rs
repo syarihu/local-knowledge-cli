@@ -1,0 +1,570 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::io::{self, BufRead, Write};
+
+use crate::cmd::maybe_auto_sync;
+use crate::config::Config;
+use crate::db;
+use crate::util;
+
+// ── JSON-RPC 2.0 types ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct JsonRpcRequest {
+    jsonrpc: Option<String>,
+    id: Option<Value>,
+    method: String,
+    #[serde(default)]
+    params: Value,
+}
+
+#[derive(Serialize)]
+struct JsonRpcResponse {
+    jsonrpc: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<JsonRpcError>,
+}
+
+#[derive(Serialize)]
+struct JsonRpcError {
+    code: i64,
+    message: String,
+}
+
+// ── helpers ──────────────────────────────────────────────────────────
+
+fn respond(id: Option<Value>, result: Value) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: Some(result),
+        error: None,
+    }
+}
+
+fn respond_err(id: Option<Value>, code: i64, msg: &str) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message: msg.to_string(),
+        }),
+    }
+}
+
+fn write_response(out: &mut impl Write, resp: &JsonRpcResponse) {
+    if let Ok(json) = serde_json::to_string(resp) {
+        let _ = writeln!(out, "{json}");
+        let _ = out.flush();
+    }
+}
+
+fn log_mcp_command(tool: &str, meta: &[(&str, &str)]) {
+    let config = Config::load(&util::get_knowledge_dir());
+    if !config.command_log {
+        return;
+    }
+    let _ = (|| -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let log_path = util::get_project_root()
+            .join(".knowledge")
+            .join("command.log");
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+        let meta_str: Vec<String> = meta.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        writeln!(
+            f,
+            "[{}] cmd=mcp-{tool} {}",
+            util::now_iso(),
+            meta_str.join(" ")
+        )?;
+        Ok(())
+    })();
+}
+
+// ── tool definitions ─────────────────────────────────────────────────
+
+fn tool_definitions() -> Value {
+    json!({
+        "tools": [
+            {
+                "name": "search_knowledge",
+                "description": "Search the local knowledge base using full-text search. Returns matching entries with relevance scores.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query string"
+                        },
+                        "keyword_only": {
+                            "type": "boolean",
+                            "description": "Search keywords only (default: false)",
+                            "default": false
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Filter by category (e.g., 'features', 'architecture')"
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "Filter by source ('local' or 'shared')"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of results (default: 5)",
+                            "default": 5
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "add_knowledge",
+                "description": "Add a new knowledge entry to the local knowledge base. Checks for duplicates before adding.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Entry title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Entry content (markdown supported)"
+                        },
+                        "keywords": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Keywords for the entry (auto-extracted if not provided)"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Category (e.g., 'features', 'architecture')",
+                            "default": "general"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Skip duplicate check and force add (default: false)",
+                            "default": false
+                        }
+                    },
+                    "required": ["title", "content"]
+                }
+            },
+            {
+                "name": "list_knowledge",
+                "description": "List knowledge entries with optional filtering by source and pagination.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "source": {
+                            "type": "string",
+                            "description": "Filter by source ('local' or 'shared')"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Filter by category"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of results (default: 20)",
+                            "default": 20
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Skip first N results (default: 0)",
+                            "default": 0
+                        }
+                    }
+                }
+            },
+            {
+                "name": "get_knowledge",
+                "description": "Get a single knowledge entry by ID, including full content and keywords.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Entry ID"
+                        }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "update_knowledge",
+                "description": "Update an existing knowledge entry by ID. Only provided fields are updated.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Entry ID to update"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "New title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "New content"
+                        },
+                        "keywords": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "New keywords"
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Set status ('active' or 'deprecated')"
+                        }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "get_stats",
+                "description": "Get knowledge base statistics: total entries, shared/local counts, keyword count.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        ]
+    })
+}
+
+// ── tool execution ───────────────────────────────────────────────────
+
+fn entry_to_json(e: &db::Entry, kws: &[String], config: &Config) -> Value {
+    let days = util::days_since(&e.updated_at);
+    let threshold = config.stale_threshold_for(&e.source);
+    let stale = days.map_or(false, |d| d > threshold);
+    json!({
+        "id": e.id,
+        "title": e.title,
+        "content": e.content,
+        "category": e.category,
+        "source": e.source,
+        "status": e.status,
+        "keywords": kws,
+        "score": e.rank,
+        "stale": stale,
+        "created_at": e.created_at,
+        "updated_at": e.updated_at,
+    })
+}
+
+fn call_tool(name: &str, params: &Value) -> Result<Value, String> {
+    maybe_auto_sync();
+
+    let conn = util::open_db_with_migrate().map_err(|e| format!("DB error: {e}"))?;
+    let config = Config::load(&util::get_knowledge_dir());
+
+    match name {
+        "search_knowledge" => {
+            let query = params["query"]
+                .as_str()
+                .ok_or("missing required parameter: query")?;
+            let keyword_only = params["keyword_only"].as_bool().unwrap_or(false);
+            let category = params["category"].as_str();
+            let source = params["source"].as_str();
+            let limit = params["limit"].as_u64().unwrap_or(5) as usize;
+
+            log_mcp_command("search", &[("query", query)]);
+
+            let entries =
+                db::search_entries(&conn, query, keyword_only, category, source, None, limit)
+                    .map_err(|e| format!("search error: {e}"))?;
+
+            let results: Vec<Value> = entries
+                .iter()
+                .map(|e| {
+                    let kws = db::get_keywords(&conn, e.id).unwrap_or_default();
+                    entry_to_json(e, &kws, &config)
+                })
+                .collect();
+
+            Ok(json!({
+                "count": results.len(),
+                "entries": results,
+            }))
+        }
+
+        "add_knowledge" => {
+            let title = params["title"]
+                .as_str()
+                .ok_or("missing required parameter: title")?;
+            let content = params["content"]
+                .as_str()
+                .ok_or("missing required parameter: content")?;
+            let keywords: Vec<String> = params["keywords"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let category = params["category"].as_str().unwrap_or("general");
+            let force = params["force"].as_bool().unwrap_or(false);
+
+            log_mcp_command("add", &[("title", title)]);
+
+            // Duplicate check
+            if !force {
+                let similar = db::find_similar_entries(&conn, title, &keywords)
+                    .map_err(|e| format!("duplicate check error: {e}"))?;
+                if !similar.is_empty() {
+                    let dupes: Vec<Value> = similar
+                        .iter()
+                        .map(|e| json!({"id": e.id, "title": e.title}))
+                        .collect();
+                    return Ok(json!({
+                        "added": false,
+                        "reason": "Similar entries found. Use force=true to add anyway.",
+                        "similar_entries": dupes,
+                    }));
+                }
+            }
+
+            let id = db::add_entry(
+                &conn, title, content, &keywords, category, "local", None, None,
+            )
+            .map_err(|e| format!("add error: {e}"))?;
+
+            Ok(json!({
+                "added": true,
+                "id": id,
+                "title": title,
+            }))
+        }
+
+        "list_knowledge" => {
+            let source = params["source"].as_str();
+            let category = params["category"].as_str();
+            let limit = params["limit"].as_u64().unwrap_or(20) as usize;
+            let offset = params["offset"].as_u64().unwrap_or(0) as usize;
+
+            log_mcp_command("list", &[]);
+
+            let entries = if let Some(src) = source {
+                db::list_entries_by_source(&conn, src).map_err(|e| format!("list error: {e}"))?
+            } else {
+                db::list_entries(&conn, category).map_err(|e| format!("list error: {e}"))?
+            };
+
+            // Apply source + category filter when both specified
+            let filtered: Vec<&db::Entry> = entries
+                .iter()
+                .filter(|e| {
+                    if source.is_some() && category.is_some() {
+                        category.map_or(true, |c| e.category == c)
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            let page: Vec<Value> = filtered
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .map(|e| {
+                    let kws = db::get_keywords(&conn, e.id).unwrap_or_default();
+                    json!({
+                        "id": e.id,
+                        "title": e.title,
+                        "category": e.category,
+                        "source": e.source,
+                        "status": e.status,
+                        "keywords": kws,
+                        "updated_at": e.updated_at,
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "total": filtered.len(),
+                "offset": offset,
+                "count": page.len(),
+                "entries": page,
+            }))
+        }
+
+        "get_knowledge" => {
+            let id = params["id"]
+                .as_i64()
+                .ok_or("missing required parameter: id")?;
+
+            log_mcp_command("get", &[("id", &id.to_string())]);
+
+            let entry = db::get_entry(&conn, id)
+                .map_err(|e| format!("get error: {e}"))?
+                .ok_or_else(|| format!("Entry not found: {id}"))?;
+            let kws = db::get_keywords(&conn, id).unwrap_or_default();
+
+            Ok(entry_to_json(&entry, &kws, &config))
+        }
+
+        "update_knowledge" => {
+            let id = params["id"]
+                .as_i64()
+                .ok_or("missing required parameter: id")?;
+
+            // Verify entry exists
+            db::get_entry(&conn, id)
+                .map_err(|e| format!("get error: {e}"))?
+                .ok_or_else(|| format!("Entry not found: {id}"))?;
+
+            let title = params["title"].as_str();
+            let content = params["content"].as_str();
+            let keywords: Option<Vec<String>> = params["keywords"].as_array().map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
+            let status = params["status"].as_str();
+
+            log_mcp_command("update", &[("id", &id.to_string())]);
+
+            let now = util::now_iso();
+            db::update_entry(&conn, id, title, content, keywords.as_deref(), &now)
+                .map_err(|e| format!("update error: {e}"))?;
+
+            if let Some(st) = status {
+                db::update_entry_status(&conn, id, st, None)
+                    .map_err(|e| format!("status update error: {e}"))?;
+            }
+
+            Ok(json!({
+                "updated": true,
+                "id": id,
+            }))
+        }
+
+        "get_stats" => {
+            log_mcp_command("stats", &[]);
+
+            let stats = db::get_stats(&conn).map_err(|e| format!("stats error: {e}"))?;
+
+            Ok(json!({
+                "total": stats.total,
+                "shared": stats.shared,
+                "local": stats.local,
+                "keywords": stats.keywords,
+            }))
+        }
+
+        _ => Err(format!("Unknown tool: {name}")),
+    }
+}
+
+// ── main loop ────────────────────────────────────────────────────────
+
+pub fn run_server() -> Result<(), Box<dyn std::error::Error>> {
+    let stdin = io::stdin().lock();
+    let mut stdout = io::stdout().lock();
+
+    for line in stdin.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+
+        let req: JsonRpcRequest = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                // Parse error — only respond if we can't determine it's a notification
+                let resp = respond_err(None, -32700, &format!("Parse error: {e}"));
+                write_response(&mut stdout, &resp);
+                continue;
+            }
+        };
+
+        // Validate jsonrpc version
+        if req.jsonrpc.as_deref() != Some("2.0") {
+            if req.id.is_some() {
+                let resp = respond_err(req.id, -32600, "Invalid Request: jsonrpc must be \"2.0\"");
+                write_response(&mut stdout, &resp);
+            }
+            continue;
+        }
+
+        // Notifications (no id) — handle silently
+        if req.id.is_none() {
+            // notifications/initialized, etc. — no response needed
+            continue;
+        }
+
+        let resp = match req.method.as_str() {
+            "initialize" => respond(
+                req.id,
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {}
+                    },
+                    "serverInfo": {
+                        "name": "lk-knowledge",
+                        "version": util::VERSION,
+                    }
+                }),
+            ),
+
+            "ping" => respond(req.id, json!({})),
+
+            "tools/list" => respond(req.id, tool_definitions()),
+
+            "tools/call" => {
+                let tool_name = req.params["name"].as_str().unwrap_or("");
+                let arguments = &req.params["arguments"];
+
+                match call_tool(tool_name, arguments) {
+                    Ok(result) => {
+                        let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+                        respond(
+                            req.id,
+                            json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": text,
+                                }]
+                            }),
+                        )
+                    }
+                    Err(e) => respond(
+                        req.id,
+                        json!({
+                            "content": [{
+                                "type": "text",
+                                "text": e,
+                            }],
+                            "isError": true,
+                        }),
+                    ),
+                }
+            }
+
+            _ => respond_err(req.id, -32601, &format!("Method not found: {}", req.method)),
+        };
+
+        write_response(&mut stdout, &resp);
+    }
+
+    Ok(())
+}

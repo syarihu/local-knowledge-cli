@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod keywords;
 mod markdown;
+mod mcp;
 mod secrets;
 mod util;
 
@@ -206,6 +207,14 @@ enum Commands {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Start MCP (Model Context Protocol) server over stdio
+    Mcp,
+    /// Install lk as an MCP server for Claude Code and/or Claude Desktop
+    InstallMcp {
+        /// Target: "claude-code", "claude-desktop", or "all"
+        #[arg(long, default_value = "all")]
+        target: String,
+    },
 }
 
 impl Commands {
@@ -332,6 +341,8 @@ fn main() {
         Commands::Update { skip_verify } => cmd::cmd_update(skip_verify),
         Commands::InstallCommands => cmd::install_embedded_commands(),
         Commands::Uninstall { yes } => cmd::cmd_uninstall(yes),
+        Commands::Mcp => mcp::run_server(),
+        Commands::InstallMcp { target } => cmd::cmd_install_mcp(&target),
     };
 
     if let Err(e) = result {
