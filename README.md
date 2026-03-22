@@ -189,7 +189,8 @@ There are two ways to integrate lk with Claude Code:
 Register lk as an MCP server so Claude can autonomously search, add, and manage knowledge:
 
 ```bash
-# Install for both Claude Code and Claude Desktop
+# Install for both Claude Code and Claude Desktop (auto-detects current project)
+cd your-project
 lk install-mcp
 
 # Or install for a specific target
@@ -198,6 +199,22 @@ lk install-mcp --target claude-desktop
 
 # To uninstall
 lk uninstall-mcp
+```
+
+**Multiple projects:** Running `lk install-mcp` from different project directories automatically merges them into the existing config — no need to re-specify all projects each time.
+
+```bash
+# Register project-a
+cd /path/to/project-a && lk install-mcp --target claude-desktop
+
+# Add project-b (project-a stays registered)
+cd /path/to/project-b && lk install-mcp --target claude-desktop
+
+# Or register multiple projects explicitly
+lk install-mcp --target claude-desktop --project /path/to/a --project /path/to/b
+
+# Remove a specific project
+lk install-mcp --target claude-desktop --remove-project /path/to/old-project
 ```
 
 Once installed, Claude has access to these tools:
@@ -210,8 +227,9 @@ Once installed, Claude has access to these tools:
 | `get_knowledge` | Retrieve full content of an entry by ID |
 | `update_knowledge` | Update title, content, keywords, or status of an entry |
 | `get_stats` | Get knowledge base statistics |
+| `list_projects` | List registered projects (multi-project mode only) |
 
-No manual server startup is needed — Claude Code / Claude Desktop automatically launches `lk mcp` when a tool is called.
+No manual server startup is needed — Claude Code / Claude Desktop automatically launches `lk mcp` when a tool is called. When multiple projects are registered, each tool accepts an optional `project` parameter to specify which project to operate on.
 
 ### Slash Commands
 
