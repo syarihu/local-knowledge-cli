@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::util;
@@ -12,44 +13,134 @@ fn build_mcp_args(projects: &[PathBuf]) -> Vec<String> {
     args
 }
 
-/// Resolve project paths: use explicit --project flags, or auto-detect CWD if it has .knowledge.
-fn resolve_projects(projects: &[PathBuf]) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    if !projects.is_empty() {
-        // Validate all paths
-        for p in projects {
-            let canonical = std::fs::canonicalize(p)
-                .map_err(|e| format!("Cannot resolve path '{}': {e}", p.display()))?;
-            if !canonical.join(".knowledge").join("knowledge.db").exists() {
-                return Err(format!(
-                    "No knowledge DB found at {}. Run 'lk init' in that project first.",
-                    canonical.display()
-                )
-                .into());
+/// Extract existing --project paths from a Claude Desktop config's lk-knowledge args.
+fn read_existing_projects_from_config(config: &serde_json::Value) -> Vec<PathBuf> {
+    let mut projects = Vec::new();
+    if let Some(args) = config
+        .get("mcpServers")
+        .and_then(|s| s.get("lk-knowledge"))
+        .and_then(|s| s.get("args"))
+        .and_then(|a| a.as_array())
+    {
+        let mut iter = args.iter();
+        while let Some(arg) = iter.next() {
+            if arg.as_str() == Some("--project")
+                && let Some(path) = iter.next().and_then(|v| v.as_str())
+            {
+                projects.push(PathBuf::from(path));
             }
         }
-        return Ok(projects
-            .iter()
-            .map(|p| std::fs::canonicalize(p).unwrap())
-            .collect());
+    }
+    projects
+}
+
+/// Merge existing projects with new additions and removals.
+/// Returns deduplicated, sorted list of canonical paths.
+fn merge_projects(
+    existing: &[PathBuf],
+    add: &[PathBuf],
+    remove: &[PathBuf],
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut set: BTreeSet<PathBuf> = BTreeSet::new();
+
+    // Add existing projects (skip paths that no longer exist)
+    for p in existing {
+        if let Ok(canonical) = std::fs::canonicalize(p)
+            && canonical.join(".knowledge").join("knowledge.db").exists()
+        {
+            set.insert(canonical);
+        }
     }
 
-    // Auto-detect from CWD
-    let cwd = std::env::current_dir()?;
-    if cwd.join(".knowledge").join("knowledge.db").exists() {
-        eprintln!("Auto-detected project: {}", cwd.display());
-        return Ok(vec![cwd]);
+    // Add new projects
+    for p in add {
+        let canonical = std::fs::canonicalize(p)
+            .map_err(|e| format!("Cannot resolve path '{}': {e}", p.display()))?;
+        if !canonical.join(".knowledge").join("knowledge.db").exists() {
+            return Err(format!(
+                "No knowledge DB found at {}. Run 'lk init' in that project first.",
+                canonical.display()
+            )
+            .into());
+        }
+        set.insert(canonical);
     }
 
-    Err(
-        "No --project specified and current directory has no knowledge base. \
-         Use --project /path/to/project to specify project directories."
-            .into(),
-    )
+    // Remove specified projects
+    for p in remove {
+        let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        set.remove(&canonical);
+    }
+
+    Ok(set.into_iter().collect())
+}
+
+/// Resolve project list for installation:
+/// 1. Read existing projects from config
+/// 2. Add new --project paths
+/// 3. Remove --remove-project paths
+/// 4. If nothing specified and CWD has .knowledge, auto-add CWD
+fn resolve_projects_for_desktop(
+    add: &[PathBuf],
+    remove: &[PathBuf],
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let config_path = get_claude_desktop_config_path();
+    let existing_config: serde_json::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        serde_json::from_str(&content)?
+    } else {
+        serde_json::json!({})
+    };
+
+    let existing = read_existing_projects_from_config(&existing_config);
+
+    // Auto-add CWD if --project is not specified and not only removing
+    let mut add_list: Vec<PathBuf> = add.to_vec();
+    if add.is_empty() && remove.is_empty() {
+        // No explicit flags: auto-detect CWD and add it
+        let cwd = std::env::current_dir()?;
+        if cwd.join(".knowledge").join("knowledge.db").exists() {
+            eprintln!("Auto-detected project: {}", cwd.display());
+            add_list.push(cwd);
+        } else if existing.is_empty() {
+            return Err(
+                "No --project specified and current directory has no knowledge base. \
+                 Use --project /path/to/project to specify project directories."
+                    .into(),
+            );
+        }
+    }
+
+    let merged = merge_projects(&existing, &add_list, remove)?;
+
+    if merged.is_empty() {
+        return Err("No projects remaining after merge. \
+                    Use --project to add projects or lk uninstall-mcp to remove the server."
+            .into());
+    }
+
+    // Report changes
+    for p in &merged {
+        let is_new = !existing.iter().any(|e| {
+            std::fs::canonicalize(e)
+                .map(|c| c == *p)
+                .unwrap_or(false)
+        });
+        if is_new {
+            eprintln!("  Added: {}", p.display());
+        }
+    }
+    for p in remove {
+        eprintln!("  Removed: {}", p.display());
+    }
+
+    Ok(merged)
 }
 
 pub fn cmd_install_mcp(
     target: &str,
     projects: &[PathBuf],
+    remove_projects: &[PathBuf],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let do_claude_code = target == "all" || target == "claude-code";
     let do_claude_desktop = target == "all" || target == "claude-desktop";
@@ -66,7 +157,7 @@ pub fn cmd_install_mcp(
     }
 
     if do_claude_desktop {
-        let resolved = resolve_projects(projects)?;
+        let resolved = resolve_projects_for_desktop(projects, remove_projects)?;
         install_claude_desktop(&resolved)?;
     }
 
@@ -154,10 +245,8 @@ fn install_claude_desktop(projects: &[PathBuf]) -> Result<(), Box<dyn std::error
         "Successfully configured lk-knowledge MCP server in {}",
         config_path.display()
     );
-    if !projects.is_empty() {
-        for p in projects {
-            eprintln!("  Project: {}", p.display());
-        }
+    for p in projects {
+        eprintln!("  Project: {}", p.display());
     }
     Ok(())
 }

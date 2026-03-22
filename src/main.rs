@@ -218,9 +218,12 @@ enum Commands {
         /// Target: "claude-code", "claude-desktop", or "all"
         #[arg(long, default_value = "all")]
         target: String,
-        /// Project directories to register (can be specified multiple times)
+        /// Project directories to register (can be specified multiple times; merged with existing)
         #[arg(long)]
         project: Vec<PathBuf>,
+        /// Project directories to remove from registration (can be specified multiple times)
+        #[arg(long)]
+        remove_project: Vec<PathBuf>,
     },
     /// Uninstall lk MCP server from Claude Code and/or Claude Desktop
     UninstallMcp {
@@ -355,7 +358,11 @@ fn main() {
         Commands::InstallCommands => cmd::install_embedded_commands(),
         Commands::Uninstall { yes } => cmd::cmd_uninstall(yes),
         Commands::Mcp { project } => mcp::run_server(project),
-        Commands::InstallMcp { target, project } => cmd::cmd_install_mcp(&target, &project),
+        Commands::InstallMcp {
+            target,
+            project,
+            remove_project,
+        } => cmd::cmd_install_mcp(&target, &project, &remove_project),
         Commands::UninstallMcp { target } => cmd::cmd_uninstall_mcp(&target),
     };
 
