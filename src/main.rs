@@ -215,6 +215,12 @@ enum Commands {
         #[arg(long, default_value = "all")]
         target: String,
     },
+    /// Uninstall lk MCP server from Claude Code and/or Claude Desktop
+    UninstallMcp {
+        /// Target: "claude-code", "claude-desktop", or "all"
+        #[arg(long, default_value = "all")]
+        target: String,
+    },
 }
 
 impl Commands {
@@ -343,6 +349,7 @@ fn main() {
         Commands::Uninstall { yes } => cmd::cmd_uninstall(yes),
         Commands::Mcp => mcp::run_server(),
         Commands::InstallMcp { target } => cmd::cmd_install_mcp(&target),
+        Commands::UninstallMcp { target } => cmd::cmd_uninstall_mcp(&target),
     };
 
     if let Err(e) = result {
