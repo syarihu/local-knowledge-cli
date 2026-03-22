@@ -16,6 +16,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Bulk delete with `purge` by category or source
 - Auto-extract keywords from entries
 - Self-update from GitHub Releases
+- Git worktree support — all worktrees share the main worktree's DB, so knowledge is available across worktrees
 - MCP (Model Context Protocol) server — Claude Code / Claude Desktop can autonomously search, add, and manage knowledge
 - Installs Claude Code slash commands for seamless integration
 
@@ -110,7 +111,7 @@ Commands:
 
 All lk-managed files are stored under the `.knowledge/` directory:
 
-- **SQLite DB** at `.knowledge/knowledge.db` (git-ignored) - local search index
+- **SQLite DB** at `.knowledge/knowledge.db` (git-ignored) - local search index (shared across git worktrees)
 - **Markdown files** in `.knowledge/` (git-tracked) - shareable knowledge
 - **Config file** at `.knowledge/config.toml` (git-tracked) - project settings
 - **Version file** at `.knowledge/.lk-version` (git-tracked) - minimum required lk version for the project
@@ -146,6 +147,13 @@ A good rule of thumb: shared knowledge is for stable facts that would help a new
 3. Run `lk export` to write local knowledge to `.knowledge/` markdown files, then commit and push — only export knowledge worth sharing with the team
 4. After pulling changes, shared knowledge is **auto-synced** on the next `lk` command — no manual `lk sync` needed
 5. Use `/lk-knowledge-discover` to bootstrap knowledge for a new project, or `/lk-knowledge-refresh` to update stale entries
+
+### Git worktree support
+
+When using `git worktree`, all worktrees automatically share the main worktree's knowledge DB. Knowledge added in any worktree is immediately available in all others — no configuration needed.
+
+- **Local knowledge** (DB) — shared across all worktrees via the main worktree's `.knowledge/knowledge.db`
+- **Shared knowledge** (`.knowledge/*.md`) — each worktree has its own copy based on the checked-out branch, auto-synced as usual
 
 ### Version alignment
 
