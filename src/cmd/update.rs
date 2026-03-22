@@ -220,20 +220,20 @@ fn fetch_latest_tag(repo: &str) -> Result<String, Box<dyn std::error::Error>> {
         }
     }
 
-    // Fallback: curl redirect
+    // Fallback: curl effective URL (follows redirects, extracts final URL)
     let output = std::process::Command::new("curl")
         .args([
-            "-fsSL",
+            "-sL",
             "-o",
             "/dev/null",
             "-w",
-            "%{redirect_url}",
+            "%{url_effective}",
             &format!("https://github.com/{repo}/releases/latest"),
         ])
         .output()?;
 
-    let redirect_url = String::from_utf8_lossy(&output.stdout).to_string();
-    let tag = redirect_url
+    let effective_url = String::from_utf8_lossy(&output.stdout).to_string();
+    let tag = effective_url
         .trim()
         .rsplit('/')
         .next()
