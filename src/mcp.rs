@@ -97,7 +97,7 @@ fn tool_definitions() -> Value {
         "tools": [
             {
                 "name": "search_knowledge",
-                "description": "Search the local knowledge base using full-text search. Returns matching entries with relevance scores.",
+                "description": "Search the project's knowledge base for design decisions, architecture notes, feature specs, bug investigation records, and other institutional knowledge. Use this BEFORE making significant code changes to check if there are relevant decisions or context already documented. Supports full-text search and keyword-based search. Returns matching entries with relevance scores.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -129,7 +129,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "add_knowledge",
-                "description": "Add a new knowledge entry to the local knowledge base. Checks for duplicates before adding.",
+                "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Automatically checks for duplicates before adding.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -162,7 +162,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "list_knowledge",
-                "description": "List knowledge entries with optional filtering by source and pagination.",
+                "description": "Browse all knowledge entries in the project's knowledge base. Use this to get an overview of what knowledge is available, or to find entries by source ('shared' = team knowledge from .knowledge/ markdown files, 'local' = entries added via CLI or MCP). Supports filtering by category and pagination.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -189,7 +189,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "get_knowledge",
-                "description": "Get a single knowledge entry by ID, including full content and keywords.",
+                "description": "Retrieve the full content of a specific knowledge entry by ID. Use this after searching or listing to read the complete details of an entry, including its full markdown content, keywords, and metadata.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -203,7 +203,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "update_knowledge",
-                "description": "Update an existing knowledge entry by ID. Only provided fields are updated.",
+                "description": "Update an existing knowledge entry by ID. Use this to correct outdated information, add details to existing entries, or mark entries as deprecated when they are no longer relevant. Only provided fields are updated.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -234,7 +234,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "get_stats",
-                "description": "Get knowledge base statistics: total entries, shared/local counts, keyword count.",
+                "description": "Get a quick overview of the knowledge base: total number of entries, shared vs local counts, and unique keyword count. Useful to check if a knowledge base exists and how much content is available before searching.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
