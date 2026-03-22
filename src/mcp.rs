@@ -221,10 +221,7 @@ fn check_update_available() -> Option<String> {
 
 /// Fetch the latest release tag from GitHub using curl (no auth needed).
 fn fetch_latest_tag_quiet() -> Option<String> {
-    let url = format!(
-        "https://github.com/{}/releases/latest",
-        util::DEFAULT_REPO
-    );
+    let url = format!("https://github.com/{}/releases/latest", util::DEFAULT_REPO);
     let output = std::process::Command::new("curl")
         .args(["-sL", "-o", "/dev/null", "-w", "%{url_effective}", &url])
         .output()
