@@ -172,6 +172,7 @@ fn install_claude_code(projects: &[PathBuf]) -> Result<(), Box<dyn std::error::E
         "stdio".to_string(),
         "lk-knowledge".to_string(),
         "--".to_string(),
+        "lk".to_string(),
     ];
     args.extend(build_mcp_args(projects));
 
