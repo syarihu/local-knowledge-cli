@@ -268,6 +268,7 @@ fn tool_definitions(registry: &ProjectRegistry) -> Value {
         tool_def_list(registry),
         tool_def_get(registry),
         tool_def_update(registry),
+        tool_def_supersede(registry),
         tool_def_stats(registry),
     ];
 
@@ -370,6 +371,10 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                     "description": "Category (e.g., 'features', 'architecture')",
                     "default": "general"
                 },
+                "status": {
+                    "type": "string",
+                    "description": "Initial status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Default: 'active'. Use 'proposed' for design decisions awaiting review."
+                },
                 "force": {
                     "type": "boolean",
                     "description": "Skip duplicate check and force add (default: false)",
@@ -460,10 +465,37 @@ fn tool_def_update(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
-                    "description": "Set status ('active' or 'deprecated')"
+                    "description": "Set status ('active', 'deprecated', 'proposed', 'accepted', or 'superseded')"
+                },
+                "superseded_by": {
+                    "type": "integer",
+                    "description": "ID of the entry that supersedes this one (use 0 to clear)"
                 }
             },
             "required": ["id"]
+        }
+    });
+    inject_project_prop(&mut def, registry);
+    def
+}
+
+fn tool_def_supersede(registry: &ProjectRegistry) -> Value {
+    let mut def = json!({
+        "name": "supersede_knowledge",
+        "description": "Mark an entry as superseded by another entry. Creates bidirectional links: the old entry gets status 'superseded' with a reference to the new entry, and the new entry records that it supersedes the old one.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "old_id": {
+                    "type": "integer",
+                    "description": "ID of the old entry being superseded"
+                },
+                "new_id": {
+                    "type": "integer",
+                    "description": "ID of the new entry that supersedes it"
+                }
+            },
+            "required": ["old_id", "new_id"]
         }
     });
     inject_project_prop(&mut def, registry);
@@ -500,19 +532,27 @@ fn entry_to_json(e: &db::Entry, kws: &[String], config: &Config) -> Value {
     let days = util::days_since(&e.updated_at);
     let threshold = config.stale_threshold_for(&e.source);
     let stale = days.is_some_and(|d| d > threshold);
-    json!({
+    let mut obj = json!({
         "id": e.id,
         "title": e.title,
         "content": e.content,
         "category": e.category,
         "source": e.source,
         "status": e.status,
+        "uid": e.uid,
         "keywords": kws,
         "score": e.rank,
         "stale": stale,
         "created_at": e.created_at,
         "updated_at": e.updated_at,
-    })
+    });
+    if let Some(ref sb) = e.superseded_by {
+        obj["superseded_by"] = json!(sb);
+    }
+    if let Some(ref ss) = e.supersedes {
+        obj["supersedes"] = json!(ss.split(',').collect::<Vec<_>>());
+    }
+    obj
 }
 
 /// Resolve project, open DB, load config, run auto-sync.
@@ -631,9 +671,30 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 })
                 .unwrap_or_default();
             let category = params["category"].as_str().unwrap_or("general");
+            let status = params["status"].as_str();
             let force = params["force"].as_bool().unwrap_or(false);
 
+            // Validate status if provided
+            if let Some(st) = status {
+                if !db::is_valid_status(st) {
+                    return Err(format!(
+                        "Invalid status: {st}. Must be one of: {}",
+                        db::VALID_STATUSES.join(", ")
+                    ));
+                }
+            }
+
             log_mcp_command("add", &[("title", title)], &knowledge_dir);
+
+            // Apply category template if content is empty
+            let template_content;
+            let effective_content = if content.is_empty() {
+                let template_dir = knowledge_dir.join("templates").join(format!("{category}.md"));
+                template_content = std::fs::read_to_string(template_dir).unwrap_or_default();
+                if template_content.is_empty() { content } else { &template_content }
+            } else {
+                content
+            };
 
             // Duplicate check
             if !force {
@@ -655,8 +716,9 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 }
             }
 
-            let id = db::add_entry(
-                &conn, title, content, &keywords, category, "local", None, None,
+            let id = db::add_entry_full(
+                &conn, title, effective_content, &keywords, category, "local", None, None,
+                None, status, None, None,
             )
             .map_err(|e| format!("add error: {e}"))?;
 
@@ -665,6 +727,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     "added": true,
                     "id": id,
                     "title": title,
+                    "status": status.unwrap_or("active"),
                 }),
                 &project_name,
             ))
@@ -769,7 +832,43 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 .map_err(|e| format!("update error: {e}"))?;
 
             if let Some(st) = status {
-                db::update_entry_status(&conn, id, st, None)
+                if !db::is_valid_status(st) {
+                    return Err(format!(
+                        "Invalid status: {st}. Must be one of: {}",
+                        db::VALID_STATUSES.join(", ")
+                    ));
+                }
+                let superseded_by_id = params["superseded_by"].as_i64();
+                let superseded_by_uid: Option<String> = match superseded_by_id {
+                    Some(0) => None,
+                    Some(v) => {
+                        let target = db::get_entry(&conn, v)
+                            .map_err(|e| format!("get error: {e}"))?
+                            .ok_or_else(|| format!("Entry #{v} not found for superseded_by"))?;
+                        Some(target.uid.clone())
+                    }
+                    None => {
+                        let current = db::get_entry(&conn, id)
+                            .map_err(|e| format!("get error: {e}"))?
+                            .unwrap();
+                        current.superseded_by.clone()
+                    }
+                };
+                db::update_entry_status(&conn, id, st, superseded_by_uid.as_deref())
+                    .map_err(|e| format!("status update error: {e}"))?;
+            } else if let Some(v) = params["superseded_by"].as_i64() {
+                let current = db::get_entry(&conn, id)
+                    .map_err(|e| format!("get error: {e}"))?
+                    .unwrap();
+                let uid = if v == 0 {
+                    None
+                } else {
+                    let target = db::get_entry(&conn, v)
+                        .map_err(|e| format!("get error: {e}"))?
+                        .ok_or_else(|| format!("Entry #{v} not found for superseded_by"))?;
+                    Some(target.uid.clone())
+                };
+                db::update_entry_status(&conn, id, &current.status, uid.as_deref())
                     .map_err(|e| format!("status update error: {e}"))?;
             }
 
@@ -777,6 +876,49 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 json!({
                     "updated": true,
                     "id": id,
+                }),
+                &project_name,
+            ))
+        }
+
+        "supersede_knowledge" => {
+            let old_id = params["old_id"]
+                .as_i64()
+                .ok_or("missing required parameter: old_id")?;
+            let new_id = params["new_id"]
+                .as_i64()
+                .ok_or("missing required parameter: new_id")?;
+
+            log_mcp_command(
+                "supersede",
+                &[("old_id", &old_id.to_string()), ("new_id", &new_id.to_string())],
+                &knowledge_dir,
+            );
+
+            let old_entry = db::get_entry(&conn, old_id)
+                .map_err(|e| format!("get error: {e}"))?
+                .ok_or_else(|| format!("Entry #{old_id} not found"))?;
+            let new_entry = db::get_entry(&conn, new_id)
+                .map_err(|e| format!("get error: {e}"))?
+                .ok_or_else(|| format!("Entry #{new_id} not found"))?;
+
+            db::update_entry_status(&conn, old_id, "superseded", Some(&new_entry.uid))
+                .map_err(|e| format!("supersede error: {e}"))?;
+
+            let new_supersedes =
+                db::append_supersedes(new_entry.supersedes.as_deref(), &old_entry.uid);
+            db::update_entry_supersedes(&conn, new_id, Some(&new_supersedes))
+                .map_err(|e| format!("supersede error: {e}"))?;
+
+            Ok(decorate_result(
+                json!({
+                    "old_id": old_id,
+                    "old_uid": old_entry.uid,
+                    "new_id": new_id,
+                    "new_uid": new_entry.uid,
+                    "old_status": "superseded",
+                    "old_superseded_by": new_entry.uid,
+                    "new_supersedes": new_supersedes,
                 }),
                 &project_name,
             ))
