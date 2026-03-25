@@ -83,6 +83,18 @@ pub fn get_knowledge_dir() -> PathBuf {
     get_project_root().join(".knowledge")
 }
 
+/// Load a category template from `.knowledge/templates/{category}.md`.
+/// Returns None if the template file doesn't exist.
+pub fn load_category_template(category: &str) -> Option<String> {
+    if category.is_empty() {
+        return None;
+    }
+    let template_path = get_knowledge_dir()
+        .join("templates")
+        .join(format!("{category}.md"));
+    std::fs::read_to_string(template_path).ok()
+}
+
 pub fn open_db_with_migrate() -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
     let db_path = get_db_path();
     let (conn, migrated) = db::open_db(&db_path)?;

@@ -16,8 +16,16 @@ pub fn cmd_add(
         &[("title", title), ("category", category.unwrap_or(""))],
     );
     let conn = open_db_with_migrate()?;
-    let content = content.unwrap_or("");
     let category = category.unwrap_or("");
+    // Apply category template if content is not provided
+    let template_content;
+    let content = match content {
+        Some(c) => c,
+        None => {
+            template_content = crate::util::load_category_template(category).unwrap_or_default();
+            &template_content
+        }
+    };
 
     // Secret detection
     if !allow_secrets {
