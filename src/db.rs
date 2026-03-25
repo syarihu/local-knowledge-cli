@@ -5,7 +5,14 @@ use std::path::Path;
 use crate::keywords;
 use crate::util::now_iso;
 
-const ENTRY_COLS: &str = "id, title, content, category, source, source_file, file_hash, status, superseded_by, created_at, updated_at";
+const ENTRY_COLS: &str = "id, title, content, category, source, source_file, file_hash, status, uid, superseded_by, supersedes, created_at, updated_at";
+const ENTRY_COLS_E: &str = "e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.uid, e.superseded_by, e.supersedes, e.created_at, e.updated_at";
+
+pub const VALID_STATUSES: &[&str] = &["active", "deprecated", "proposed", "accepted", "superseded"];
+
+pub fn is_valid_status(s: &str) -> bool {
+    VALID_STATUSES.contains(&s)
+}
 
 pub struct Entry {
     pub id: i64,
@@ -17,7 +24,9 @@ pub struct Entry {
     #[allow(dead_code)]
     pub file_hash: Option<String>,
     pub status: String,
-    pub superseded_by: Option<i64>,
+    pub uid: String,
+    pub superseded_by: Option<String>,
+    pub supersedes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub rank: Option<f64>,
@@ -31,7 +40,7 @@ pub struct DbStats {
 }
 
 /// Current schema version. Increment when adding new migrations.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     if let Some(parent) = db_path.parent() {
@@ -57,7 +66,9 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
             source_file TEXT,
             file_hash   TEXT,
             status      TEXT NOT NULL DEFAULT 'active',
-            superseded_by INTEGER,
+            uid         TEXT NOT NULL DEFAULT '',
+            superseded_by TEXT,
+            supersedes  TEXT,
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -74,6 +85,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
         CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
         CREATE INDEX IF NOT EXISTS idx_entries_source_file ON entries(source_file);
         CREATE INDEX IF NOT EXISTS idx_entries_source_status ON entries(source, status);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_uid ON entries(uid) WHERE uid != '';
 
         CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
             title,
@@ -222,10 +234,12 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         let schema: String = conn
             .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")?
             .query_row([], |row| row.get(0))?;
-        if schema.contains("status") {
-            // Has all columns already — just needs version table
+        if schema.contains("uid") {
+            // Has all columns including uid — schema version 5
             set_schema_version(conn, SCHEMA_VERSION)?;
             return Ok(false);
+        } else if schema.contains("status") {
+            4 // Has status but not uid — needs migration 5
         } else if schema.contains("source ") {
             1 // Has source but not status
         } else {
@@ -292,8 +306,139 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         migrated = true;
     }
 
+    // Migration 5: Add uid, supersedes columns; change superseded_by to TEXT (version 4 -> 5)
+    if effective_version < 5 {
+        // Step 1: Read existing superseded_by relationships (as integers)
+        let mut supersede_pairs: Vec<(i64, i64)> = Vec::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, superseded_by FROM entries WHERE superseded_by IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                supersede_pairs.push(row?);
+            }
+        }
+
+        // Step 2: Drop FTS triggers (they reference the old table)
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS entries_ai;
+             DROP TRIGGER IF EXISTS entries_ad;
+             DROP TRIGGER IF EXISTS entries_au;",
+        )?;
+
+        // Step 3: Create new table with uid, supersedes, and TEXT superseded_by
+        conn.execute_batch(
+            "CREATE TABLE entries_new (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                title       TEXT NOT NULL,
+                content     TEXT NOT NULL,
+                category    TEXT NOT NULL DEFAULT '',
+                source      TEXT NOT NULL DEFAULT 'local',
+                source_file TEXT,
+                file_hash   TEXT,
+                status      TEXT NOT NULL DEFAULT 'active',
+                uid         TEXT NOT NULL DEFAULT '',
+                superseded_by TEXT,
+                supersedes  TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )?;
+
+        // Step 4: Copy data (without superseded_by for now)
+        conn.execute_batch(
+            "INSERT INTO entries_new (id, title, content, category, source, source_file, file_hash, status, uid, created_at, updated_at)
+             SELECT id, title, content, category, source, source_file, file_hash, status, '', created_at, updated_at
+             FROM entries;",
+        )?;
+
+        // Step 5: Generate UIDs for all entries
+        let mut id_uid_map: HashMap<i64, String> = HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT id FROM entries_new")?;
+            let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?.flatten().collect();
+            for id in ids {
+                let uid = generate_uid();
+                conn.execute(
+                    "UPDATE entries_new SET uid = ?1 WHERE id = ?2",
+                    params![uid, id],
+                )?;
+                id_uid_map.insert(id, uid);
+            }
+        }
+
+        // Step 6: Convert superseded_by INTEGER -> UID TEXT
+        for (entry_id, old_superseded_by_id) in &supersede_pairs {
+            if let Some(uid) = id_uid_map.get(old_superseded_by_id) {
+                conn.execute(
+                    "UPDATE entries_new SET superseded_by = ?1 WHERE id = ?2",
+                    params![uid, entry_id],
+                )?;
+            }
+        }
+
+        // Step 7: Swap tables
+        conn.execute_batch(
+            "DROP TABLE entries;
+             ALTER TABLE entries_new RENAME TO entries;",
+        )?;
+
+        // Step 8: Recreate indexes
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON keywords(keyword);
+             CREATE INDEX IF NOT EXISTS idx_keywords_entry_id ON keywords(entry_id);
+             CREATE INDEX IF NOT EXISTS idx_entries_category ON entries(category);
+             CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
+             CREATE INDEX IF NOT EXISTS idx_entries_source_file ON entries(source_file);
+             CREATE INDEX IF NOT EXISTS idx_entries_source_status ON entries(source, status);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_uid ON entries(uid) WHERE uid != '';",
+        )?;
+
+        // Step 9: Recreate FTS table and triggers
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS entries_fts;
+             CREATE VIRTUAL TABLE entries_fts USING fts5(
+                 title, content,
+                 content='entries', content_rowid='id',
+                 tokenize='trigram'
+             );
+             INSERT INTO entries_fts(rowid, title, content) SELECT id, title, content FROM entries;
+             CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+                 INSERT INTO entries_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+             END;
+             CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+                 INSERT INTO entries_fts(entries_fts, rowid, title, content) VALUES('delete', old.id, old.title, old.content);
+             END;
+             CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
+                 INSERT INTO entries_fts(entries_fts, rowid, title, content) VALUES('delete', old.id, old.title, old.content);
+                 INSERT INTO entries_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+             END;",
+        )?;
+
+        migrated = true;
+    }
+
     set_schema_version(conn, SCHEMA_VERSION)?;
     Ok(migrated)
+}
+
+/// Generate a unique 8-character hex ID using SHA256 of timestamp + pid + counter.
+pub fn generate_uid() -> String {
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static UID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let counter = UID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let input = format!("{}-{}-{}", now.as_nanos(), pid, counter);
+    let hash = Sha256::digest(input.as_bytes());
+    hex::encode(&hash[..4])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -307,7 +452,27 @@ pub fn add_entry(
     source_file: Option<&str>,
     file_hash: Option<&str>,
 ) -> Result<i64, Box<dyn std::error::Error>> {
+    add_entry_full(conn, title, content, kws, category, source, source_file, file_hash, None, None, None, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn add_entry_full(
+    conn: &Connection,
+    title: &str,
+    content: &str,
+    kws: &[String],
+    category: &str,
+    source: &str,
+    source_file: Option<&str>,
+    file_hash: Option<&str>,
+    uid: Option<&str>,
+    status: Option<&str>,
+    superseded_by: Option<&str>,
+    supersedes: Option<&str>,
+) -> Result<i64, Box<dyn std::error::Error>> {
     let now = now_iso();
+    let uid = uid.map(String::from).unwrap_or_else(generate_uid);
+    let status = status.unwrap_or("active");
 
     // Auto-extract keywords if none provided
     let auto_kws;
@@ -319,8 +484,8 @@ pub fn add_entry(
     };
 
     conn.execute(
-        "INSERT INTO entries (title, content, category, source, source_file, file_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![title, content, category, source, source_file, file_hash, now, now],
+        "INSERT INTO entries (title, content, category, source, source_file, file_hash, uid, status, superseded_by, supersedes, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![title, content, category, source, source_file, file_hash, uid, status, superseded_by, supersedes, now, now],
     )?;
     let entry_id = conn.last_insert_rowid();
 
@@ -332,6 +497,19 @@ pub fn add_entry(
     }
 
     Ok(entry_id)
+}
+
+pub fn get_entry_by_uid(
+    conn: &Connection,
+    uid: &str,
+) -> Result<Option<Entry>, Box<dyn std::error::Error>> {
+    let sql = format!("SELECT {ENTRY_COLS} FROM entries WHERE uid = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query_map(params![uid], row_to_entry)?;
+    match rows.next() {
+        Some(Ok(entry)) => Ok(Some(entry)),
+        _ => Ok(None),
+    }
 }
 
 pub fn search_entries(
@@ -372,10 +550,8 @@ pub fn search_entries(
 
     if keyword_only {
         let words = split_query_words(query);
-        let mut sql = String::from(
-            "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
-             FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (",
-        );
+        let mut sql = format!("SELECT DISTINCT {ENTRY_COLS_E} \
+             FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (");
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         for (i, word) in words.iter().enumerate() {
             if i > 0 {
@@ -402,8 +578,8 @@ pub fn search_entries(
         // FTS search — sanitize query to prevent FTS5 syntax injection
         let sanitized = sanitize_fts_query(query);
 
-        let fts_sql_base = "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at, fts.rank \
-             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1".to_string();
+        let fts_sql_base = format!("SELECT {ENTRY_COLS_E}, fts.rank \
+             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1");
         let mut fts_sql = fts_sql_base;
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(sanitized)];
 
@@ -436,10 +612,9 @@ pub fn search_entries(
             let remaining = limit - results.len();
 
             let words = split_query_words(query);
-            let mut kw_sql = String::from(
-                "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
-                 FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (",
-            );
+            let mut kw_sql = format!("SELECT DISTINCT {ENTRY_COLS_E} \
+                 FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (");
+
             let mut kw_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             for (i, word) in words.iter().enumerate() {
                 if i > 0 {
@@ -608,7 +783,7 @@ pub fn update_entry_status(
     conn: &Connection,
     id: i64,
     status: &str,
-    superseded_by: Option<i64>,
+    superseded_by: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let now = now_iso();
     conn.execute(
@@ -616,6 +791,26 @@ pub fn update_entry_status(
         params![status, superseded_by, now, id],
     )?;
     Ok(())
+}
+
+pub fn update_entry_supersedes(
+    conn: &Connection,
+    id: i64,
+    supersedes: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let now = now_iso();
+    conn.execute(
+        "UPDATE entries SET supersedes = ?1, updated_at = ?2 WHERE id = ?3",
+        params![supersedes, now, id],
+    )?;
+    Ok(())
+}
+
+pub fn append_supersedes(existing: Option<&str>, new_uid: &str) -> String {
+    match existing {
+        Some(s) if !s.is_empty() => format!("{},{}", s, new_uid),
+        _ => new_uid.to_string(),
+    }
 }
 
 pub fn list_entries(
@@ -650,6 +845,21 @@ pub fn list_entries_by_source(
         format!("SELECT {ENTRY_COLS} FROM entries WHERE source = ?1 ORDER BY updated_at DESC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![source], row_to_entry)?;
+    let mut entries = Vec::new();
+    for row in rows {
+        entries.push(row?);
+    }
+    Ok(entries)
+}
+
+pub fn list_entries_by_source_file(
+    conn: &Connection,
+    source_file: &str,
+) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
+    let sql =
+        format!("SELECT {ENTRY_COLS} FROM entries WHERE source_file = ?1 ORDER BY id ASC");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![source_file], row_to_entry)?;
     let mut entries = Vec::new();
     for row in rows {
         entries.push(row?);
@@ -770,8 +980,8 @@ pub fn find_similar_entries(
     // 2. FTS MATCH on title
     {
         let fts_query = title.to_string();
-        let sql = "SELECT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
-             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1 ORDER BY rank LIMIT 3".to_string();
+        let sql = format!("SELECT {ENTRY_COLS_E} \
+             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1 ORDER BY rank LIMIT 3");
         if let Ok(mut stmt) = conn.prepare(&sql)
             && let Ok(rows) = stmt.query_map(params![fts_query], row_to_entry)
         {
@@ -800,7 +1010,7 @@ pub fn find_similar_entries(
             .map(|(i, _)| format!("?{}", i + 1))
             .collect();
         let sql = format!(
-            "SELECT DISTINCT e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.superseded_by, e.created_at, e.updated_at \
+            "SELECT DISTINCT {ENTRY_COLS_E} \
              FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE k.keyword IN ({}) \
              ORDER BY e.updated_at DESC LIMIT ?{}",
             placeholders.join(", "),
@@ -897,16 +1107,18 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
         source_file: row.get(5)?,
         file_hash: row.get(6)?,
         status: row.get(7)?,
-        superseded_by: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        uid: row.get(8)?,
+        superseded_by: row.get(9)?,
+        supersedes: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
         rank: None,
     })
 }
 
-/// Build Entry from a row with rank at column index 11
+/// Build Entry from a row with rank at column index 13
 fn row_to_entry_with_rank(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
-    let raw_rank: f64 = row.get(11)?;
+    let raw_rank: f64 = row.get(13)?;
     let score = 1.0 / (1.0 + raw_rank.abs());
     Ok(Entry {
         id: row.get(0)?,
@@ -917,9 +1129,11 @@ fn row_to_entry_with_rank(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
         source_file: row.get(5)?,
         file_hash: row.get(6)?,
         status: row.get(7)?,
-        superseded_by: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        uid: row.get(8)?,
+        superseded_by: row.get(9)?,
+        supersedes: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
         rank: Some(score),
     })
 }
@@ -1094,11 +1308,12 @@ mod tests {
         let (conn, _tmp) = setup_test_db();
         let old_id = add_entry(&conn, "Old", "old", &[], "", "local", None, None).unwrap();
         let new_id = add_entry(&conn, "New", "new", &[], "", "local", None, None).unwrap();
-        update_entry_status(&conn, old_id, "deprecated", Some(new_id)).unwrap();
+        let new_entry = get_entry(&conn, new_id).unwrap().unwrap();
+        update_entry_status(&conn, old_id, "deprecated", Some(&new_entry.uid)).unwrap();
 
         let entry = get_entry(&conn, old_id).unwrap().unwrap();
         assert_eq!(entry.status, "deprecated");
-        assert_eq!(entry.superseded_by, Some(new_id));
+        assert_eq!(entry.superseded_by, Some(new_entry.uid));
     }
 
     #[test]

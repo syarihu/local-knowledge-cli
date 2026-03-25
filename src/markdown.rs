@@ -7,17 +7,36 @@ pub struct MdEntry {
     pub content: String,
     pub keywords: Vec<String>,
     pub category: String,
+    pub uid: Option<String>,
+    pub status: Option<String>,
+    pub superseded_by: Option<String>,
+    pub supersedes: Vec<String>,
 }
 
-/// Parse YAML-ish frontmatter. Returns (frontmatter_keywords, category, body).
-fn parse_frontmatter(text: &str) -> (Vec<String>, String, &str) {
+struct Frontmatter {
+    keywords: Vec<String>,
+    category: String,
+    uid: Option<String>,
+    status: Option<String>,
+    superseded_by: Option<String>,
+    supersedes: Vec<String>,
+}
+
+/// Parse YAML-ish frontmatter. Returns (Frontmatter, body).
+fn parse_frontmatter(text: &str) -> (Frontmatter, &str) {
     let re = Regex::new(r"(?s)^---\s*\n(.*?)\n---\s*\n").unwrap();
     if let Some(cap) = re.captures(text) {
         let fm_text = cap.get(1).unwrap().as_str();
         let body = &text[cap.get(0).unwrap().end()..];
 
-        let mut keywords = Vec::new();
-        let mut category = String::new();
+        let mut fm = Frontmatter {
+            keywords: Vec::new(),
+            category: String::new(),
+            uid: None,
+            status: None,
+            superseded_by: None,
+            supersedes: Vec::new(),
+        };
 
         let kw_re =
             Regex::new(r"[\w\u{3040}-\u{309F}\u{30A0}-\u{30FF}\u{4E00}-\u{9FFF}-]+").unwrap();
@@ -25,22 +44,48 @@ fn parse_frontmatter(text: &str) -> (Vec<String>, String, &str) {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("keywords:") {
                 for mat in kw_re.find_iter(rest) {
-                    keywords.push(mat.as_str().to_string());
+                    fm.keywords.push(mat.as_str().to_string());
                 }
             } else if let Some(rest) = line.strip_prefix("category:") {
-                category = rest.trim().to_string();
+                fm.category = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("uid:") {
+                let val = rest.trim().trim_matches('"').to_string();
+                if !val.is_empty() {
+                    fm.uid = Some(val);
+                }
+            } else if let Some(rest) = line.strip_prefix("status:") {
+                let val = rest.trim().trim_matches('"').to_string();
+                if !val.is_empty() {
+                    fm.status = Some(val);
+                }
+            } else if let Some(rest) = line.strip_prefix("superseded_by:") {
+                let val = rest.trim().trim_matches('"').to_string();
+                if !val.is_empty() {
+                    fm.superseded_by = Some(val);
+                }
+            } else if let Some(rest) = line.strip_prefix("supersedes:") {
+                for mat in kw_re.find_iter(rest) {
+                    fm.supersedes.push(mat.as_str().to_string());
+                }
             }
         }
 
-        (keywords, category, body)
+        (fm, body)
     } else {
-        (Vec::new(), String::new(), text)
+        (Frontmatter {
+            keywords: Vec::new(),
+            category: String::new(),
+            uid: None,
+            status: None,
+            superseded_by: None,
+            supersedes: Vec::new(),
+        }, text)
     }
 }
 
 /// Parse markdown text into individual entries.
 pub fn parse_md_entries(text: &str) -> Vec<MdEntry> {
-    let (file_kws, category, body) = parse_frontmatter(text);
+    let (fm, body) = parse_frontmatter(text);
 
     let entry_re = Regex::new(r"(?m)^## Entry:\s*(.+)$").unwrap();
     let matches: Vec<_> = entry_re.captures_iter(body).collect();
@@ -58,14 +103,18 @@ pub fn parse_md_entries(text: &str) -> Vec<MdEntry> {
             ("Untitled".to_string(), body.trim().to_string())
         };
 
-        let (entry_kws, content) = extract_entry_keywords(&content, &file_kws);
+        let (entry_kws, content, meta) = extract_entry_metadata(&content, &fm.keywords);
 
         if !content.is_empty() {
             entries.push(MdEntry {
                 title,
                 content,
                 keywords: entry_kws,
-                category: category.clone(),
+                category: fm.category.clone(),
+                uid: meta.uid.or(fm.uid.clone()),
+                status: meta.status.or(fm.status.clone()),
+                superseded_by: meta.superseded_by.or(fm.superseded_by.clone()),
+                supersedes: if meta.supersedes.is_empty() { fm.supersedes.clone() } else { meta.supersedes },
             });
         }
     } else {
@@ -83,14 +132,18 @@ pub fn parse_md_entries(text: &str) -> Vec<MdEntry> {
                 body.len()
             };
             let raw_content = body[start..end].trim().to_string();
-            let (entry_kws, content) = extract_entry_keywords(&raw_content, &file_kws);
+            let (entry_kws, content, meta) = extract_entry_metadata(&raw_content, &fm.keywords);
 
             if !content.is_empty() {
                 entries.push(MdEntry {
                     title,
                     content,
                     keywords: entry_kws,
-                    category: category.clone(),
+                    category: fm.category.clone(),
+                    uid: meta.uid,
+                    status: meta.status,
+                    superseded_by: meta.superseded_by,
+                    supersedes: meta.supersedes,
                 });
             }
         }
@@ -99,10 +152,23 @@ pub fn parse_md_entries(text: &str) -> Vec<MdEntry> {
     entries
 }
 
-/// Extract inline `keywords: [...]` from entry content, merge with file-level keywords.
-fn extract_entry_keywords(content: &str, file_kws: &[String]) -> (Vec<String>, String) {
+struct EntryMeta {
+    uid: Option<String>,
+    status: Option<String>,
+    superseded_by: Option<String>,
+    supersedes: Vec<String>,
+}
+
+/// Extract inline metadata (keywords, uid, status, superseded_by, supersedes) from entry content.
+fn extract_entry_metadata(content: &str, file_kws: &[String]) -> (Vec<String>, String, EntryMeta) {
     let mut kws: Vec<String> = file_kws.to_vec();
     let mut cleaned = content.to_string();
+    let mut meta = EntryMeta {
+        uid: None,
+        status: None,
+        superseded_by: None,
+        supersedes: Vec::new(),
+    };
 
     let kw_re = Regex::new(r"(?m)^keywords:\s*\[(.+)\]").unwrap();
     if let Some(cap) = kw_re.captures(content) {
@@ -113,10 +179,54 @@ fn extract_entry_keywords(content: &str, file_kws: &[String]) -> (Vec<String>, S
                 kws.push(kw);
             }
         }
-        cleaned = kw_re.replace(content, "").trim().to_string();
+        cleaned = kw_re.replace(&cleaned, "").trim().to_string();
     }
 
-    (kws, cleaned)
+    // Extract uid: <value>
+    let uid_re = Regex::new(r"(?m)^uid:\s*(.+)$").unwrap();
+    if let Some(cap) = uid_re.captures(&cleaned) {
+        let val = cap.get(1).unwrap().as_str().trim().trim_matches('"').to_string();
+        if !val.is_empty() {
+            meta.uid = Some(val);
+        }
+        cleaned = uid_re.replace(&cleaned, "").trim().to_string();
+    }
+
+    // Extract status: <value>
+    let status_re = Regex::new(r"(?m)^status:\s*(.+)$").unwrap();
+    if let Some(cap) = status_re.captures(&cleaned) {
+        let val = cap.get(1).unwrap().as_str().trim().trim_matches('"').to_string();
+        if !val.is_empty() {
+            meta.status = Some(val);
+        }
+        cleaned = status_re.replace(&cleaned, "").trim().to_string();
+    }
+
+    // Extract superseded_by: <value>
+    let sb_re = Regex::new(r"(?m)^superseded_by:\s*(.+)$").unwrap();
+    if let Some(cap) = sb_re.captures(&cleaned) {
+        let val = cap.get(1).unwrap().as_str().trim().trim_matches('"').to_string();
+        if !val.is_empty() {
+            meta.superseded_by = Some(val);
+        }
+        cleaned = sb_re.replace(&cleaned, "").trim().to_string();
+    }
+
+    // Extract supersedes: [uid1, uid2] or supersedes: uid1
+    let ss_re = Regex::new(r"(?m)^supersedes:\s*(.+)$").unwrap();
+    if let Some(cap) = ss_re.captures(&cleaned) {
+        let val = cap.get(1).unwrap().as_str().trim();
+        let val = val.trim_start_matches('[').trim_end_matches(']');
+        for uid in val.split(',') {
+            let uid = uid.trim().trim_matches('"').to_string();
+            if !uid.is_empty() {
+                meta.supersedes.push(uid);
+            }
+        }
+        cleaned = ss_re.replace(&cleaned, "").trim().to_string();
+    }
+
+    (kws, cleaned, meta)
 }
 
 /// Compute SHA256 hash of a file.

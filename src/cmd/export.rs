@@ -122,7 +122,20 @@ pub fn cmd_export(
         for entry in &sorted_entries {
             let kws = db::get_keywords(&conn, entry.id)?;
             lines.push(format!("## Entry: {}", entry.title));
-            lines.push(format!("keywords: [{}]\n", kws.join(", ")));
+            lines.push(format!("keywords: [{}]", kws.join(", ")));
+            if !entry.uid.is_empty() {
+                lines.push(format!("uid: {}", entry.uid));
+            }
+            if entry.status != "active" {
+                lines.push(format!("status: {}", entry.status));
+            }
+            if let Some(ref sb) = entry.superseded_by {
+                lines.push(format!("superseded_by: {sb}"));
+            }
+            if let Some(ref ss) = entry.supersedes {
+                lines.push(format!("supersedes: [{ss}]"));
+            }
+            lines.push(String::new());
             lines.push(entry.content.clone());
             lines.push(String::new());
         }

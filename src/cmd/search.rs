@@ -42,7 +42,7 @@ pub fn cmd_search(
                 if stale && let Some(d) = days {
                     obj["days_since_update"] = serde_json::json!(d);
                 }
-                if let Some(sb) = r.superseded_by {
+                if let Some(ref sb) = r.superseded_by {
                     obj["superseded_by"] = serde_json::json!(sb);
                 }
                 if full {
@@ -89,7 +89,7 @@ pub fn cmd_search(
             println!();
             println!("       Keywords: {}", kws.join(", "));
             println!("       {snippet}");
-            if let Some(sb) = r.superseded_by {
+            if let Some(ref sb) = r.superseded_by {
                 println!("       \u{2192} Superseded by: #{sb}");
             }
             println!();

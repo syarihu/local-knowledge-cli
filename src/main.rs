@@ -94,7 +94,7 @@ enum Commands {
         /// New content
         #[arg(short, long)]
         content: Option<String>,
-        /// Set status ("active" or "deprecated")
+        /// Set status ("active", "deprecated", "proposed", "accepted", or "superseded")
         #[arg(long)]
         status: Option<String>,
         /// Set superseded-by entry ID (use 0 to clear)
@@ -127,6 +127,16 @@ enum Commands {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Mark an entry as superseded by another entry (bidirectional)
+    Supersede {
+        /// ID of the old entry being superseded
+        old_id: i64,
+        /// ID of the new entry that supersedes it
+        new_id: i64,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// List all entries
     List {
         /// Filter by category (e.g., "features", "architecture")
@@ -135,6 +145,9 @@ enum Commands {
         /// Filter by source ("local" or "shared")
         #[arg(long)]
         source: Option<String>,
+        /// Filter by status (e.g., "accepted", "proposed", "superseded")
+        #[arg(long)]
+        status: Option<String>,
         /// Max results (default: unlimited)
         #[arg(short, long)]
         limit: Option<usize>,
@@ -150,6 +163,9 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Write UIDs back to markdown files that don't have them
+        #[arg(long)]
+        write_uids: bool,
     },
     /// Export local entries to markdown
     Export {
@@ -240,6 +256,7 @@ impl Commands {
             | Commands::Search { json, .. }
             | Commands::Get { json, .. }
             | Commands::Edit { json, .. }
+            | Commands::Supersede { json, .. }
             | Commands::List { json, .. }
             | Commands::Sync { json, .. }
             | Commands::Keywords { json, .. }
@@ -263,6 +280,7 @@ fn main() {
             | Commands::Stats { .. }
             | Commands::Add { .. }
             | Commands::Edit { .. }
+            | Commands::Supersede { .. }
             | Commands::Delete { .. }
             | Commands::Purge { .. }
             | Commands::Export { .. }
@@ -330,6 +348,7 @@ fn main() {
             touch,
             json,
         ),
+        Commands::Supersede { old_id, new_id, json } => cmd::cmd_supersede(old_id, new_id, json),
         Commands::Delete { id, yes } => cmd::cmd_delete(id, yes),
         Commands::Purge {
             category,
@@ -339,11 +358,12 @@ fn main() {
         Commands::List {
             category,
             source,
+            status,
             limit,
             offset,
             json,
-        } => cmd::cmd_list(category.as_deref(), source.as_deref(), limit, offset, json),
-        Commands::Sync { json } => cmd::cmd_sync(json),
+        } => cmd::cmd_list(category.as_deref(), source.as_deref(), status.as_deref(), limit, offset, json),
+        Commands::Sync { json, write_uids } => cmd::cmd_sync(json, write_uids),
         Commands::Export {
             dir,
             ids,
