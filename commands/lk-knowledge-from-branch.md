@@ -40,6 +40,11 @@ $ARGUMENTS optionally specifies the base branch to diff against (e.g., "main", "
 - New conventions or patterns: coding rules, naming changes, new abstractions
 - Gotchas and caveats: tricky parts, non-obvious behavior, edge cases
 - Migration or breaking changes: what consumers need to know
+- **Design decisions (ADR candidates)**: Look for these signals in the diff:
+  - New library/framework added to dependency files (Cargo.toml, package.json, build.gradle, etc.)
+  - Architecture pattern changes (new module structure, layer reorganization)
+  - Replacement of an existing approach with a new one
+  - Commit messages or PR description containing rationale ("chose X because...", "switched from A to B")
 
 For each perspective, read the changed files and surrounding code to understand context, not just the diff lines.
 
@@ -71,7 +76,25 @@ keywords: [specific, keywords]
 ```
 
 Rules:
-- Choose appropriate categories: `features`, `architecture`, `conventions`, `infrastructure`
+- Choose appropriate categories: `features`, `architecture`, `conventions`, `infrastructure`, `decisions`
+- For entries in the `decisions` category, use the ADR format with `status: proposed`:
+  ```markdown
+  ## Entry: Decision Title
+  keywords: [adr, relevant-topic]
+  status: proposed
+
+  ### Context
+  Why this decision was needed.
+
+  ### Decision
+  What was decided.
+
+  ### Alternatives Considered
+  What else was evaluated and why it was rejected.
+
+  ### Consequences
+  What this decision means going forward.
+  ```
 - Include the branch name or ticket number in keywords if identifiable from branch name or commit messages
 - Each entry should be self-contained and useful to someone unfamiliar with this branch
 - Do NOT create entries for trivial changes (version bumps, typo fixes, dependency updates with no logic change)
@@ -85,9 +108,11 @@ Rules:
 1. Present a summary of what was created/updated:
    - List each markdown file with its entries and categories
    - Note any existing files that were updated rather than created new
+   - **Highlight any ADR entries** (category=decisions) and ask the user if the decision has been approved (→ status=accepted) or is still under discussion (→ status=proposed)
 2. Run `lk sync` to import the new files, then `lk stats` to show overall knowledge base status
-3. Remind the user to review the generated files and commit them with the PR
-4. If there are aspects of the branch that are hard to capture as knowledge (e.g., UX decisions, business context), mention them as suggestions for manual documentation
+3. If new decisions supersede existing ones, run `lk supersede <old_id> <new_id>` after syncing
+4. Remind the user to review the generated files and commit them with the PR
+5. If there are aspects of the branch that are hard to capture as knowledge (e.g., UX decisions, business context), mention them as suggestions for manual documentation
 
 ## Guidelines
 - Focus on knowledge that would help someone understand this branch's changes WITHOUT reading the full diff
