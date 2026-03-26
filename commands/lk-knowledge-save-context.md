@@ -16,10 +16,9 @@ $ARGUMENTS contains a hint about what to save, or is empty to auto-extract from 
    - Unresolved issues and next steps
 2. Check for existing entries: `lk search "<topic>" --json --full --category context`
    - If a matching entry exists, update it with `lk edit <id> --content "..."` instead of creating a new one
-3. Show proposed entries to the user for confirmation
-4. For each confirmed entry, run:
+3. For each entry, run:
    `lk add "<title>" --keywords "conversation-log,<kw1>,<kw2>" --content "<content>" --category context`
-5. Report what was saved
+4. Report what was saved
 
 ## Guidelines
 - category must be `context`
