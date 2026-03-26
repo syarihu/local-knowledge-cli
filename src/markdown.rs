@@ -72,14 +72,17 @@ fn parse_frontmatter(text: &str) -> (Frontmatter, &str) {
 
         (fm, body)
     } else {
-        (Frontmatter {
-            keywords: Vec::new(),
-            category: String::new(),
-            uid: None,
-            status: None,
-            superseded_by: None,
-            supersedes: Vec::new(),
-        }, text)
+        (
+            Frontmatter {
+                keywords: Vec::new(),
+                category: String::new(),
+                uid: None,
+                status: None,
+                superseded_by: None,
+                supersedes: Vec::new(),
+            },
+            text,
+        )
     }
 }
 
@@ -114,7 +117,11 @@ pub fn parse_md_entries(text: &str) -> Vec<MdEntry> {
                 uid: meta.uid.or(fm.uid.clone()),
                 status: meta.status.or(fm.status.clone()),
                 superseded_by: meta.superseded_by.or(fm.superseded_by.clone()),
-                supersedes: if meta.supersedes.is_empty() { fm.supersedes.clone() } else { meta.supersedes },
+                supersedes: if meta.supersedes.is_empty() {
+                    fm.supersedes.clone()
+                } else {
+                    meta.supersedes
+                },
             });
         }
     } else {
@@ -185,7 +192,13 @@ fn extract_entry_metadata(content: &str, file_kws: &[String]) -> (Vec<String>, S
     // Extract uid: <value>
     let uid_re = Regex::new(r"(?m)^uid:\s*(.+)$").unwrap();
     if let Some(cap) = uid_re.captures(&cleaned) {
-        let val = cap.get(1).unwrap().as_str().trim().trim_matches('"').to_string();
+        let val = cap
+            .get(1)
+            .unwrap()
+            .as_str()
+            .trim()
+            .trim_matches('"')
+            .to_string();
         if !val.is_empty() {
             meta.uid = Some(val);
         }
@@ -195,7 +208,13 @@ fn extract_entry_metadata(content: &str, file_kws: &[String]) -> (Vec<String>, S
     // Extract status: <value>
     let status_re = Regex::new(r"(?m)^status:\s*(.+)$").unwrap();
     if let Some(cap) = status_re.captures(&cleaned) {
-        let val = cap.get(1).unwrap().as_str().trim().trim_matches('"').to_string();
+        let val = cap
+            .get(1)
+            .unwrap()
+            .as_str()
+            .trim()
+            .trim_matches('"')
+            .to_string();
         if !val.is_empty() {
             meta.status = Some(val);
         }
@@ -205,7 +224,13 @@ fn extract_entry_metadata(content: &str, file_kws: &[String]) -> (Vec<String>, S
     // Extract superseded_by: <value>
     let sb_re = Regex::new(r"(?m)^superseded_by:\s*(.+)$").unwrap();
     if let Some(cap) = sb_re.captures(&cleaned) {
-        let val = cap.get(1).unwrap().as_str().trim().trim_matches('"').to_string();
+        let val = cap
+            .get(1)
+            .unwrap()
+            .as_str()
+            .trim()
+            .trim_matches('"')
+            .to_string();
         if !val.is_empty() {
             meta.superseded_by = Some(val);
         }

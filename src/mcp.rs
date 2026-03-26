@@ -686,12 +686,28 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
 
             log_mcp_command("add", &[("title", title)], &knowledge_dir);
 
-            // Apply category template if content is empty
+            // Apply category template if content is empty (with path traversal protection)
             let template_content;
-            let effective_content = if content.is_empty() {
-                let template_dir = knowledge_dir.join("templates").join(format!("{category}.md"));
-                template_content = std::fs::read_to_string(template_dir).unwrap_or_default();
-                if template_content.is_empty() { content } else { &template_content }
+            let effective_content = if content.is_empty()
+                && !category.contains("..")
+                && !category.chars().any(|c| std::path::is_separator(c))
+            {
+                let templates_dir = knowledge_dir.join("templates");
+                let template_path = templates_dir.join(format!("{category}.md"));
+                template_content = std::fs::canonicalize(&templates_dir)
+                    .ok()
+                    .and_then(|base| {
+                        std::fs::canonicalize(&template_path)
+                            .ok()
+                            .filter(|p| p.starts_with(&base))
+                    })
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .unwrap_or_default();
+                if template_content.is_empty() {
+                    content
+                } else {
+                    &template_content
+                }
             } else {
                 content
             };
@@ -717,8 +733,18 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             }
 
             let id = db::add_entry_full(
-                &conn, title, effective_content, &keywords, category, "local", None, None,
-                None, status, None, None,
+                &conn,
+                title,
+                effective_content,
+                &keywords,
+                category,
+                "local",
+                None,
+                None,
+                None,
+                status,
+                None,
+                None,
             )
             .map_err(|e| format!("add error: {e}"))?;
 
@@ -889,9 +915,16 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 .as_i64()
                 .ok_or("missing required parameter: new_id")?;
 
+            if old_id == new_id {
+                return Err("old_id and new_id must be different".to_string());
+            }
+
             log_mcp_command(
                 "supersede",
-                &[("old_id", &old_id.to_string()), ("new_id", &new_id.to_string())],
+                &[
+                    ("old_id", &old_id.to_string()),
+                    ("new_id", &new_id.to_string()),
+                ],
                 &knowledge_dir,
             );
 
@@ -902,13 +935,30 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 .map_err(|e| format!("get error: {e}"))?
                 .ok_or_else(|| format!("Entry #{new_id} not found"))?;
 
-            db::update_entry_status(&conn, old_id, "superseded", Some(&new_entry.uid))
+            // Atomic: both updates in a transaction
+            conn.execute_batch("BEGIN IMMEDIATE")
                 .map_err(|e| format!("supersede error: {e}"))?;
+            let result = (|| -> Result<(), String> {
+                db::update_entry_status(&conn, old_id, "superseded", Some(&new_entry.uid))
+                    .map_err(|e| format!("supersede error: {e}"))?;
+                let new_supersedes =
+                    db::append_supersedes(new_entry.supersedes.as_deref(), &old_entry.uid);
+                db::update_entry_supersedes(&conn, new_id, Some(&new_supersedes))
+                    .map_err(|e| format!("supersede error: {e}"))?;
+                Ok(())
+            })();
+            match result {
+                Ok(()) => conn
+                    .execute_batch("COMMIT")
+                    .map_err(|e| format!("supersede error: {e}"))?,
+                Err(e) => {
+                    conn.execute_batch("ROLLBACK").ok();
+                    return Err(e);
+                }
+            }
 
             let new_supersedes =
                 db::append_supersedes(new_entry.supersedes.as_deref(), &old_entry.uid);
-            db::update_entry_supersedes(&conn, new_id, Some(&new_supersedes))
-                .map_err(|e| format!("supersede error: {e}"))?;
 
             Ok(decorate_result(
                 json!({

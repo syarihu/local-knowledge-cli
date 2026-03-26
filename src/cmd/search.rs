@@ -90,7 +90,7 @@ pub fn cmd_search(
             println!("       Keywords: {}", kws.join(", "));
             println!("       {snippet}");
             if let Some(ref sb) = r.superseded_by {
-                println!("       \u{2192} Superseded by: #{sb}");
+                println!("       \u{2192} Superseded by: {sb}");
             }
             println!();
         }

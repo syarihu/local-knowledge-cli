@@ -76,14 +76,17 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
             }
         }
         if let Some(ref ss) = entry.supersedes {
-            let parts: Vec<String> = ss.split(',').map(|uid| {
-                let uid = uid.trim();
-                if let Ok(Some(target)) = db::get_entry_by_uid(&conn, uid) {
-                    format!("#{} \"{}\" ({uid})", target.id, target.title)
-                } else {
-                    uid.to_string()
-                }
-            }).collect();
+            let parts: Vec<String> = ss
+                .split(',')
+                .map(|uid| {
+                    let uid = uid.trim();
+                    if let Ok(Some(target)) = db::get_entry_by_uid(&conn, uid) {
+                        format!("#{} \"{}\" ({uid})", target.id, target.title)
+                    } else {
+                        uid.to_string()
+                    }
+                })
+                .collect();
             println!("Supersedes: {}", parts.join(", "));
         }
         println!("Created: {}", entry.created_at);
@@ -175,13 +178,20 @@ pub fn cmd_edit(
             Some(0) => None,
             Some(v) => {
                 let target = db::get_entry(&conn, v)?.ok_or_else(|| {
-                    format!("Entry #{v} not found. Cannot set superseded-by to a non-existent entry.")
+                    format!(
+                        "Entry #{v} not found. Cannot set superseded-by to a non-existent entry."
+                    )
                 })?;
                 Some(target.uid.clone())
             }
             None => current.superseded_by.clone(),
         };
-        db::update_entry_status(&conn, id, status.unwrap_or(&current.status), new_superseded.as_deref())?;
+        db::update_entry_status(
+            &conn,
+            id,
+            status.unwrap_or(&current.status),
+            new_superseded.as_deref(),
+        )?;
     }
 
     let updated = db::get_entry(&conn, id)?.unwrap();
@@ -301,6 +311,10 @@ pub fn cmd_supersede(
             ("new_id", &new_id.to_string()),
         ],
     );
+    if old_id == new_id {
+        return Err("old_id and new_id must be different.".into());
+    }
+
     let conn = open_db_with_migrate()?;
 
     let old_entry =
@@ -308,12 +322,23 @@ pub fn cmd_supersede(
     let new_entry =
         db::get_entry(&conn, new_id)?.ok_or_else(|| format!("Entry #{new_id} not found"))?;
 
-    // Set old entry: status=superseded, superseded_by=new_entry.uid
-    db::update_entry_status(&conn, old_id, "superseded", Some(&new_entry.uid))?;
+    // Atomic: both updates in a transaction
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        db::update_entry_status(&conn, old_id, "superseded", Some(&new_entry.uid))?;
+        let new_supersedes = db::append_supersedes(new_entry.supersedes.as_deref(), &old_entry.uid);
+        db::update_entry_supersedes(&conn, new_id, Some(&new_supersedes))?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            conn.execute_batch("ROLLBACK").ok();
+            return Err(e);
+        }
+    }
 
-    // Set new entry: supersedes includes old_entry.uid
     let new_supersedes = db::append_supersedes(new_entry.supersedes.as_deref(), &old_entry.uid);
-    db::update_entry_supersedes(&conn, new_id, Some(&new_supersedes))?;
 
     if json_output {
         println!(

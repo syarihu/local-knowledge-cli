@@ -348,7 +348,11 @@ fn main() {
             touch,
             json,
         ),
-        Commands::Supersede { old_id, new_id, json } => cmd::cmd_supersede(old_id, new_id, json),
+        Commands::Supersede {
+            old_id,
+            new_id,
+            json,
+        } => cmd::cmd_supersede(old_id, new_id, json),
         Commands::Delete { id, yes } => cmd::cmd_delete(id, yes),
         Commands::Purge {
             category,
@@ -362,7 +366,14 @@ fn main() {
             limit,
             offset,
             json,
-        } => cmd::cmd_list(category.as_deref(), source.as_deref(), status.as_deref(), limit, offset, json),
+        } => cmd::cmd_list(
+            category.as_deref(),
+            source.as_deref(),
+            status.as_deref(),
+            limit,
+            offset,
+            json,
+        ),
         Commands::Sync { json, write_uids } => cmd::cmd_sync(json, write_uids),
         Commands::Export {
             dir,

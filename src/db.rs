@@ -311,12 +311,10 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         // Step 1: Read existing superseded_by relationships (as integers)
         let mut supersede_pairs: Vec<(i64, i64)> = Vec::new();
         {
-            let mut stmt = conn.prepare(
-                "SELECT id, superseded_by FROM entries WHERE superseded_by IS NOT NULL",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })?;
+            let mut stmt = conn
+                .prepare("SELECT id, superseded_by FROM entries WHERE superseded_by IS NOT NULL")?;
+            let rows =
+                stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
             for row in rows {
                 supersede_pairs.push(row?);
             }
@@ -355,13 +353,18 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
              FROM entries;",
         )?;
 
-        // Step 5: Generate UIDs for all entries
+        // Step 5: Generate UIDs for all entries (with collision avoidance)
         let mut id_uid_map: HashMap<i64, String> = HashMap::new();
         {
+            let mut used_uids: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut stmt = conn.prepare("SELECT id FROM entries_new")?;
             let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))?.flatten().collect();
             for id in ids {
-                let uid = generate_uid();
+                let mut uid = generate_uid();
+                while used_uids.contains(&uid) {
+                    uid = generate_uid();
+                }
+                used_uids.insert(uid.clone());
                 conn.execute(
                     "UPDATE entries_new SET uid = ?1 WHERE id = ?2",
                     params![uid, id],
@@ -425,7 +428,7 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
     Ok(migrated)
 }
 
-/// Generate a unique 8-character hex ID using SHA256 of timestamp + pid + counter.
+/// Generate a unique 12-character hex ID using SHA256 of timestamp + pid + counter.
 pub fn generate_uid() -> String {
     use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -438,7 +441,7 @@ pub fn generate_uid() -> String {
     let pid = std::process::id();
     let input = format!("{}-{}-{}", now.as_nanos(), pid, counter);
     let hash = Sha256::digest(input.as_bytes());
-    hex::encode(&hash[..4])
+    hex::encode(&hash[..6]) // 6 bytes = 12 hex chars
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -452,7 +455,20 @@ pub fn add_entry(
     source_file: Option<&str>,
     file_hash: Option<&str>,
 ) -> Result<i64, Box<dyn std::error::Error>> {
-    add_entry_full(conn, title, content, kws, category, source, source_file, file_hash, None, None, None, None)
+    add_entry_full(
+        conn,
+        title,
+        content,
+        kws,
+        category,
+        source,
+        source_file,
+        file_hash,
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -471,7 +487,10 @@ pub fn add_entry_full(
     supersedes: Option<&str>,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let now = now_iso();
-    let uid = uid.map(String::from).unwrap_or_else(generate_uid);
+    let uid = uid
+        .filter(|u| !u.trim().is_empty())
+        .map(String::from)
+        .unwrap_or_else(generate_uid);
     let status = status.unwrap_or("active");
 
     // Auto-extract keywords if none provided
@@ -550,8 +569,10 @@ pub fn search_entries(
 
     if keyword_only {
         let words = split_query_words(query);
-        let mut sql = format!("SELECT DISTINCT {ENTRY_COLS_E} \
-             FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (");
+        let mut sql = format!(
+            "SELECT DISTINCT {ENTRY_COLS_E} \
+             FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE ("
+        );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         for (i, word) in words.iter().enumerate() {
             if i > 0 {
@@ -578,8 +599,10 @@ pub fn search_entries(
         // FTS search — sanitize query to prevent FTS5 syntax injection
         let sanitized = sanitize_fts_query(query);
 
-        let fts_sql_base = format!("SELECT {ENTRY_COLS_E}, fts.rank \
-             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1");
+        let fts_sql_base = format!(
+            "SELECT {ENTRY_COLS_E}, fts.rank \
+             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1"
+        );
         let mut fts_sql = fts_sql_base;
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(sanitized)];
 
@@ -612,8 +635,10 @@ pub fn search_entries(
             let remaining = limit - results.len();
 
             let words = split_query_words(query);
-            let mut kw_sql = format!("SELECT DISTINCT {ENTRY_COLS_E} \
-                 FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE (");
+            let mut kw_sql = format!(
+                "SELECT DISTINCT {ENTRY_COLS_E} \
+                 FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE ("
+            );
 
             let mut kw_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             for (i, word) in words.iter().enumerate() {
@@ -807,10 +832,17 @@ pub fn update_entry_supersedes(
 }
 
 pub fn append_supersedes(existing: Option<&str>, new_uid: &str) -> String {
-    match existing {
-        Some(s) if !s.is_empty() => format!("{},{}", s, new_uid),
-        _ => new_uid.to_string(),
+    let new_uid = new_uid.trim();
+    let mut parts: Vec<String> = existing
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !new_uid.is_empty() && !parts.contains(&new_uid.to_string()) {
+        parts.push(new_uid.to_string());
     }
+    parts.join(",")
 }
 
 pub fn list_entries(
@@ -856,8 +888,7 @@ pub fn list_entries_by_source_file(
     conn: &Connection,
     source_file: &str,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
-    let sql =
-        format!("SELECT {ENTRY_COLS} FROM entries WHERE source_file = ?1 ORDER BY id ASC");
+    let sql = format!("SELECT {ENTRY_COLS} FROM entries WHERE source_file = ?1 ORDER BY id ASC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![source_file], row_to_entry)?;
     let mut entries = Vec::new();
@@ -980,8 +1011,10 @@ pub fn find_similar_entries(
     // 2. FTS MATCH on title
     {
         let fts_query = title.to_string();
-        let sql = format!("SELECT {ENTRY_COLS_E} \
-             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1 ORDER BY rank LIMIT 3");
+        let sql = format!(
+            "SELECT {ENTRY_COLS_E} \
+             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1 ORDER BY rank LIMIT 3"
+        );
         if let Ok(mut stmt) = conn.prepare(&sql)
             && let Ok(rows) = stmt.query_map(params![fts_query], row_to_entry)
         {

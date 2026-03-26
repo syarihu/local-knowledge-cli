@@ -12,19 +12,21 @@ pub struct SyncStats {
 }
 
 pub fn cmd_sync(json_output: bool, write_uids: bool) -> Result<(), Box<dyn std::error::Error>> {
-    super::log_command("sync", &[("write_uids", if write_uids { "true" } else { "false" })]);
+    super::log_command(
+        "sync",
+        &[("write_uids", if write_uids { "true" } else { "false" })],
+    );
     let conn = open_db_with_migrate()?;
     let root = get_project_root();
     let knowledge_dir = get_knowledge_dir();
     let stats = sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
 
+    let mut uids_written = 0;
     if write_uids {
-        let uid_count = write_uids_to_md(&conn, &knowledge_dir, &root)?;
-        if uid_count > 0 {
-            if json_output {
-                // Will include in output below
-            } else {
-                println!("Wrote UIDs to {uid_count} entries in markdown files.");
+        uids_written = write_uids_to_md(&conn, &knowledge_dir, &root)?;
+        if uids_written > 0 {
+            if !json_output {
+                println!("Wrote UIDs to {uids_written} entries in markdown files.");
             }
             // Re-sync after writing UIDs to update file hashes
             sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
@@ -32,15 +34,16 @@ pub fn cmd_sync(json_output: bool, write_uids: bool) -> Result<(), Box<dyn std::
     }
 
     if json_output {
-        println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({
-                "added": stats.added,
-                "updated": stats.updated,
-                "removed": stats.removed,
-                "unchanged": stats.unchanged,
-            }))?
-        );
+        let mut out = serde_json::json!({
+            "added": stats.added,
+            "updated": stats.updated,
+            "removed": stats.removed,
+            "unchanged": stats.unchanged,
+        });
+        if write_uids {
+            out["uids_written"] = serde_json::json!(uids_written);
+        }
+        println!("{}", serde_json::to_string(&out)?);
     } else {
         println!("Sync complete:");
         println!("  Added:     {}", stats.added);
@@ -95,10 +98,16 @@ fn write_uids_to_md(
                 if let Some(pos) = new_text.find(&entry_header) {
                     let after_header = pos + entry_header.len();
                     // Find the end of the header line
-                    let line_end = new_text[after_header..].find('\n').map(|p| after_header + p + 1).unwrap_or(new_text.len());
+                    let line_end = new_text[after_header..]
+                        .find('\n')
+                        .map(|p| after_header + p + 1)
+                        .unwrap_or(new_text.len());
                     // Check if next line is keywords:
                     let insert_pos = if new_text[line_end..].starts_with("keywords:") {
-                        let kw_end = new_text[line_end..].find('\n').map(|p| line_end + p + 1).unwrap_or(new_text.len());
+                        let kw_end = new_text[line_end..]
+                            .find('\n')
+                            .map(|p| line_end + p + 1)
+                            .unwrap_or(new_text.len());
                         kw_end
                     } else {
                         line_end

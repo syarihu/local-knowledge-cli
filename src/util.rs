@@ -84,14 +84,25 @@ pub fn get_knowledge_dir() -> PathBuf {
 }
 
 /// Load a category template from `.knowledge/templates/{category}.md`.
-/// Returns None if the template file doesn't exist.
+/// Returns None if the template file doesn't exist or category is invalid.
 pub fn load_category_template(category: &str) -> Option<String> {
-    if category.is_empty() {
+    if category.is_empty()
+        || category.contains("..")
+        || category.chars().any(|c| std::path::is_separator(c))
+    {
         return None;
     }
-    let template_path = get_knowledge_dir()
-        .join("templates")
-        .join(format!("{category}.md"));
+    let templates_dir = get_knowledge_dir().join("templates");
+    let template_path = templates_dir.join(format!("{category}.md"));
+    // Verify resolved path stays within templates directory
+    if let (Ok(base), Ok(resolved)) = (
+        std::fs::canonicalize(&templates_dir),
+        std::fs::canonicalize(&template_path),
+    ) {
+        if !resolved.starts_with(&base) {
+            return None;
+        }
+    }
     std::fs::read_to_string(template_path).ok()
 }
 
