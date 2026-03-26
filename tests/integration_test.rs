@@ -786,8 +786,7 @@ fn test_init_global_idempotent() {
     assert!(output.status.success());
 
     // CLAUDE.md should not have duplicate import lines
-    let claude_md =
-        std::fs::read_to_string(home.path().join(".claude/CLAUDE.md")).unwrap();
+    let claude_md = std::fs::read_to_string(home.path().join(".claude/CLAUDE.md")).unwrap();
     let count = claude_md.matches("@lk-instructions.md").count();
     assert_eq!(count, 1, "import line should appear exactly once");
 }
