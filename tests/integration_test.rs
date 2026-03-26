@@ -743,3 +743,69 @@ fn test_uid_in_entries() {
     assert_eq!(uid.len(), 12); // 12 hex chars
     assert!(uid.chars().all(|c| c.is_ascii_hexdigit()));
 }
+
+#[test]
+fn test_init_global() {
+    let home = tempfile::tempdir().unwrap();
+    let output = lk_bin()
+        .args(["init", "--global"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout: {stdout}");
+
+    // Verify ~/.claude/lk-instructions.md was created
+    let instructions_path = home.path().join(".claude/lk-instructions.md");
+    assert!(instructions_path.exists());
+    let instructions = std::fs::read_to_string(&instructions_path).unwrap();
+    assert!(instructions.contains("Knowledge Base (local-knowledge-cli)"));
+
+    // Verify ~/.claude/CLAUDE.md was created with import line
+    let claude_md_path = home.path().join(".claude/CLAUDE.md");
+    assert!(claude_md_path.exists());
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("@lk-instructions.md"));
+}
+
+#[test]
+fn test_init_global_idempotent() {
+    let home = tempfile::tempdir().unwrap();
+
+    // Run twice
+    lk_bin()
+        .args(["init", "--global"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    let output = lk_bin()
+        .args(["init", "--global"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // CLAUDE.md should not have duplicate import lines
+    let claude_md = std::fs::read_to_string(home.path().join(".claude/CLAUDE.md")).unwrap();
+    let count = claude_md.matches("@lk-instructions.md").count();
+    assert_eq!(count, 1, "import line should appear exactly once");
+}
+
+#[test]
+fn test_init_global_appends_to_existing_claude_md() {
+    let home = tempfile::tempdir().unwrap();
+    let claude_dir = home.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(claude_dir.join("CLAUDE.md"), "# My Config\n").unwrap();
+
+    let output = lk_bin()
+        .args(["init", "--global"])
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert!(claude_md.starts_with("# My Config\n"));
+    assert!(claude_md.contains("@lk-instructions.md"));
+}
