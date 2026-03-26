@@ -550,7 +550,12 @@ fn entry_to_json(e: &db::Entry, kws: &[String], config: &Config) -> Value {
         obj["superseded_by"] = json!(sb);
     }
     if let Some(ref ss) = e.supersedes {
-        obj["supersedes"] = json!(ss.split(',').collect::<Vec<_>>());
+        obj["supersedes"] = json!(
+            ss.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        );
     }
     obj
 }

@@ -383,10 +383,12 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
             }
         }
 
-        // Step 7: Swap tables
+        // Step 7: Swap tables (disable FK to avoid constraint errors during swap)
         conn.execute_batch(
-            "DROP TABLE entries;
-             ALTER TABLE entries_new RENAME TO entries;",
+            "PRAGMA foreign_keys=OFF;
+             DROP TABLE entries;
+             ALTER TABLE entries_new RENAME TO entries;
+             PRAGMA foreign_keys=ON;",
         )?;
 
         // Step 8: Recreate indexes

@@ -91,8 +91,21 @@ fn write_uids_to_md(
             if md_entry.uid.is_some() {
                 continue;
             }
-            // Find matching DB entry by title
-            if let Some(db_entry) = db_entries.iter().find(|e| e.title == md_entry.title) {
+            // Find matching DB entry by title (skip if ambiguous)
+            let matching: Vec<_> = db_entries
+                .iter()
+                .filter(|e| e.title == md_entry.title)
+                .collect();
+            if matching.len() != 1 {
+                if matching.len() > 1 {
+                    eprintln!(
+                        "sync: skipping UID write for ambiguous title {:?} in {:?}",
+                        md_entry.title, rel_path,
+                    );
+                }
+                continue;
+            }
+            if let Some(db_entry) = matching.into_iter().next() {
                 // Insert uid: line after the ## Entry: line or after keywords line
                 let entry_header = format!("## Entry: {}", md_entry.title);
                 if let Some(pos) = new_text.find(&entry_header) {
@@ -233,7 +246,10 @@ pub fn import_md_file(
             Some(&rel_path),
             Some(&fhash),
             entry.uid.as_deref(),
-            entry.status.as_deref(),
+            entry
+                .status
+                .as_deref()
+                .filter(|s| crate::db::is_valid_status(s)),
             entry.superseded_by.as_deref(),
             supersedes.as_deref(),
         )?;

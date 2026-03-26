@@ -34,7 +34,12 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
             out["superseded_by"] = serde_json::json!(sb);
         }
         if let Some(ref ss) = entry.supersedes {
-            out["supersedes"] = serde_json::json!(ss.split(',').collect::<Vec<_>>());
+            out["supersedes"] = serde_json::json!(
+                ss.split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            );
         }
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
@@ -213,7 +218,12 @@ pub fn cmd_edit(
             out["superseded_by"] = serde_json::json!(sb);
         }
         if let Some(ref ss) = updated.supersedes {
-            out["supersedes"] = serde_json::json!(ss.split(',').collect::<Vec<_>>());
+            out["supersedes"] = serde_json::json!(
+                ss.split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            );
         }
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {

@@ -17,11 +17,11 @@ pub fn cmd_add(
     );
     let conn = open_db_with_migrate()?;
     let category = category.unwrap_or("");
-    // Apply category template if content is not provided
+    // Apply category template if content is not provided or empty
     let template_content;
     let content = match content {
-        Some(c) => c,
-        None => {
+        Some(c) if !c.is_empty() => c,
+        _ => {
             template_content = crate::util::load_category_template(category).unwrap_or_default();
             &template_content
         }

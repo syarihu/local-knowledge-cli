@@ -94,15 +94,13 @@ pub fn load_category_template(category: &str) -> Option<String> {
     }
     let templates_dir = get_knowledge_dir().join("templates");
     let template_path = templates_dir.join(format!("{category}.md"));
-    // Verify resolved path stays within templates directory
-    if let (Ok(base), Ok(resolved)) = (
-        std::fs::canonicalize(&templates_dir),
-        std::fs::canonicalize(&template_path),
-    ) && !resolved.starts_with(&base)
-    {
+    // Verify resolved path stays within templates directory and read from canonicalized path
+    let base = std::fs::canonicalize(&templates_dir).ok()?;
+    let resolved = std::fs::canonicalize(&template_path).ok()?;
+    if !resolved.starts_with(&base) {
         return None;
     }
-    std::fs::read_to_string(template_path).ok()
+    std::fs::read_to_string(resolved).ok()
 }
 
 pub fn open_db_with_migrate() -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
