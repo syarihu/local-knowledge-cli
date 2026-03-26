@@ -3,7 +3,10 @@ use crate::cmd::update::install_embedded_commands;
 use crate::db;
 use crate::util::get_project_root;
 
-pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if global {
+        return cmd_init_global();
+    }
     let root = get_project_root();
     let db_path = root.join(".knowledge").join("knowledge.db");
 
@@ -259,6 +262,58 @@ pub fn cmd_init() -> Result<(), Box<dyn std::error::Error>> {
     install_embedded_commands()?;
 
     println!("\nInitialization complete!");
+    Ok(())
+}
+
+fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
+    let claude_dir = crate::util::home_dir().join(".claude");
+    std::fs::create_dir_all(&claude_dir)?;
+
+    // 1. Write lk-instructions.md to ~/.claude/
+    let instructions_path = claude_dir.join("lk-instructions.md");
+    let instructions_content = LK_INSTRUCTIONS_CONTENT;
+
+    if instructions_path.exists() {
+        let existing = std::fs::read_to_string(&instructions_path)?;
+        if existing.trim() != instructions_content.trim() {
+            std::fs::write(&instructions_path, instructions_content)?;
+            println!("Updated {}", instructions_path.display());
+        } else {
+            println!("{} is already up-to-date", instructions_path.display());
+        }
+    } else {
+        std::fs::write(&instructions_path, instructions_content)?;
+        println!("Created {}", instructions_path.display());
+    }
+
+    // 2. Add @lk-instructions.md to ~/.claude/CLAUDE.md
+    let claude_md_path = claude_dir.join("CLAUDE.md");
+    let import_line = "@lk-instructions.md";
+
+    if claude_md_path.exists() {
+        let content = std::fs::read_to_string(&claude_md_path)?;
+        if content.contains(import_line) {
+            println!("lk import already exists in {}", claude_md_path.display());
+        } else {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&claude_md_path)?;
+            if !content.ends_with('\n') {
+                writeln!(f)?;
+            }
+            writeln!(f, "{import_line}")?;
+            println!("Added import to {}", claude_md_path.display());
+        }
+    } else {
+        std::fs::write(&claude_md_path, format!("{import_line}\n"))?;
+        println!("Created {} with lk import", claude_md_path.display());
+    }
+
+    // 3. Install embedded commands
+    install_embedded_commands()?;
+
+    println!("\nGlobal initialization complete!");
     Ok(())
 }
 

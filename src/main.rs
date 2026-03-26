@@ -23,7 +23,11 @@ struct Cli {
 #[allow(clippy::enum_variant_names)]
 enum Commands {
     /// Initialize knowledge base for current project
-    Init,
+    Init {
+        /// Install lk-instructions globally to ~/.claude/
+        #[arg(long)]
+        global: bool,
+    },
     /// Add a knowledge entry
     Add {
         /// Entry title
@@ -291,7 +295,7 @@ fn main() {
     }
 
     let result = match cli.command {
-        Commands::Init => cmd::cmd_init(),
+        Commands::Init { global } => cmd::cmd_init(global),
         Commands::Add {
             title,
             keywords,
