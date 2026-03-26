@@ -88,7 +88,7 @@ pub fn get_knowledge_dir() -> PathBuf {
 pub fn load_category_template(category: &str) -> Option<String> {
     if category.is_empty()
         || category.contains("..")
-        || category.chars().any(|c| std::path::is_separator(c))
+        || category.chars().any(std::path::is_separator)
     {
         return None;
     }
@@ -98,10 +98,9 @@ pub fn load_category_template(category: &str) -> Option<String> {
     if let (Ok(base), Ok(resolved)) = (
         std::fs::canonicalize(&templates_dir),
         std::fs::canonicalize(&template_path),
-    ) {
-        if !resolved.starts_with(&base) {
-            return None;
-        }
+    ) && !resolved.starts_with(&base)
+    {
+        return None;
     }
     std::fs::read_to_string(template_path).ok()
 }

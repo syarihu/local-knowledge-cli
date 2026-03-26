@@ -675,13 +675,13 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let force = params["force"].as_bool().unwrap_or(false);
 
             // Validate status if provided
-            if let Some(st) = status {
-                if !db::is_valid_status(st) {
-                    return Err(format!(
-                        "Invalid status: {st}. Must be one of: {}",
-                        db::VALID_STATUSES.join(", ")
-                    ));
-                }
+            if let Some(st) = status
+                && !db::is_valid_status(st)
+            {
+                return Err(format!(
+                    "Invalid status: {st}. Must be one of: {}",
+                    db::VALID_STATUSES.join(", ")
+                ));
             }
 
             log_mcp_command("add", &[("title", title)], &knowledge_dir);
@@ -690,7 +690,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let template_content;
             let effective_content = if content.is_empty()
                 && !category.contains("..")
-                && !category.chars().any(|c| std::path::is_separator(c))
+                && !category.chars().any(std::path::is_separator)
             {
                 let templates_dir = knowledge_dir.join("templates");
                 let template_path = templates_dir.join(format!("{category}.md"));

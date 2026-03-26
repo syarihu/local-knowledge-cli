@@ -104,11 +104,10 @@ fn write_uids_to_md(
                         .unwrap_or(new_text.len());
                     // Check if next line is keywords:
                     let insert_pos = if new_text[line_end..].starts_with("keywords:") {
-                        let kw_end = new_text[line_end..]
+                        new_text[line_end..]
                             .find('\n')
                             .map(|p| line_end + p + 1)
-                            .unwrap_or(new_text.len());
-                        kw_end
+                            .unwrap_or(new_text.len())
                     } else {
                         line_end
                     };

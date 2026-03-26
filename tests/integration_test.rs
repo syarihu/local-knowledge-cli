@@ -534,3 +534,212 @@ fn test_symlink_traversal_blocked() {
     let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert!(results.is_empty(), "Symlink traversal should be blocked");
 }
+
+#[test]
+fn test_supersede() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Add two entries
+    let out1 = lk_bin()
+        .args([
+            "add",
+            "Old Decision",
+            "--content",
+            "Use REST",
+            "--force",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out1.status.success());
+    let old_id = serde_json::from_slice::<serde_json::Value>(&out1.stdout).unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    let out2 = lk_bin()
+        .args([
+            "add",
+            "New Decision",
+            "--content",
+            "Use gRPC",
+            "--force",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out2.status.success());
+    let new_id = serde_json::from_slice::<serde_json::Value>(&out2.stdout).unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    // Supersede old with new
+    let output = lk_bin()
+        .args([
+            "supersede",
+            &old_id.to_string(),
+            &new_id.to_string(),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["old_status"], "superseded");
+
+    // Verify old entry is superseded
+    let output = lk_bin()
+        .args(["get", &old_id.to_string(), "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let old_entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(old_entry["status"], "superseded");
+    assert!(old_entry["superseded_by"].is_string());
+
+    // Verify new entry has supersedes link
+    let output = lk_bin()
+        .args(["get", &new_id.to_string(), "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let new_entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(new_entry["supersedes"].is_array());
+    assert_eq!(new_entry["supersedes"].as_array().unwrap().len(), 1);
+
+    // Verify UIDs match bidirectionally
+    let old_uid = old_entry["uid"].as_str().unwrap();
+    let new_uid = new_entry["uid"].as_str().unwrap();
+    assert_eq!(old_entry["superseded_by"], new_uid);
+    assert_eq!(new_entry["supersedes"][0], old_uid);
+}
+
+#[test]
+fn test_supersede_same_id_rejected() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let out = lk_bin()
+        .args(["add", "Entry", "--content", "content", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let id = serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    let output = lk_bin()
+        .args(["supersede", &id.to_string(), &id.to_string()])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+}
+
+#[test]
+fn test_status_extension() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let out = lk_bin()
+        .args([
+            "add",
+            "ADR Entry",
+            "--content",
+            "Decision content",
+            "--category",
+            "decisions",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let id = serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    // Set status to proposed
+    let output = lk_bin()
+        .args(["edit", &id.to_string(), "--status", "proposed", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(entry["status"], "proposed");
+
+    // Set status to accepted
+    let output = lk_bin()
+        .args(["edit", &id.to_string(), "--status", "accepted", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(entry["status"], "accepted");
+
+    // Invalid status should fail
+    let output = lk_bin()
+        .args(["edit", &id.to_string(), "--status", "invalid"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+
+    // List with --status filter
+    let output = lk_bin()
+        .args(["list", "--status", "accepted", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["status"], "accepted");
+}
+
+#[test]
+fn test_uid_in_entries() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let out = lk_bin()
+        .args(["add", "UID Test", "--content", "content", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let id = serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    let output = lk_bin()
+        .args(["get", &id.to_string(), "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let uid = entry["uid"].as_str().unwrap();
+    assert_eq!(uid.len(), 12); // 12 hex chars
+    assert!(uid.chars().all(|c| c.is_ascii_hexdigit()));
+}
