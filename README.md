@@ -71,22 +71,24 @@ lk list
 lk <COMMAND>
 
 Commands:
-  init              Initialize knowledge base for current project
+  init              Initialize knowledge base for current project (or globally with --global)
   add <title>       Add a knowledge entry (with duplicate detection)
   search <query>    Search knowledge entries (with relevance scoring)
   get <id>          Get a single entry by ID
   edit <id>         Edit an existing entry
   delete <id>       Delete an entry
   purge             Delete all entries by category or source
+  supersede         Mark an entry as superseded by another (bidirectional)
   list              List all entries
   sync              Sync .knowledge/ files with DB
   export            Export local entries to markdown
   import <path>     Import a markdown file
   keywords          List all unique keywords
   stats             Show database statistics
-  search-log        Show recent search log entries
+  command-log       Show recent command log entries
   update            Update lk to latest version
   install-commands  Install Claude Code slash commands
+  uninstall         Uninstall lk from current project
   mcp               Start MCP server (JSON-RPC 2.0 over stdio)
   install-mcp       Install lk as MCP server for Claude Code / Claude Desktop
   uninstall-mcp     Uninstall lk MCP server from Claude Code / Claude Desktop
@@ -99,6 +101,7 @@ Commands:
 - `--content "..."` - Entry content (for `add`)
 - `--category <cat>` - Filter by category (for `search`, `list`, `purge`)
 - `--source <src>` - Filter by source: `local` or `shared` (for `search`, `list`, `purge`)
+- `--status <status>` - Filter by status: `active`, `deprecated`, `proposed`, `accepted`, `superseded` (for `list`)
 - `--limit <n>` - Max results, default 5 (for `search`)
 - `--since <YYYY-MM-DD>` - Only return entries updated since this date (for `search`)
 - `--full` - Include full content in JSON output, eliminating the need for `lk get` (for `search`)
@@ -234,6 +237,7 @@ Once installed, Claude has access to these tools:
 | `list_knowledge` | Browse entries with source/category filtering and pagination |
 | `get_knowledge` | Retrieve full content of an entry by ID |
 | `update_knowledge` | Update title, content, keywords, or status of an entry |
+| `supersede_knowledge` | Mark an entry as superseded by another (bidirectional) |
 | `get_stats` | Get knowledge base statistics |
 | `list_projects` | List registered projects (multi-project mode only) |
 
@@ -247,7 +251,7 @@ After `lk init`, Claude Code will automatically:
 
 1. Search the knowledge base before exploring code
 2. Add new discoveries via `/lk-knowledge-add-db`
-3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-export-select`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`
+3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`, `/lk-knowledge-save-context`
 
 ### MCP + Slash Commands
 
@@ -313,8 +317,8 @@ By default, `lk init` adds `.knowledge/**/*.md linguist-generated=true` to `.git
 When enabled, all `lk` commands are logged to `.knowledge/command.log` with timestamps. View recent entries:
 
 ```bash
-lk search-log        # Show last 20 entries
-lk search-log -n 50  # Show last 50 entries
+lk command-log        # Show last 20 entries
+lk command-log -n 50  # Show last 50 entries
 ```
 
 ## Supported Platforms
