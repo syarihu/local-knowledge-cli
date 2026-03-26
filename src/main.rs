@@ -22,7 +22,7 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::enum_variant_names)]
 enum Commands {
-    /// Initialize knowledge base for current project
+    /// Initialize knowledge base for current project (or globally with --global)
     Init {
         /// Install lk-instructions globally to ~/.claude/
         #[arg(long)]
