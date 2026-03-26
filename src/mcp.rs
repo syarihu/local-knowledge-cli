@@ -691,23 +691,11 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
 
             log_mcp_command("add", &[("title", title)], &knowledge_dir);
 
-            // Apply category template if content is empty (with path traversal protection)
+            // Apply category template if content is empty
             let template_content;
-            let effective_content = if content.is_empty()
-                && !category.contains("..")
-                && !category.chars().any(std::path::is_separator)
-            {
-                let templates_dir = knowledge_dir.join("templates");
-                let template_path = templates_dir.join(format!("{category}.md"));
-                template_content = std::fs::canonicalize(&templates_dir)
-                    .ok()
-                    .and_then(|base| {
-                        std::fs::canonicalize(&template_path)
-                            .ok()
-                            .filter(|p| p.starts_with(&base))
-                    })
-                    .and_then(|p| std::fs::read_to_string(p).ok())
-                    .unwrap_or_default();
+            let effective_content = if content.is_empty() {
+                template_content =
+                    util::load_category_template_from(&knowledge_dir, category).unwrap_or_default();
                 if template_content.is_empty() {
                     content
                 } else {

@@ -177,7 +177,7 @@ fn extract_entry_metadata(content: &str, file_kws: &[String]) -> (Vec<String>, S
         supersedes: Vec::new(),
     };
 
-    let kw_re = Regex::new(r"(?m)^keywords:\s*\[(.+)\]").unwrap();
+    let kw_re = Regex::new(r"(?m)^keywords:\s*\[(.*)\]").unwrap();
     if let Some(cap) = kw_re.captures(content) {
         let kw_str = cap.get(1).unwrap().as_str();
         for kw in kw_str.split(',') {
