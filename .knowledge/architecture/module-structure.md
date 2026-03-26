@@ -8,7 +8,7 @@ category: architecture
 ## Entry: Source Code Organization
 keywords: [src, module, file-layout]
 
-The project uses a modular layout: `src/main.rs` handles CLI parsing via clap and command dispatch, `src/cmd/` contains individual command implementations (add, edit, export, sync, etc.), `src/db.rs` manages SQLite operations, `src/markdown.rs` handles YAML frontmatter parsing and `## Entry:` heading extraction, `src/keywords.rs` provides automatic keyword extraction, `src/config.rs` loads project settings from `.knowledge/config.toml`, `src/secrets.rs` detects potential secrets in content, and `src/util.rs` provides shared utilities (project root detection, version checks). The `commands/` directory contains embedded Claude Code slash command definitions as markdown files (`lk-knowledge-*.md`).
+The project uses a modular layout: `src/main.rs` handles CLI parsing via clap and command dispatch, `src/cmd/` contains individual command implementations (add, entry, export, init, install_mcp, list, search, stats, sync, uninstall, update), `src/db.rs` manages SQLite operations, `src/markdown.rs` handles YAML frontmatter parsing and `## Entry:` heading extraction, `src/keywords.rs` provides automatic keyword extraction, `src/config.rs` loads project settings from `.knowledge/config.toml`, `src/secrets.rs` detects potential secrets in content, and `src/util.rs` provides shared utilities (project root detection, version checks). The `commands/` directory contains embedded Claude Code slash command definitions as markdown files (`lk-knowledge-*.md`).
 
 ## Entry: Project Root Detection
 keywords: [project-root, get_project_root, path]
