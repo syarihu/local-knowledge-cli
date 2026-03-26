@@ -124,4 +124,4 @@ Save investigation results and discussion flows as `category: context` entries t
 - `lk purge --source local` - Bulk delete
 - `lk export` / `lk export --ids 1,2,3` / `lk export --query "auth"` - Export entries
 - `lk sync` - Sync markdown files with DB (`--write-uids` to write UIDs back to markdown)
-- Skills: `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` `/lk-knowledge-export-select`
+- Skills: `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` `/lk-knowledge-export-select` `/lk-knowledge-save-context`

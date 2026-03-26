@@ -281,6 +281,10 @@ const EMBEDDED_COMMANDS: &[(&str, &str)] = &[
         "lk-knowledge-from-branch.md",
         include_str!("../../commands/lk-knowledge-from-branch.md"),
     ),
+    (
+        "lk-knowledge-save-context.md",
+        include_str!("../../commands/lk-knowledge-save-context.md"),
+    ),
 ];
 
 fn detect_target() -> Result<String, Box<dyn std::error::Error>> {
