@@ -191,6 +191,77 @@ keywords: [api, rate-limit]
 Rate limit is 100 requests per minute per API key...
 ```
 
+### ADR (Architecture Decision Records)
+
+lk can be used to manage ADRs by leveraging its status and supersede features. Entries support a full decision lifecycle:
+
+| Status | Meaning |
+|--------|---------|
+| `proposed` | Under discussion, not yet decided |
+| `accepted` | Approved and in effect |
+| `active` | General-purpose active entry (default) |
+| `deprecated` | No longer relevant |
+| `superseded` | Replaced by a newer decision |
+
+#### Example workflow
+
+```bash
+# Propose a new decision
+lk add "Use JWT for API auth" --category decisions --content "We propose using JWT tokens for stateless authentication..."
+
+# Accept it (using the entry ID from add)
+lk edit 42 --status accepted
+
+# Later, supersede it with a new decision
+lk add "Migrate to OAuth 2.0" --category decisions --content "JWT approach has limitations with token revocation..."
+lk supersede 42 55  # marks #42 as superseded, links both entries bidirectionally
+```
+
+#### UIDs for portable links
+
+Each entry has a unique 8-character hex UID. The `supersede` command uses UIDs internally so that supersede links remain valid when sharing `.knowledge/` markdown files across team members (whose local DB IDs may differ).
+
+```bash
+# Write UIDs back to markdown files
+lk sync --write-uids
+
+# Filter by status
+lk list --status proposed
+lk list --status superseded
+```
+
+The `/lk-knowledge-write-md` and `/lk-knowledge-from-branch` slash commands automatically detect ADR-like content (design decisions, trade-off discussions) and suggest using the `decisions` category with appropriate status values.
+
+### Context Persistence
+
+Claude Code conversations lose context on compact or session end. lk's `context` category lets you carry over investigation results, design discussions, and conclusions into future conversations.
+
+#### How it works
+
+- **Auto-suggest**: Claude proactively suggests saving context when a design decision is reached, a non-obvious discovery is made, or the conversation has accumulated significant context
+- **Manual save**: Run `/lk-knowledge-save-context` to extract and save important context from the current conversation
+- **Retrieval**: When you say things like "we looked into this before" or "continuing from last time", Claude searches the `context` category automatically
+
+#### What gets saved
+
+Context entries use `category: context` and always include the `conversation-log` keyword. Content summarizes the flow: what was investigated → what was found → what was decided.
+
+```bash
+# Save context manually via CLI
+lk add "Auth middleware rewrite discussion" \
+  --category context \
+  --keywords "conversation-log,auth,middleware" \
+  --content "Investigated session token storage. Legal flagged compliance issue..."
+
+# Search past context
+lk search "auth middleware" --category context --json --full
+
+# Context entries have a short stale threshold (7 days by default)
+# since they are local investigation cache
+```
+
+This complements Claude Code's built-in memory — Claude memory stores user preferences and project background, while lk context stores technical investigation results and decision rationale.
+
 ## Claude Code Integration
 
 There are two ways to integrate lk with Claude Code:
