@@ -22,6 +22,7 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
             "source": entry.source,
             "source_file": entry.source_file,
             "status": entry.status,
+            "uid": entry.uid,
             "stale": stale,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
@@ -29,14 +30,26 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
         if stale && let Some(d) = days {
             out["days_since_update"] = serde_json::json!(d);
         }
-        if let Some(sb) = entry.superseded_by {
+        if let Some(ref sb) = entry.superseded_by {
             out["superseded_by"] = serde_json::json!(sb);
+        }
+        if let Some(ref ss) = entry.supersedes {
+            out["supersedes"] = serde_json::json!(
+                ss.split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            );
         }
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        if entry.status == "deprecated" {
+        let badge = match entry.status.as_str() {
+            "active" => None,
+            other => Some(format!("[{}]", other.to_uppercase())),
+        };
+        if let Some(ref badge) = badge {
             println!(
-                "\u{26a0} #{} - {} ({}/{}) [DEPRECATED]",
+                "\u{26a0} #{} - {} ({}/{}) {badge}",
                 entry.id, entry.title, entry.category, entry.source
             );
         } else if stale {
@@ -54,12 +67,32 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
                 entry.id, entry.title, entry.category, entry.source
             );
         }
+        println!("UID: {}", entry.uid);
         println!("Keywords: {}", kws.join(", "));
         if let Some(ref sf) = entry.source_file {
             println!("Source: {sf}");
         }
-        if let Some(sb) = entry.superseded_by {
-            println!("Superseded by: #{sb}");
+        if let Some(ref sb) = entry.superseded_by {
+            // Try to resolve UID to entry title
+            if let Ok(Some(target)) = db::get_entry_by_uid(&conn, sb) {
+                println!("Superseded by: #{} \"{}\" ({sb})", target.id, target.title);
+            } else {
+                println!("Superseded by: {sb}");
+            }
+        }
+        if let Some(ref ss) = entry.supersedes {
+            let parts: Vec<String> = ss
+                .split(',')
+                .map(|uid| {
+                    let uid = uid.trim();
+                    if let Ok(Some(target)) = db::get_entry_by_uid(&conn, uid) {
+                        format!("#{} \"{}\" ({uid})", target.id, target.title)
+                    } else {
+                        uid.to_string()
+                    }
+                })
+                .collect();
+            println!("Supersedes: {}", parts.join(", "));
         }
         println!("Created: {}", entry.created_at);
         println!("Updated: {}", entry.updated_at);
@@ -117,10 +150,14 @@ pub fn cmd_edit(
 
     // Validate status
     if let Some(s) = status
-        && s != "active"
-        && s != "deprecated"
+        && !db::is_valid_status(s)
     {
-        return Err("Status must be 'active' or 'deprecated'.".into());
+        return Err(format!("Status must be one of: {}", db::VALID_STATUSES.join(", ")).into());
+    }
+
+    // Warn if setting to superseded without --superseded-by
+    if status == Some("superseded") && superseded_by.is_none() {
+        eprintln!("Warning: Setting status to 'superseded' without --superseded-by.");
     }
 
     let kws = keywords_str.map(|s| {
@@ -142,20 +179,24 @@ pub fn cmd_edit(
     if status.is_some() || superseded_by.is_some() {
         let current = db::get_entry(&conn, id)?.unwrap();
         // --superseded-by 0 clears the field (sets to None)
-        let new_superseded = match superseded_by {
+        let new_superseded: Option<String> = match superseded_by {
             Some(0) => None,
             Some(v) => {
-                if db::get_entry(&conn, v)?.is_none() {
-                    return Err(format!(
+                let target = db::get_entry(&conn, v)?.ok_or_else(|| {
+                    format!(
                         "Entry #{v} not found. Cannot set superseded-by to a non-existent entry."
                     )
-                    .into());
-                }
-                Some(v)
+                })?;
+                Some(target.uid.clone())
             }
-            None => current.superseded_by,
+            None => current.superseded_by.clone(),
         };
-        db::update_entry_status(&conn, id, status.unwrap_or(&current.status), new_superseded)?;
+        db::update_entry_status(
+            &conn,
+            id,
+            status.unwrap_or(&current.status),
+            new_superseded.as_deref(),
+        )?;
     }
 
     let updated = db::get_entry(&conn, id)?.unwrap();
@@ -170,20 +211,29 @@ pub fn cmd_edit(
             "category": updated.category,
             "source": updated.source,
             "status": updated.status,
+            "uid": updated.uid,
             "updated_at": updated.updated_at,
         });
-        if let Some(sb) = updated.superseded_by {
+        if let Some(ref sb) = updated.superseded_by {
             out["superseded_by"] = serde_json::json!(sb);
+        }
+        if let Some(ref ss) = updated.supersedes {
+            out["supersedes"] = serde_json::json!(
+                ss.split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            );
         }
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         println!("Updated entry #{id}: {}", updated.title);
         println!("Keywords: {}", updated_kws.join(", "));
-        if updated.status == "deprecated" {
-            println!("Status: DEPRECATED");
+        if updated.status != "active" {
+            println!("Status: {}", updated.status.to_uppercase());
         }
-        if let Some(sb) = updated.superseded_by {
-            println!("Superseded by: #{sb}");
+        if let Some(ref sb) = updated.superseded_by {
+            println!("Superseded by: {sb}");
         }
     }
     Ok(())
@@ -255,6 +305,69 @@ pub fn cmd_purge(
     }
     if total == 0 {
         println!("No entries matched.");
+    }
+    Ok(())
+}
+
+pub fn cmd_supersede(
+    old_id: i64,
+    new_id: i64,
+    json_output: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    super::log_command(
+        "supersede",
+        &[
+            ("old_id", &old_id.to_string()),
+            ("new_id", &new_id.to_string()),
+        ],
+    );
+    if old_id == new_id {
+        return Err("old_id and new_id must be different.".into());
+    }
+
+    let conn = open_db_with_migrate()?;
+
+    let old_entry =
+        db::get_entry(&conn, old_id)?.ok_or_else(|| format!("Entry #{old_id} not found"))?;
+    let new_entry =
+        db::get_entry(&conn, new_id)?.ok_or_else(|| format!("Entry #{new_id} not found"))?;
+
+    // Atomic: both updates in a transaction
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        db::update_entry_status(&conn, old_id, "superseded", Some(&new_entry.uid))?;
+        let new_supersedes = db::append_supersedes(new_entry.supersedes.as_deref(), &old_entry.uid);
+        db::update_entry_supersedes(&conn, new_id, Some(&new_supersedes))?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            conn.execute_batch("ROLLBACK").ok();
+            return Err(e);
+        }
+    }
+
+    let new_supersedes = db::append_supersedes(new_entry.supersedes.as_deref(), &old_entry.uid);
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "old_id": old_id,
+                "old_uid": old_entry.uid,
+                "new_id": new_id,
+                "new_uid": new_entry.uid,
+                "old_status": "superseded",
+                "old_superseded_by": new_entry.uid,
+                "new_supersedes": new_supersedes,
+            }))?
+        );
+    } else {
+        println!(
+            "Entry #{old_id} \"{}\" is now superseded by #{new_id} \"{}\"",
+            old_entry.title, new_entry.title
+        );
     }
     Ok(())
 }

@@ -142,6 +142,10 @@ command_log = false
 # Mark .knowledge/**/*.md as linguist-generated in .gitattributes (default: true)
 # Set to false to show full diffs for .knowledge/**/*.md in GitHub PRs
 gitattributes_generated = true
+
+# Category templates: Place markdown files in .knowledge/templates/
+# e.g., .knowledge/templates/decisions.md will be used as default content
+# when running `lk add \"Title\" --category decisions` without --content
 ";
 
 #[cfg(test)]

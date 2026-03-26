@@ -4,6 +4,7 @@ use crate::util::open_db_with_migrate;
 pub fn cmd_list(
     category: Option<&str>,
     source: Option<&str>,
+    status: Option<&str>,
     limit: Option<usize>,
     offset: usize,
     json_output: bool,
@@ -13,12 +14,16 @@ pub fn cmd_list(
         &[
             ("category", category.unwrap_or("")),
             ("source", source.unwrap_or("")),
+            ("status", status.unwrap_or("")),
         ],
     );
     let conn = open_db_with_migrate()?;
     let mut entries = db::list_entries(&conn, category)?;
     if let Some(src) = source {
         entries.retain(|e| e.source == src);
+    }
+    if let Some(st) = status {
+        entries.retain(|e| e.status == st);
     }
 
     // Apply pagination
@@ -42,7 +47,7 @@ pub fn cmd_list(
                     "status": e.status,
                     "updated_at": e.updated_at,
                 });
-                if let Some(sb) = e.superseded_by {
+                if let Some(ref sb) = e.superseded_by {
                     obj["superseded_by"] = serde_json::json!(sb);
                 }
                 obj
@@ -53,9 +58,14 @@ pub fn cmd_list(
         println!("No entries found.");
     } else {
         for e in &entries {
+            let status_badge = if e.status != "active" {
+                format!(" [{}]", e.status.to_uppercase())
+            } else {
+                String::new()
+            };
             println!(
-                "  [{}] {} ({}/{}) - {}",
-                e.id, e.title, e.category, e.source, e.updated_at
+                "  [{}] {} ({}/{}){} - {}",
+                e.id, e.title, e.category, e.source, status_badge, e.updated_at
             );
         }
         if limit.is_some() || offset > 0 {

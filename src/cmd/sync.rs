@@ -11,22 +11,39 @@ pub struct SyncStats {
     pub unchanged: usize,
 }
 
-pub fn cmd_sync(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
-    super::log_command("sync", &[]);
+pub fn cmd_sync(json_output: bool, write_uids: bool) -> Result<(), Box<dyn std::error::Error>> {
+    super::log_command(
+        "sync",
+        &[("write_uids", if write_uids { "true" } else { "false" })],
+    );
     let conn = open_db_with_migrate()?;
     let root = get_project_root();
-    let stats = sync_knowledge_dir(&conn, &get_knowledge_dir(), &root)?;
+    let knowledge_dir = get_knowledge_dir();
+    let stats = sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
+
+    let mut uids_written = 0;
+    if write_uids {
+        uids_written = write_uids_to_md(&conn, &knowledge_dir, &root)?;
+        if uids_written > 0 {
+            if !json_output {
+                println!("Wrote UIDs to {uids_written} entries in markdown files.");
+            }
+            // Re-sync after writing UIDs to update file hashes
+            sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
+        }
+    }
 
     if json_output {
-        println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({
-                "added": stats.added,
-                "updated": stats.updated,
-                "removed": stats.removed,
-                "unchanged": stats.unchanged,
-            }))?
-        );
+        let mut out = serde_json::json!({
+            "added": stats.added,
+            "updated": stats.updated,
+            "removed": stats.removed,
+            "unchanged": stats.unchanged,
+        });
+        if write_uids {
+            out["uids_written"] = serde_json::json!(uids_written);
+        }
+        println!("{}", serde_json::to_string(&out)?);
     } else {
         println!("Sync complete:");
         println!("  Added:     {}", stats.added);
@@ -35,6 +52,93 @@ pub fn cmd_sync(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("  Unchanged: {}", stats.unchanged);
     }
     Ok(())
+}
+
+/// Write UIDs back to markdown files for entries that don't have them.
+fn write_uids_to_md(
+    conn: &rusqlite::Connection,
+    knowledge_dir: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let mut total_written = 0;
+    let uid_re = regex::Regex::new(r"(?m)^uid:\s*.+$").unwrap();
+
+    for filepath in walkdir_md(knowledge_dir) {
+        let fname = filepath.file_name().and_then(|n| n.to_str());
+        if fname == Some("README.md") || fname == Some("lk-instructions.md") {
+            continue;
+        }
+
+        let text = std::fs::read_to_string(&filepath)?;
+        let entries = markdown::parse_md_entries(&text);
+
+        // Check if any entry is missing a uid
+        let needs_update = entries.iter().any(|e| e.uid.is_none());
+        if !needs_update {
+            continue;
+        }
+
+        let rel_path = filepath
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| filepath.to_string_lossy().to_string());
+
+        // Get DB entries for this file to match UIDs
+        let db_entries = crate::db::list_entries_by_source_file(conn, &rel_path)?;
+
+        let mut new_text = text.clone();
+        for md_entry in &entries {
+            if md_entry.uid.is_some() {
+                continue;
+            }
+            // Find matching DB entry by title (skip if ambiguous)
+            let matching: Vec<_> = db_entries
+                .iter()
+                .filter(|e| e.title == md_entry.title)
+                .collect();
+            if matching.len() != 1 {
+                if matching.len() > 1 {
+                    eprintln!(
+                        "sync: skipping UID write for ambiguous title {:?} in {:?}",
+                        md_entry.title, rel_path,
+                    );
+                }
+                continue;
+            }
+            if let Some(db_entry) = matching.into_iter().next() {
+                // Insert uid: line after the ## Entry: line or after keywords line
+                let entry_header = format!("## Entry: {}", md_entry.title);
+                if let Some(pos) = new_text.find(&entry_header) {
+                    let after_header = pos + entry_header.len();
+                    // Find the end of the header line
+                    let line_end = new_text[after_header..]
+                        .find('\n')
+                        .map(|p| after_header + p + 1)
+                        .unwrap_or(new_text.len());
+                    // Check if next line is keywords:
+                    let insert_pos = if new_text[line_end..].starts_with("keywords:") {
+                        new_text[line_end..]
+                            .find('\n')
+                            .map(|p| line_end + p + 1)
+                            .unwrap_or(new_text.len())
+                    } else {
+                        line_end
+                    };
+                    let uid_line = format!("uid: {}\n", db_entry.uid);
+                    if !uid_re.is_match(&new_text[pos..insert_pos.min(pos + 500)]) {
+                        new_text.insert_str(insert_pos, &uid_line);
+                        total_written += 1;
+                    }
+                }
+            }
+        }
+
+        if new_text != text {
+            std::fs::write(&filepath, new_text)?;
+        }
+    }
+
+    Ok(total_written)
 }
 
 pub fn sync_knowledge_dir(
@@ -127,7 +231,12 @@ pub fn import_md_file(
     let entries = markdown::parse_md_entries(&text);
     let mut count = 0;
     for entry in entries {
-        db::add_entry(
+        let supersedes = if entry.supersedes.is_empty() {
+            None
+        } else {
+            Some(entry.supersedes.join(","))
+        };
+        db::add_entry_full(
             conn,
             &entry.title,
             &entry.content,
@@ -136,6 +245,13 @@ pub fn import_md_file(
             "shared",
             Some(&rel_path),
             Some(&fhash),
+            entry.uid.as_deref(),
+            entry
+                .status
+                .as_deref()
+                .filter(|s| crate::db::is_valid_status(s)),
+            entry.superseded_by.as_deref(),
+            supersedes.as_deref(),
         )?;
         count += 1;
     }

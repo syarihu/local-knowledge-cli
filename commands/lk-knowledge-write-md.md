@@ -15,7 +15,7 @@ $ARGUMENTS describes what knowledge to document (e.g., "login authentication flo
 ```markdown
 ---
 keywords: [keyword1, keyword2, keyword3]
-category: architecture|features|conventions
+category: architecture|features|conventions|decisions
 ---
 
 # Topic Title
@@ -43,7 +43,29 @@ keywords: [specific, keywords]
    - Include **why** (design decisions, rationale) alongside **what** when possible
    - Keywords should cover both the concept and implementation terms
 4. Show the draft to the user for review
-5. After approval, save to the appropriate .knowledge/ subdirectory
-6. Run `lk sync` to import the new file into the DB
-7. If the new entries replace existing ones, mark old entries as deprecated:
-   `lk edit <old_id> --status deprecated --superseded-by <new_id>`
+5. **ADR detection**: If any entries contain design decisions (technology choices, architecture rationale, "why A over B"), suggest to the user:
+   - Use `category: decisions` with `keywords: [adr, ...]`
+   - Use the ADR entry format with `status: proposed` (or `accepted` if already approved):
+     ```
+     ## Entry: Decision Title
+     keywords: [adr, relevant-topic]
+     status: proposed
+
+     ### Context
+     Why this decision was needed.
+
+     ### Decision
+     What was decided.
+
+     ### Alternatives Considered
+     What else was evaluated and why it was rejected.
+
+     ### Consequences
+     What this decision means going forward.
+     ```
+   - If the decision replaces a previous one, use `lk supersede <old_id> <new_id>` after syncing
+6. After approval, save to the appropriate .knowledge/ subdirectory
+7. Run `lk sync` to import the new file into the DB
+8. If the new entries replace existing ones:
+   - For decisions: `lk supersede <old_id> <new_id>` (sets status=superseded + bidirectional link)
+   - For other entries: `lk edit <old_id> --status deprecated --superseded-by <new_id>`
