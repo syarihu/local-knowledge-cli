@@ -91,6 +91,29 @@ Content should follow the ADR format (Context / Decision / Alternatives Consider
 
 Status flow: `proposed` → `accepted` (or `superseded` if replaced by a newer decision).
 
+### Context Persistence
+
+Save investigation results and discussion flows as `category: context` entries to carry over into future conversations.
+
+**When Claude should proactively suggest saving:**
+- A design decision or technical conclusion is reached
+- A non-obvious discovery is made during investigation
+- Multiple options were evaluated and a direction was chosen
+- The conversation has grown long with significant accumulated context
+
+**When the user wants to save manually:**
+- Run the `/lk-knowledge-save-context` skill
+
+**Save format:**
+- category: `context`
+- keywords: always include `conversation-log` + topic-specific keywords
+- content: summarize the flow concisely: what was investigated → what was found → what was decided
+
+**When to retrieve (search):**
+- The user says something like "we looked into this before", "continuing from last time", "where did we leave off"
+- A topic likely has related past discussions or investigations
+- Use `search_knowledge(query: "<topic>", category: "context")` to search
+
 ### Available CLI Commands
 - `lk search "<query>" --json --full` - Search with full content
 - `lk get <id> --json` - Get entry details
@@ -101,4 +124,4 @@ Status flow: `proposed` → `accepted` (or `superseded` if replaced by a newer d
 - `lk purge --source local` - Bulk delete
 - `lk export` / `lk export --ids 1,2,3` / `lk export --query "auth"` - Export entries
 - `lk sync` - Sync markdown files with DB (`--write-uids` to write UIDs back to markdown)
-- Skills: `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` `/lk-knowledge-export-select`
+- Skills: `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` `/lk-knowledge-save-context`
