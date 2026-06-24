@@ -20,7 +20,7 @@ pub use search::{cmd_command_log, cmd_search};
 pub use stats::{cmd_keywords, cmd_stats};
 pub use sync::cmd_sync;
 pub use uninstall::cmd_uninstall;
-pub use update::{cmd_update, install_embedded_commands};
+pub use update::{cmd_install_commands, cmd_update};
 
 /// Log a command invocation to .knowledge/command.log (fire-and-forget).
 /// Enabled by config `command_log = true` or env `LK_COMMAND_LOG=1` / `LK_SEARCH_LOG=1`.

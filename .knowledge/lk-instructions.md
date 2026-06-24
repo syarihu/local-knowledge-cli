@@ -1,127 +1,29 @@
 ## Knowledge Base (local-knowledge-cli)
 
-This project has a local knowledge base. Install: `brew install syarihu/tap/lk && lk init`
-Always run `lk` by command name (not full path) so it resolves via PATH.
+This project has a local knowledge base (`lk`). Run `lk` by command name (resolves via PATH).
+If the `lk-knowledge` MCP server is available, **prefer its tools** (`search_knowledge`, `add_knowledge`, …) over CLI — faster, structured I/O. CLI is the fallback.
 
-- **Shared knowledge** (`.knowledge/*.md`, git-tracked): Stable project knowledge. Use `/lk-knowledge-from-branch` to write shared markdown from a feature branch.
-- **Local knowledge** (DB only, git-ignored): LLM investigation cache. If stale, re-investigate instead of updating.
+- **Shared knowledge** (`.knowledge/*.md`, git-tracked): stable project knowledge.
+- **Local knowledge** (DB only, git-ignored): investigation cache; if stale, re-investigate rather than patch.
 
-### MCP Tools vs CLI
+### Search BEFORE investigating
+Before exploring unfamiliar code or architecture, search first (`search_knowledge` / `lk search "<kw>" --json`).
+- Keywords: **1–3 short words**, space-separated; try **both English and Japanese**; broaden if no hits.
+- `"stale": true` → verify vs current code, then update (if outdated) or touch (if still correct). `"superseded"`/`"deprecated"` → use the superseding entry.
+- **Skip** when: exact file/line given, mechanical task (format/rename/version/git), or you already have context.
 
-If the `lk-knowledge` MCP server is available, **prefer MCP tools over CLI commands** — they are faster (no per-call process spawn) and provide structured input/output natively.
+### Search past context
+When the user signals continuation ("last time", "we looked into this", "where did we leave off"), or a topic likely has prior discussion, search `category: context` / `conversation-log` first (`search_knowledge(query, category: "context")`).
 
-| Action | MCP tool (preferred) | CLI fallback |
-|--------|---------------------|-------------|
-| Search | `search_knowledge` | `lk search "<query>" --json --full` |
-| Add | `add_knowledge` | `lk add "<title>" --keywords "kw1,kw2" --content "..."` |
-| List | `list_knowledge` | `lk list --json` |
-| Get by ID | `get_knowledge` | `lk get <id> --json` |
-| Update | `update_knowledge` | `lk edit <id> --content "..."` |
-| Supersede | `supersede_knowledge` | `lk supersede <old_id> <new_id>` |
-| Stats | `get_stats` | `lk stats --json` |
+### Save AFTER discovering
+After investigating unfamiliar code, save non-trivial, reusable findings (skip mechanical tasks).
+- Use stable identifiers (function/struct names), not line numbers. Include the "why". Lowercase hyphenated keywords. **Never store secrets.**
+- If a duplicate/similar entry is returned, update it instead of adding (`--force` / `force: true` only when truly new).
+- **Design decisions** → `category: decisions`, ADR format, `status: proposed` → `accepted`. Details: `/lk-knowledge-add-db`.
+- **Session/conversation context** to carry over → **save it proactively, without asking first**, as `category: context` + keyword `conversation-log` when a decision/conclusion is reached, a non-obvious discovery is made, or the conversation has grown long. Briefly note what was saved (id/uid). Manual entry point: `/lk-knowledge-save-context`.
 
-Slash commands (`/lk-knowledge-discover`, `/lk-knowledge-refresh`, etc.) provide complex multi-step workflows that are not available as MCP tools — continue using those as slash commands.
+### Delegating to sub-agents
+When launching Explore/general-purpose agents to investigate unfamiliar code, tell them to **`lk search` first** and to return a **`## Knowledge to Save`** section; then save what they return. Full prepend text + capture procedure: `/lk-knowledge-agent-brief`. Skip for mechanical tasks.
 
-### When to Search Knowledge
-
-Search **before investigating unfamiliar code or architecture**.
-
-**Skip when:**
-- The user specifies an exact file path or line to edit
-- The task is mechanical (formatting, renaming, version bumps, git operations)
-- You already have sufficient context from the current conversation
-
-**Using results:**
-- If a result has `"status": "deprecated"` or `"status": "superseded"` with `"superseded_by": <uid>`, use the superseding entry
-- If a result has `"stale": true`, verify against current code, then update content (if outdated) or touch (if still correct)
-- If no results found, proceed with normal code exploration (Glob/Grep/Read)
-
-### How to Search
-- **Use 1–3 short keywords**, separated by spaces
-  - BAD: `lk search "ユーザー認証APIのエンドポイント設計について"`, `lk search "auth-API"`
-  - GOOD: `search_knowledge(query: "auth API")` or `lk search "auth API"`
-- **Try both English and Japanese** — knowledge may be stored in either language
-- If no results, broaden by using fewer keywords (e.g., "auth API endpoint" → "auth")
-
-### Saving Knowledge
-After investigating unfamiliar code, save noteworthy discoveries. Skip for mechanical tasks.
-
-- MCP: `add_knowledge(title: "...", content: "...", keywords: ["kw1", "kw2"], category: "features")`
-- CLI: `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "features"`
-- If add returns duplicate/similar entries, use `update_knowledge` / `lk edit <id>` to update instead
-- Use `force: true` / `--force` to skip duplicate check when certain a new entry is needed
-- Use lowercase, hyphen-separated keywords (e.g., "auth-flow")
-- **Content rules:** Use stable identifiers (function/struct names), not line numbers. Include "why" alongside "what". NEVER include secrets.
-
-### Agent Launch Rule
-When launching Explore or general-purpose agents **to investigate unfamiliar code**, prepend this instruction. Skip for mechanical tasks:
-> **lk search first:** Before using Read/Grep/Glob, run `lk search "<keywords>" --json --full --limit 5`.
-> - Use 1–3 space-separated keywords (e.g., "auth API" not "auth-API")
-> - Try both English and Japanese if first search finds nothing
-> - If a result has `"stale": true`, verify against current code and include correction in `## Knowledge to Save`
-> - If no useful results, proceed with Glob/Grep/Read
->
-> **After investigation**, append a `## Knowledge to Save` section (or `None.` if nothing new). Only include non-trivial, reusable discoveries. Do not duplicate existing entries. Never include secrets.
-> Format:
-> ```
-> ## Knowledge to Save
->
-> ### Entry 1: <title>
-> - **keywords**: kw1, kw2, kw3
-> - **category**: <category-name>
-> - **content**: <2-5 sentences. Use stable identifiers (function/struct names), not line numbers. Include "why" alongside "what".>
-> ```
-
-### Post-Explore Knowledge Capture
-After an agent returns a `## Knowledge to Save` section:
-1. If `None.`, skip.
-2. For each entry, use `add_knowledge` (MCP) or `lk add "<title>" --keywords "<kw1,kw2>" --category "<category>" --content "<content>" --json` (CLI).
-3. If add returns similar entries, use `update_knowledge` / `lk edit <id>` to merge instead.
-
-### Design Decisions (ADR)
-
-When a design decision is made during a conversation (technology choice, architecture change, pattern adoption), record it as an ADR entry:
-
-- MCP: `add_knowledge(title: "...", content: "...", keywords: ["adr", ...], category: "decisions", status: "proposed")`
-- CLI: `lk add "..." --keywords "adr,..." --category "decisions" --content "..."`
-- After approval: `update_knowledge(id: <id>, status: "accepted")` or `lk edit <id> --status accepted`
-- To replace a previous decision: `supersede_knowledge(old_id: <old>, new_id: <new>)` or `lk supersede <old_id> <new_id>`
-
-Content should follow the ADR format (Context / Decision / Alternatives Considered / Consequences).
-
-Status flow: `proposed` → `accepted` (or `superseded` if replaced by a newer decision).
-
-### Context Persistence
-
-Save investigation results and discussion flows as `category: context` entries to carry over into future conversations.
-
-**When Claude should proactively suggest saving:**
-- A design decision or technical conclusion is reached
-- A non-obvious discovery is made during investigation
-- Multiple options were evaluated and a direction was chosen
-- The conversation has grown long with significant accumulated context
-
-**When the user wants to save manually:**
-- Run the `/lk-knowledge-save-context` skill
-
-**Save format:**
-- category: `context`
-- keywords: always include `conversation-log` + topic-specific keywords
-- content: summarize the flow concisely: what was investigated → what was found → what was decided
-
-**When to retrieve (search):**
-- The user says something like "we looked into this before", "continuing from last time", "where did we leave off"
-- A topic likely has related past discussions or investigations
-- Use `search_knowledge(query: "<topic>", category: "context")` to search
-
-### Available CLI Commands
-- `lk search "<query>" --json --full` - Search with full content
-- `lk get <id> --json` - Get entry details
-- `lk add "<title>" --keywords "kw1,kw2" --content "..." --category "cat"` - Add (checks duplicates; use `--force` to skip)
-- `lk list --json` - List entries (supports `--category`, `--source`, `--status`, `--limit N`, `--offset N`)
-- `lk edit <id> --content "..."` - Update entry (also: `--title`, `--keywords`, `--touch`, `--status <status> --superseded-by <id>`)
-- `lk supersede <old_id> <new_id>` - Mark old entry as superseded by new (bidirectional link)
-- `lk purge --source local` - Bulk delete
-- `lk export` / `lk export --ids 1,2,3` / `lk export --query "auth"` - Export entries
-- `lk sync` - Sync markdown files with DB (`--write-uids` to write UIDs back to markdown)
-- Skills: `/lk-knowledge-search` `/lk-knowledge-add-db` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` `/lk-knowledge-save-context`
+### More
+Workflows: `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-search`. Full CLI reference: `lk --help` (or `lk <cmd> --help`).

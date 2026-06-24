@@ -87,7 +87,7 @@ Commands:
   stats             Show database statistics
   command-log       Show recent command log entries
   update            Update lk to latest version
-  install-commands  Install Claude Code slash commands
+  install-commands  Install Claude Code slash commands and refresh existing lk-instructions.md
   uninstall         Uninstall lk from current project
   mcp               Start MCP server (JSON-RPC 2.0 over stdio)
   install-mcp       Install lk as MCP server for Claude Code / Claude Desktop
@@ -238,7 +238,7 @@ Claude Code conversations lose context on compact or session end. lk's `context`
 
 #### How it works
 
-- **Auto-suggest**: Claude proactively suggests saving context when a design decision is reached, a non-obvious discovery is made, or the conversation has accumulated significant context
+- **Auto-save**: Claude proactively saves context (without asking for confirmation) when a design decision is reached, a non-obvious discovery is made, or the conversation has accumulated significant context, and briefly notes what was saved
 - **Manual save**: Run `/lk-knowledge-save-context` to extract and save important context from the current conversation
 - **Retrieval**: When you say things like "we looked into this before" or "continuing from last time", Claude searches the `context` category automatically
 
@@ -318,11 +318,13 @@ No manual server startup is needed — Claude Code / Claude Desktop automaticall
 
 `lk init` creates `.knowledge/lk-instructions.md` with Claude Code instructions and adds an `@.knowledge/lk-instructions.md` import line to your `AGENTS.md` (or `CLAUDE.md` if it exists). This keeps your config file minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
 
+`lk-instructions.md` is generated (not meant to be hand-edited), so `lk update` and `lk install-commands` refresh it in place wherever it already exists (the current project and the global `~/.claude/` copy) using the freshly installed binary's content. Locations that haven't run `lk init` are left untouched.
+
 After `lk init`, Claude Code will automatically:
 
 1. Search the knowledge base before exploring code
 2. Add new discoveries via `/lk-knowledge-add-db`
-3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`, `/lk-knowledge-save-context`
+3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`, `/lk-knowledge-save-context`, `/lk-knowledge-agent-brief`
 
 ### MCP + Slash Commands
 

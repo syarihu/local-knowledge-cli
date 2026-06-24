@@ -318,7 +318,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query string"
+                    "description": "Search query. Use 1-3 short keywords separated by spaces (not full sentences, not hyphenated phrases). Try both English and Japanese, since knowledge may be stored in either. If no hits, broaden by using fewer keywords."
                 },
                 "keyword_only": {
                     "type": "boolean",
@@ -349,7 +349,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
 fn tool_def_add(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "add_knowledge",
-        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Automatically checks for duplicates before adding.",
+        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Automatically checks for duplicates before adding — if similar entries are returned, prefer updating the existing entry (update_knowledge) over forcing a new one.",
         "inputSchema": {
             "type": "object",
             "properties": {

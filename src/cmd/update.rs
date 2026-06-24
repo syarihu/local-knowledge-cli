@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use crate::util::{DEFAULT_REPO, VERSION, get_db_path, home_dir, now_iso, open_db_with_migrate};
+use crate::util::{
+    DEFAULT_REPO, VERSION, get_db_path, get_project_root, home_dir, now_iso, open_db_with_migrate,
+};
 
 pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = home_dir().join(".config").join("lk");
@@ -27,11 +29,11 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
                 "brew upgrade failed. Try: brew update && brew upgrade syarihu/tap/lk".into(),
             );
         }
-        // Use the current exe path (symlink resolves to new version after upgrade)
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.canonicalize().ok())
-            .unwrap_or_else(|| PathBuf::from("lk"))
+        // Resolve via PATH (not current_exe): `brew upgrade` repoints the brew
+        // symlink to the new keg, but this process's current_exe still canonicalizes
+        // to the OLD keg, which would re-run the pre-upgrade binary and reintroduce
+        // the one-version content lag. `lk` on PATH points at the upgraded binary.
+        PathBuf::from("lk")
     } else {
         // Manual installation: download from GitHub releases
         let target = detect_target()?;
@@ -113,8 +115,19 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     // === Shared post-update logic ===
 
-    // Install embedded Claude commands
-    install_embedded_commands()?;
+    // Install commands and refresh generated instructions using the NEWLY installed
+    // binary (not this still-running old process), so new embedded content applies
+    // immediately instead of lagging one `lk update` behind. `include_str!` bakes
+    // content in at compile time, so the in-process copy is the pre-update version.
+    let install_status = std::process::Command::new(&dest)
+        .arg("install-commands")
+        .status();
+    if !matches!(install_status, Ok(ref s) if s.success()) {
+        eprintln!(
+            "Warning: could not refresh commands/instructions from the updated binary. \
+             Run `lk install-commands` manually."
+        );
+    }
 
     // Get the version from the newly installed binary
     let new_version = std::process::Command::new(&dest)
@@ -176,6 +189,33 @@ fn verify_checksum(
         .into());
     }
 
+    Ok(())
+}
+
+/// `lk install-commands`: install the embedded Claude commands AND refresh any
+/// existing `lk-instructions.md` (current project + global) from this binary's
+/// embedded content. Only rewrites instruction files that already exist, so it never
+/// imposes lk on a location that hasn't opted in via `lk init`. `lk update` re-invokes
+/// this against the freshly installed binary so new content applies immediately.
+pub fn cmd_install_commands() -> Result<(), Box<dyn std::error::Error>> {
+    install_embedded_commands()?;
+
+    // The instruction file is generated, not hand-edited, so overwriting on change is safe.
+    let root = get_project_root();
+    let project_instructions = root.join(".knowledge").join("lk-instructions.md");
+    if super::init::refresh_instructions_if_exists(&project_instructions)? {
+        println!("Updated {}", project_instructions.display());
+    }
+    // Legacy projects (pre-migration) import from .claude/lk-instructions.md; refresh
+    // that in place too so old setups don't keep reading stale instructions.
+    let legacy_project_instructions = root.join(".claude").join("lk-instructions.md");
+    if super::init::refresh_instructions_if_exists(&legacy_project_instructions)? {
+        println!("Updated {}", legacy_project_instructions.display());
+    }
+    let global_instructions = home_dir().join(".claude").join("lk-instructions.md");
+    if super::init::refresh_instructions_if_exists(&global_instructions)? {
+        println!("Updated {}", global_instructions.display());
+    }
     Ok(())
 }
 
@@ -284,6 +324,10 @@ const EMBEDDED_COMMANDS: &[(&str, &str)] = &[
     (
         "lk-knowledge-save-context.md",
         include_str!("../../commands/lk-knowledge-save-context.md"),
+    ),
+    (
+        "lk-knowledge-agent-brief.md",
+        include_str!("../../commands/lk-knowledge-agent-brief.md"),
     ),
 ];
 

@@ -318,3 +318,22 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 const LK_INSTRUCTIONS_CONTENT: &str = include_str!("../../.knowledge/lk-instructions.md");
+
+/// Refresh an existing lk-instructions.md with the embedded content if it differs.
+/// Does nothing when the file is absent, so it never imposes lk on a location that
+/// hasn't opted in via `lk init`. lk-instructions.md is generated (not hand-edited),
+/// so overwriting on change is safe. Returns `Ok(true)` when the file was rewritten.
+pub fn refresh_instructions_if_exists(
+    path: &std::path::Path,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let existing = std::fs::read_to_string(path)?;
+    if existing.trim() != LK_INSTRUCTIONS_CONTENT.trim() {
+        std::fs::write(path, LK_INSTRUCTIONS_CONTENT)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
