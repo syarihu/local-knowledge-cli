@@ -326,7 +326,7 @@ const LK_INSTRUCTIONS_CONTENT: &str = include_str!("../../.knowledge/lk-instruct
 pub fn refresh_instructions_if_exists(
     path: &std::path::Path,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    if !path.exists() {
+    if !path.is_file() {
         return Ok(false);
     }
     let existing = std::fs::read_to_string(path)?;

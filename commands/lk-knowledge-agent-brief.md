@@ -28,6 +28,7 @@ Use this when launching Explore or general-purpose sub-agents **to investigate u
 
 Process its `## Knowledge to Save` section:
 1. If `None.`, skip.
-2. For each entry, save it — prefer the `add_knowledge` MCP tool, else CLI:
+2. For each entry, save it with the CLI (this command allows `Bash(lk *)`):
    `lk add "<title>" --keywords "<kw1,kw2>" --category "<category>" --content "<content>" --json`
-3. If add returns similar/duplicate entries, use `update_knowledge` / `lk edit <id>` to merge instead of forcing a new entry.
+   (Outside this slash command, the main agent may instead use the `add_knowledge` MCP tool when available.)
+3. If add returns similar/duplicate entries, use `lk edit <id>` (or the `update_knowledge` MCP tool) to merge instead of forcing a new entry.
