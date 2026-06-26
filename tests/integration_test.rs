@@ -1171,8 +1171,23 @@ fn test_user_scope_export_dir_warns() {
     assert!(export.status.success());
     let stderr = String::from_utf8_lossy(&export.stderr);
     assert!(
-        stderr.contains("won't read a custom --dir"),
-        "should warn about --dir not being synced: {stderr}"
+        stderr.contains("one-off dump"),
+        "should warn that --dir is a dump-only export: {stderr}"
+    );
+
+    // Dump-only: the entry must stay `local` (not flipped to `shared`), so a later
+    // `sync --scope user` — which never sees the custom dir — cannot delete it.
+    let list_local = run(&["list", "--scope", "user", "--source", "local", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&list_local.stdout).contains("d note"),
+        "dumped entry should remain local"
+    );
+    let sync = run(&["sync", "--scope", "user", "--json"]);
+    assert!(sync.status.success());
+    let still_there = run(&["search", "d note", "--scope", "user", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&still_there.stdout).contains("d note"),
+        "entry must survive a later user-scope sync (no data loss)"
     );
 }
 

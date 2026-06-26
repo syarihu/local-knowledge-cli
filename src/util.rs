@@ -196,6 +196,31 @@ pub fn restrict_to_owner(path: &Path, is_dir: bool) {
     }
 }
 
+/// On Unix, warn if an existing directory is group/world-accessible. Even when the
+/// markdown files inside are forced to `0600`, a readable/executable dir lets other
+/// users list filenames (which can themselves leak sensitive info). No-op on non-Unix.
+pub fn warn_if_not_owner_only(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mode = meta.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                eprintln!(
+                    "Warning: {} is not owner-only ({mode:#o}); other users can list its \
+                     filenames. Run `chmod 700 {}` to restrict it.",
+                    path.display(),
+                    path.display(),
+                );
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
 /// Write a default `~/.config/lk/config.toml` if none exists, so users can
 /// discover the `user_knowledge_dir` option. Best-effort; returns the path if
 /// it created the file (for an informational note), else `None`.

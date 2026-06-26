@@ -39,12 +39,16 @@ pub fn cmd_export(
         }
     };
 
-    // For user scope, a custom `--dir` is a one-off dump: `lk sync --scope user`
-    // only reads `user_knowledge_dir`, so md written elsewhere can't be synced back.
-    if scope == super::Scope::User && dir.is_some() {
+    // A custom `--dir` for user scope is a one-off DUMP, not a managed store:
+    // `lk sync --scope user` only reads `user_knowledge_dir`, so if we flipped these
+    // entries to `shared` with a source_file pointing at the custom dir, the next
+    // user-scope sync would treat those files as "missing" and DELETE the entries.
+    // So dump-only: write the md but leave entries `local` (and don't touch source_file).
+    let dump_only = scope == super::Scope::User && dir.is_some();
+    if dump_only {
         eprintln!(
-            "Warning: `lk sync --scope user` won't read a custom --dir; \
-             set `user_knowledge_dir` in ~/.config/lk/config.toml to sync this location."
+            "Warning: `--dir` is a one-off dump; entries stay local and are NOT synced. \
+             Set `user_knowledge_dir` in ~/.config/lk/config.toml to manage a synced store."
         );
     }
 
@@ -59,7 +63,11 @@ pub fn cmd_export(
         // Canonicalized parent so export and sync agree on the rel-path even through
         // a symlinked knowledge dir (keeps source_file relative + portable).
         super::Scope::User => {
-            if !dir_existed {
+            if dir_existed {
+                // We won't clobber an existing dir's mode, but a group/world-readable
+                // store leaks filenames even though the md files are 0600 — so warn.
+                crate::util::warn_if_not_owner_only(&output_dir);
+            } else {
                 crate::util::restrict_to_owner(&output_dir, true);
             }
             crate::util::user_md_root(&output_dir)
@@ -75,6 +83,7 @@ pub fn cmd_export(
         allow_secrets,
         secret_detection,
         restrict_files,
+        !dump_only,
     )
 }
 
@@ -88,6 +97,7 @@ fn export_to_dir(
     allow_secrets: bool,
     secret_detection: bool,
     restrict_files: bool,
+    flip_to_shared: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let entries = if let Some(ids_str) = ids {
         // Export specific entries by ID
@@ -214,20 +224,25 @@ fn export_to_dir(
             crate::util::restrict_to_owner(&filepath, false);
         }
 
-        // Compute the stored source_file from the canonicalized path so it matches
-        // what `sync`/`import_md_file` derive from walkdir (which canonicalizes).
-        // Without this, a symlinked knowledge dir (the dotfiles use case) would make
-        // export and sync disagree on the path, breaking the md→DB round-trip.
-        let canonical = std::fs::canonicalize(&filepath).unwrap_or_else(|_| filepath.clone());
-        let rel_path = canonical
-            .strip_prefix(root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| canonical.to_string_lossy().to_string());
+        // Flip entries to `shared` and record their source_file/hash — but ONLY for a
+        // managed store. A dump-only export (user-scope `--dir`) leaves entries `local`
+        // so a later `sync --scope user` (which never sees this dir) can't delete them.
+        if flip_to_shared {
+            // Compute the stored source_file from the canonicalized path so it matches
+            // what `sync`/`import_md_file` derive from walkdir (which canonicalizes).
+            // Without this, a symlinked knowledge dir (the dotfiles use case) would make
+            // export and sync disagree on the path, breaking the md→DB round-trip.
+            let canonical = std::fs::canonicalize(&filepath).unwrap_or_else(|_| filepath.clone());
+            let rel_path = canonical
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| canonical.to_string_lossy().to_string());
 
-        let fhash = markdown::file_hash(&filepath)?;
-        let now = now_iso();
-        for entry in group_entries {
-            db::update_entry_to_shared(conn, entry.id, &rel_path, &fhash, &now)?;
+            let fhash = markdown::file_hash(&filepath)?;
+            let now = now_iso();
+            for entry in group_entries {
+                db::update_entry_to_shared(conn, entry.id, &rel_path, &fhash, &now)?;
+            }
         }
 
         total += group_entries.len();
