@@ -1,5 +1,4 @@
 use crate::db;
-use crate::util::open_db_with_migrate;
 
 pub fn cmd_list(
     category: Option<&str>,
@@ -7,6 +6,7 @@ pub fn cmd_list(
     status: Option<&str>,
     limit: Option<usize>,
     offset: usize,
+    scope: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     super::log_command(
@@ -17,33 +17,47 @@ pub fn cmd_list(
             ("status", status.unwrap_or("")),
         ],
     );
-    let conn = open_db_with_migrate()?;
-    let mut entries = db::list_entries(&conn, category)?;
-    if let Some(src) = source {
-        entries.retain(|e| e.source == src);
-    }
-    if let Some(st) = status {
-        entries.retain(|e| e.status == st);
+    let conns = super::read_connections(scope)?;
+
+    // Merge entries across scopes, tagging each with its scope label.
+    let mut tagged: Vec<(&'static str, db::Entry)> = Vec::new();
+    for (conn, label) in &conns {
+        let mut entries = db::list_entries(conn, category)?;
+        if let Some(src) = source {
+            entries.retain(|e| e.source == src);
+        }
+        if let Some(st) = status {
+            entries.retain(|e| e.status == st);
+        }
+        for e in entries {
+            tagged.push((label, e));
+        }
     }
 
+    // Re-sort the merged set by updated_at DESC so pagination is globally correct
+    // (each DB returns its own updated_at DESC; concatenation alone would not be).
+    tagged.sort_by(|a, b| b.1.updated_at.cmp(&a.1.updated_at));
+
     // Apply pagination
-    let total = entries.len();
+    let total = tagged.len();
     if offset > 0 {
-        entries = entries.into_iter().skip(offset).collect();
+        tagged = tagged.into_iter().skip(offset).collect();
     }
     if let Some(lim) = limit {
-        entries.truncate(lim);
+        tagged.truncate(lim);
     }
 
     if json_output {
-        let output: Vec<serde_json::Value> = entries
+        let output: Vec<serde_json::Value> = tagged
             .iter()
-            .map(|e| {
+            .map(|(label, e)| {
                 let mut obj = serde_json::json!({
                     "id": e.id,
+                    "uid": e.uid,
                     "title": e.title,
                     "category": e.category,
                     "source": e.source,
+                    "scope": label,
                     "status": e.status,
                     "updated_at": e.updated_at,
                 });
@@ -54,25 +68,30 @@ pub fn cmd_list(
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
-    } else if entries.is_empty() {
+    } else if tagged.is_empty() {
         println!("No entries found.");
     } else {
-        for e in &entries {
+        for (label, e) in &tagged {
             let status_badge = if e.status != "active" {
                 format!(" [{}]", e.status.to_uppercase())
             } else {
                 String::new()
             };
+            let id_disp = if *label == "user" {
+                format!("user:{}", e.uid)
+            } else {
+                e.id.to_string()
+            };
             println!(
                 "  [{}] {} ({}/{}){} - {}",
-                e.id, e.title, e.category, e.source, status_badge, e.updated_at
+                id_disp, e.title, e.category, e.source, status_badge, e.updated_at
             );
         }
         if limit.is_some() || offset > 0 {
             println!(
                 "  ({}-{} of {} entries)",
                 offset + 1,
-                offset + entries.len(),
+                offset + tagged.len(),
                 total
             );
         }

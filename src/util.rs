@@ -120,6 +120,34 @@ pub fn open_db_with_migrate() -> Result<rusqlite::Connection, Box<dyn std::error
     Ok(conn)
 }
 
+/// Path to the user-scope (global) knowledge DB: `~/.config/lk/knowledge.db`.
+pub fn get_user_db_path() -> PathBuf {
+    home_dir().join(".config").join("lk").join("knowledge.db")
+}
+
+/// Open the user-scope DB if it already exists, else `None`.
+/// Reads must not create it. It is a DB-only store, so no auto-sync or
+/// `.lk-version` checks run here (those apply to per-project markdown).
+pub fn open_user_db() -> Result<Option<rusqlite::Connection>, Box<dyn std::error::Error>> {
+    let path = get_user_db_path();
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let (conn, _) = db::open_db(&path)?;
+    Ok(Some(conn))
+}
+
+/// Open the user-scope DB, creating it if absent (for `--scope user` writes).
+pub fn open_or_create_user_db() -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
+    let path = get_user_db_path();
+    if path.is_file() {
+        let (conn, _) = db::open_db(&path)?;
+        Ok(conn)
+    } else {
+        Ok(db::init_db(&path)?)
+    }
+}
+
 /// Check .knowledge/.lk-version and warn if the current binary is older than the project requires.
 fn check_lk_version() {
     let version_path = get_knowledge_dir().join(".lk-version");

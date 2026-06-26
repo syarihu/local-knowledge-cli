@@ -47,6 +47,9 @@ enum Commands {
         /// Allow content that contains potential secrets
         #[arg(long)]
         allow_secrets: bool,
+        /// Knowledge scope: "project" (default) or "user" (global ~/.config/lk/knowledge.db)
+        #[arg(long, default_value = "project")]
+        scope: String,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -73,22 +76,28 @@ enum Commands {
         /// Include full content in JSON output (eliminates need for lk get)
         #[arg(long)]
         full: bool,
+        /// Scope to search: "project", "user", or "all" (default)
+        #[arg(long, default_value = "all")]
+        scope: String,
         /// Output as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Get a single entry by ID
+    /// Get a single entry by ID or UID
     Get {
-        /// Entry ID
-        id: i64,
+        /// Entry id (project) or uid (id-or-uid; uid resolves across scopes)
+        id: String,
+        /// Scope: "project" or "user" (omit to auto-resolve: numeric=project, uid=project then user)
+        #[arg(long)]
+        scope: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
     },
     /// Edit an existing entry
     Edit {
-        /// Entry ID
-        id: i64,
+        /// Entry id (project) or uid (id-or-uid; uid resolves across scopes)
+        id: String,
         /// New title
         #[arg(short, long)]
         title: Option<String>,
@@ -101,20 +110,26 @@ enum Commands {
         /// Set status ("active", "deprecated", "proposed", "accepted", or "superseded")
         #[arg(long)]
         status: Option<String>,
-        /// Set superseded-by entry ID (use 0 to clear)
+        /// Set superseded-by id-or-uid in the same scope (use 0 to clear)
         #[arg(long)]
-        superseded_by: Option<i64>,
+        superseded_by: Option<String>,
         /// Reset updated_at timestamp to now (mark as freshly reviewed)
         #[arg(long)]
         touch: bool,
+        /// Scope: "project" or "user" (omit to auto-resolve: numeric=project, uid=project then user)
+        #[arg(long)]
+        scope: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
     },
     /// Delete an entry
     Delete {
-        /// Entry ID
-        id: i64,
+        /// Entry id (project) or uid (id-or-uid; uid resolves across scopes)
+        id: String,
+        /// Scope: "project" or "user" (omit to auto-resolve: numeric=project, uid=project then user)
+        #[arg(long)]
+        scope: Option<String>,
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
@@ -133,10 +148,13 @@ enum Commands {
     },
     /// Mark an entry as superseded by another entry (bidirectional)
     Supersede {
-        /// ID of the old entry being superseded
-        old_id: i64,
-        /// ID of the new entry that supersedes it
-        new_id: i64,
+        /// id-or-uid of the old entry being superseded
+        old_id: String,
+        /// id-or-uid of the new entry that supersedes it
+        new_id: String,
+        /// Scope: "project" or "user" (both entries must be in the same scope)
+        #[arg(long)]
+        scope: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -158,6 +176,9 @@ enum Commands {
         /// Skip first N results
         #[arg(long, default_value = "0")]
         offset: usize,
+        /// Scope to list: "project", "user", or "all" (default)
+        #[arg(long, default_value = "all")]
+        scope: String,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -205,6 +226,9 @@ enum Commands {
         /// Show verbose details (project root, schema version)
         #[arg(long, short)]
         verbose: bool,
+        /// Scope: "project", "user", or "all" (default)
+        #[arg(long, default_value = "all")]
+        scope: String,
     },
     /// Show recent command log entries
     #[command(alias = "search-log")]
@@ -303,16 +327,20 @@ fn main() {
             category,
             force,
             allow_secrets,
+            scope,
             json,
-        } => cmd::cmd_add(
-            &title,
-            keywords.as_deref(),
-            content.as_deref(),
-            category.as_deref(),
-            force,
-            allow_secrets,
-            json,
-        ),
+        } => cmd::parse_scope(&scope).and_then(|s| {
+            cmd::cmd_add(
+                &title,
+                keywords.as_deref(),
+                content.as_deref(),
+                category.as_deref(),
+                force,
+                allow_secrets,
+                s,
+                json,
+            )
+        }),
         Commands::Search {
             query,
             keyword_only,
@@ -321,6 +349,7 @@ fn main() {
             since,
             limit,
             full,
+            scope,
             json,
         } => cmd::cmd_search(
             &query,
@@ -330,9 +359,12 @@ fn main() {
             since.as_deref(),
             limit,
             full,
+            Some(&scope),
             json,
         ),
-        Commands::Get { id, json } => cmd::cmd_get(id, json),
+        Commands::Get { id, scope, json } => {
+            cmd::parse_scope_opt(scope.as_deref()).and_then(|sc| cmd::cmd_get(&id, sc, json))
+        }
         Commands::Edit {
             id,
             title,
@@ -341,23 +373,31 @@ fn main() {
             status,
             superseded_by,
             touch,
+            scope,
             json,
-        } => cmd::cmd_edit(
-            id,
-            title.as_deref(),
-            keywords.as_deref(),
-            content.as_deref(),
-            status.as_deref(),
-            superseded_by,
-            touch,
-            json,
-        ),
+        } => cmd::parse_scope_opt(scope.as_deref()).and_then(|sc| {
+            cmd::cmd_edit(
+                &id,
+                title.as_deref(),
+                keywords.as_deref(),
+                content.as_deref(),
+                status.as_deref(),
+                superseded_by.as_deref(),
+                touch,
+                sc,
+                json,
+            )
+        }),
         Commands::Supersede {
             old_id,
             new_id,
+            scope,
             json,
-        } => cmd::cmd_supersede(old_id, new_id, json),
-        Commands::Delete { id, yes } => cmd::cmd_delete(id, yes),
+        } => cmd::parse_scope_opt(scope.as_deref())
+            .and_then(|sc| cmd::cmd_supersede(&old_id, &new_id, sc, json)),
+        Commands::Delete { id, scope, yes } => {
+            cmd::parse_scope_opt(scope.as_deref()).and_then(|sc| cmd::cmd_delete(&id, sc, yes))
+        }
         Commands::Purge {
             category,
             source,
@@ -369,6 +409,7 @@ fn main() {
             status,
             limit,
             offset,
+            scope,
             json,
         } => cmd::cmd_list(
             category.as_deref(),
@@ -376,6 +417,7 @@ fn main() {
             status.as_deref(),
             limit,
             offset,
+            Some(&scope),
             json,
         ),
         Commands::Sync { json, write_uids } => cmd::cmd_sync(json, write_uids),
@@ -387,7 +429,11 @@ fn main() {
         } => cmd::cmd_export(dir, ids.as_deref(), query.as_deref(), allow_secrets),
         Commands::Import { path } => cmd::cmd_import(&path),
         Commands::Keywords { json } => cmd::cmd_keywords(json),
-        Commands::Stats { json, verbose } => cmd::cmd_stats(json, verbose),
+        Commands::Stats {
+            json,
+            verbose,
+            scope,
+        } => cmd::cmd_stats(json, verbose, Some(&scope)),
         Commands::CommandLog { lines } => cmd::cmd_command_log(lines),
         Commands::Update { skip_verify } => cmd::cmd_update(skip_verify),
         Commands::InstallCommands => cmd::cmd_install_commands(),

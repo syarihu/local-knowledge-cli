@@ -2,6 +2,7 @@ use crate::db;
 use crate::keywords;
 use crate::util::{open_db_with_migrate, truncate_str};
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_add(
     title: &str,
     keywords_str: Option<&str>,
@@ -9,13 +10,21 @@ pub fn cmd_add(
     category: Option<&str>,
     force: bool,
     allow_secrets: bool,
+    scope: super::Scope,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     super::log_command(
         "add",
-        &[("title", title), ("category", category.unwrap_or(""))],
+        &[
+            ("title", title),
+            ("category", category.unwrap_or("")),
+            ("scope", scope.label()),
+        ],
     );
-    let conn = open_db_with_migrate()?;
+    let conn = match scope {
+        super::Scope::Project => open_db_with_migrate()?,
+        super::Scope::User => crate::util::open_or_create_user_db()?,
+    };
     let category = category.unwrap_or("");
     // Apply category template if content is not provided or empty
     let template_content;
@@ -122,7 +131,7 @@ pub fn cmd_add(
     match result {
         Ok(entry_id) => {
             conn.execute_batch("COMMIT")?;
-            print_success(entry_id, title, &kws, json_output);
+            print_success(entry_id, title, &kws, scope, json_output);
             Ok(())
         }
         Err(e) if e.to_string() == "duplicate_found" => {
@@ -136,17 +145,28 @@ pub fn cmd_add(
     }
 }
 
-fn print_success(entry_id: i64, title: &str, kws: &[String], json_output: bool) {
+fn print_success(
+    entry_id: i64,
+    title: &str,
+    kws: &[String],
+    scope: super::Scope,
+    json_output: bool,
+) {
     if json_output {
         let out = serde_json::json!({
             "added": true,
             "id": entry_id,
             "title": title,
             "keywords": kws,
+            "scope": scope.label(),
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
-        println!("Added entry #{entry_id}: {title}");
+        let scope_note = match scope {
+            super::Scope::User => " (user scope)",
+            super::Scope::Project => "",
+        };
+        println!("Added entry #{entry_id}: {title}{scope_note}");
         println!("Keywords: {}", kws.join(", "));
     }
 }
