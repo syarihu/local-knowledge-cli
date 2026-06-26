@@ -301,9 +301,12 @@ fn check_no_duplicate_uids(
         }
     }
 
+    // A uid is a conflict if it occurs more than once total — whether across files or
+    // twice within one file. Render per-file occurrence counts so the message is accurate
+    // in both cases (a single file shown as `file (x2)` rather than listed twice).
     let mut dups: Vec<(&String, &Vec<String>)> = locations
         .iter()
-        .filter(|(_, files)| files.len() > 1)
+        .filter(|(_, occurrences)| occurrences.len() > 1)
         .collect();
     if dups.is_empty() {
         return Ok(());
@@ -311,12 +314,30 @@ fn check_no_duplicate_uids(
     dups.sort_by_key(|(uid, _)| uid.as_str());
     let detail = dups
         .iter()
-        .map(|(uid, files)| format!("  uid {uid}: {}", files.join(", ")))
+        .map(|(uid, occurrences)| {
+            let mut counts: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for f in occurrences.iter() {
+                *counts.entry(f.as_str()).or_default() += 1;
+            }
+            let files = counts
+                .iter()
+                .map(|(f, n)| {
+                    if *n > 1 {
+                        format!("{f} (x{n})")
+                    } else {
+                        f.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("  uid {uid}: {files}")
+        })
         .collect::<Vec<_>>()
         .join("\n");
     Err(format!(
-        "duplicate uid(s) found across markdown files — each uid must live in exactly \
-         one file. Remove the stale/duplicate copy and retry:\n{detail}"
+        "duplicate uid(s) found in markdown entries — each uid must appear in exactly \
+         one entry. Remove the stale/duplicate copy and retry:\n{detail}"
     )
     .into())
 }

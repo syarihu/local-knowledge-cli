@@ -2,7 +2,17 @@ use regex::Regex;
 
 pub struct SecretMatch {
     pub pattern_name: &'static str,
+    /// A REDACTED preview of the match (a short prefix + `***`), safe to print or emit
+    /// in JSON. Never holds the raw secret — the warning must not leak what it detects.
     pub matched: String,
+}
+
+/// Redact a detected secret to a short, non-reconstructable preview: at most the first
+/// few characters (enough to recognize the kind/prefix, e.g. `AKIA`, `ghp_`) plus `***`.
+/// The trailing length is fixed so it doesn't reveal how long the secret was.
+fn redact(raw: &str) -> String {
+    let prefix: String = raw.chars().take(4).collect();
+    format!("{prefix}***")
 }
 
 /// Check text for potential secrets. Returns a list of matches.
@@ -32,16 +42,12 @@ pub fn check_for_secrets(text: &str) -> Vec<SecretMatch> {
     for (name, pattern) in patterns {
         if let Ok(re) = Regex::new(pattern) {
             for m in re.find_iter(text) {
-                let matched = m.as_str().to_string();
-                // Truncate long matches for display
-                let display = if matched.len() > 40 {
-                    format!("{}...", &matched[..40])
-                } else {
-                    matched
-                };
                 matches.push(SecretMatch {
                     pattern_name: name,
-                    matched: display,
+                    // Store a REDACTED preview, never the raw match: this value is printed
+                    // to stderr / emitted in JSON, so showing the real secret would leak it
+                    // into terminal/CI logs even though we block the operation.
+                    matched: redact(m.as_str()),
                 });
             }
         }
@@ -82,6 +88,22 @@ mod tests {
         let matches = check_for_secrets("aws key is AKIAIOSFODNN7EXAMPLE");
         assert!(!matches.is_empty());
         assert_eq!(matches[0].pattern_name, "AWS Access Key ID");
+    }
+
+    #[test]
+    fn test_match_is_redacted_not_leaked() {
+        let secret = "AKIAIOSFODNN7EXAMPLE";
+        let matches = check_for_secrets(&format!("aws key is {secret}"));
+        assert!(!matches.is_empty());
+        // The stored/printed value must not contain the full secret.
+        assert!(
+            !matches[0].matched.contains(secret),
+            "redacted value must not leak the raw secret: {:?}",
+            matches[0].matched
+        );
+        assert!(matches[0].matched.ends_with("***"));
+        // The warning text built from matches is likewise safe.
+        assert!(!format_warning(&matches).contains(secret));
     }
 
     #[test]
