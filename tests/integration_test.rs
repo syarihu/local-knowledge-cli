@@ -1077,3 +1077,258 @@ fn test_user_scope_export_honors_config_dir() {
     );
     assert!(!home.path().join(".config/lk/knowledge").exists());
 }
+
+/// Two markdown files sharing a uid must not abort the whole user-scope sync:
+/// the duplicate is skipped with a warning and the rest still imports.
+#[test]
+fn test_user_scope_sync_skips_duplicate_uid() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+
+    assert!(
+        run(&[
+            "add",
+            "dup note",
+            "--keywords",
+            "dup",
+            "--content",
+            "body",
+            "--scope",
+            "user",
+        ])
+        .status
+        .success()
+    );
+    assert!(run(&["export", "--scope", "user"]).status.success());
+
+    // Duplicate the exported file (same uid baked in) under a different name.
+    let kdir = home.path().join(".config/lk/knowledge");
+    let orig = std::fs::read_dir(&kdir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("exported-"))
+        })
+        .unwrap();
+    std::fs::copy(&orig, kdir.join("zzz-copy.md")).unwrap();
+
+    // Sync must still succeed (not crash on UNIQUE(uid)).
+    let sync = run(&["sync", "--scope", "user", "--json"]);
+    assert!(
+        sync.status.success(),
+        "sync should skip the dup uid, not fail: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&sync.stderr);
+    assert!(
+        stderr.contains("duplicate uid"),
+        "should warn about the duplicate uid: {stderr}"
+    );
+}
+
+/// `lk export --scope user --dir <X>` warns that sync won't read the custom dir.
+#[test]
+fn test_user_scope_export_dir_warns() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+
+    assert!(
+        run(&[
+            "add",
+            "d note",
+            "--keywords",
+            "d",
+            "--content",
+            "c",
+            "--scope",
+            "user",
+        ])
+        .status
+        .success()
+    );
+    let dump = home.path().join("one-off");
+    let export = run(&["export", "--scope", "user", "--dir", dump.to_str().unwrap()]);
+    assert!(export.status.success());
+    let stderr = String::from_utf8_lossy(&export.stderr);
+    assert!(
+        stderr.contains("won't read a custom --dir"),
+        "should warn about --dir not being synced: {stderr}"
+    );
+}
+
+/// Secret detection blocks user-scope export of an entry containing a key.
+#[test]
+fn test_user_scope_export_blocks_secrets() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+
+    // Add with --allow-secrets so the entry lands in the DB, then export without it.
+    assert!(
+        run(&[
+            "add",
+            "leak",
+            "--keywords",
+            "leak",
+            "--content",
+            "AKIAIOSFODNN7EXAMPLE is my key",
+            "--scope",
+            "user",
+            "--allow-secrets",
+        ])
+        .status
+        .success()
+    );
+    let export = run(&["export", "--scope", "user"]);
+    assert!(
+        !export.status.success(),
+        "export should refuse to write a secret to the user store"
+    );
+    // The dir may be pre-created, but no markdown should have been written.
+    let kdir = home.path().join(".config/lk/knowledge");
+    let wrote_md = std::fs::read_dir(&kdir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .any(|e| e.file_name().to_string_lossy().starts_with("exported-"))
+        })
+        .unwrap_or(false);
+    assert!(
+        !wrote_md,
+        "no markdown should be written when a secret is detected"
+    );
+}
+
+/// A symlinked user_knowledge_dir (the dotfiles use case) still round-trips:
+/// export → edit md → sync reflects the change (canonicalized rel-path agreement).
+#[cfg(unix)]
+#[test]
+fn test_user_scope_symlinked_dir_round_trip() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    // Real knowledge store lives in a "dotfiles" dir; ~/.config/lk/knowledge → it.
+    let real = home.path().join("dotfiles/lk-knowledge");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(home.path().join(".config/lk")).unwrap();
+    std::os::unix::fs::symlink(&real, home.path().join(".config/lk/knowledge")).unwrap();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+
+    assert!(
+        run(&[
+            "add",
+            "sym note",
+            "--keywords",
+            "sym",
+            "--content",
+            "before",
+            "--scope",
+            "user",
+        ])
+        .status
+        .success()
+    );
+    assert!(run(&["export", "--scope", "user"]).status.success());
+
+    // The md lands in the real dir (through the symlink).
+    let md = std::fs::read_dir(&real)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("exported-"))
+        })
+        .expect("expected exported md in the symlink target");
+
+    let text = std::fs::read_to_string(&md).unwrap();
+    std::fs::write(&md, text.replace("before", "after")).unwrap();
+
+    let sync = run(&["sync", "--scope", "user", "--json"]);
+    assert!(
+        sync.status.success(),
+        "symlinked sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    let out = String::from_utf8_lossy(&sync.stdout);
+    assert!(
+        out.contains("\"updated\":1"),
+        "edit through symlink should sync as one update, not added/removed: {out}"
+    );
+
+    let search = run(&["search", "after", "--scope", "user", "--full", "--json"]);
+    assert!(String::from_utf8_lossy(&search.stdout).contains("after"));
+}
+
+/// The auto-created user store is owner-only (not world-readable).
+#[cfg(unix)]
+#[test]
+fn test_user_scope_store_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let out = lk_bin()
+        .args([
+            "add",
+            "p note",
+            "--keywords",
+            "p",
+            "--content",
+            "c",
+            "--scope",
+            "user",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode(&home.path().join(".config/lk")),
+        0o700,
+        "config dir should be 0700"
+    );
+    assert_eq!(
+        mode(&home.path().join(".config/lk/knowledge.db")),
+        0o600,
+        "user DB should be 0600"
+    );
+}

@@ -164,16 +164,51 @@ pub fn get_user_knowledge_dir() -> PathBuf {
     crate::config::GlobalConfig::load().user_knowledge_dir
 }
 
+/// The rel-path root for user-scope markdown. Computed from the **canonicalized**
+/// knowledge dir so that `export` (which canonicalizes the file it just wrote) and
+/// `sync` (which canonicalizes via walkdir) derive the *same, relative* `source_file`
+/// even when the knowledge dir is reached through a symlink (the dotfiles use case).
+/// Falls back to the uncanonicalized parent when the dir doesn't exist yet.
+pub fn user_md_root(knowledge_dir: &Path) -> PathBuf {
+    let base = std::fs::canonicalize(knowledge_dir).unwrap_or_else(|_| knowledge_dir.to_path_buf());
+    base.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| base.clone())
+}
+
+/// Restrict a path to owner-only access on Unix (files `0600`, dirs `0700`).
+/// No-op on non-Unix. Best-effort — failures are ignored. The user-scope store can
+/// hold private knowledge, so it should not be world-readable on shared machines.
+pub fn restrict_to_owner(path: &Path, is_dir: bool) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if is_dir { 0o700 } else { 0o600 };
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(mode);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, is_dir);
+    }
+}
+
 /// Write a default `~/.config/lk/config.toml` if none exists, so users can
 /// discover the `user_knowledge_dir` option. Best-effort; returns the path if
 /// it created the file (for an informational note), else `None`.
 pub fn ensure_global_config_scaffold() -> Option<PathBuf> {
-    let config_path = get_user_config_dir().join("config.toml");
+    let config_dir = get_user_config_dir();
+    let config_path = config_dir.join("config.toml");
     if config_path.exists() {
         return None;
     }
-    std::fs::create_dir_all(get_user_config_dir()).ok()?;
+    std::fs::create_dir_all(&config_dir).ok()?;
+    restrict_to_owner(&config_dir, true);
     std::fs::write(&config_path, crate::config::DEFAULT_GLOBAL_CONFIG_CONTENT).ok()?;
+    restrict_to_owner(&config_path, false);
     Some(config_path)
 }
 
@@ -190,13 +225,17 @@ pub fn open_user_db() -> Result<Option<rusqlite::Connection>, Box<dyn std::error
 }
 
 /// Open the user-scope DB, creating it if absent (for `--scope user` writes).
+/// A freshly created DB (and its config dir) is restricted to owner-only access.
 pub fn open_or_create_user_db() -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
     let path = get_user_db_path();
     if path.is_file() {
         let (conn, _) = db::open_db(&path)?;
         Ok(conn)
     } else {
-        Ok(db::init_db(&path)?)
+        let conn = db::init_db(&path)?;
+        restrict_to_owner(&get_user_config_dir(), true);
+        restrict_to_owner(&path, false);
+        Ok(conn)
     }
 }
 

@@ -16,7 +16,8 @@ pub fn cmd_export(
 
     // Resolve the (connection, default output dir, root for rel-path, secret config)
     // per scope. Project keeps its historical root (the project root) so stored
-    // source_file paths are unchanged; user scope uses the output dir's parent.
+    // source_file paths are unchanged; user scope derives its root from the
+    // canonicalized knowledge dir (see `root` below).
     let (conn, default_dir, secret_detection) = match scope {
         super::Scope::Project => (
             open_db_with_migrate()?,
@@ -38,14 +39,25 @@ pub fn cmd_export(
         }
     };
 
+    // For user scope, a custom `--dir` is a one-off dump: `lk sync --scope user`
+    // only reads `user_knowledge_dir`, so md written elsewhere can't be synced back.
+    if scope == super::Scope::User && dir.is_some() {
+        eprintln!(
+            "Warning: `lk sync --scope user` won't read a custom --dir; \
+             set `user_knowledge_dir` in ~/.config/lk/config.toml to sync this location."
+        );
+    }
+
     let output_dir = dir.unwrap_or(default_dir);
     std::fs::create_dir_all(&output_dir)?;
     let root = match scope {
         super::Scope::Project => get_project_root(),
-        super::Scope::User => output_dir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| output_dir.clone()),
+        // Canonicalized parent so export and sync agree on the rel-path even through
+        // a symlinked knowledge dir (keeps source_file relative + portable).
+        super::Scope::User => {
+            crate::util::restrict_to_owner(&output_dir, true);
+            crate::util::user_md_root(&output_dir)
+        }
     };
 
     export_to_dir(

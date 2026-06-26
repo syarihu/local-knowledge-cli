@@ -35,15 +35,22 @@ pub fn cmd_sync(
             get_project_root(),
         ),
         super::Scope::User => {
+            // Scaffold the global config on first touch so `user_knowledge_dir` is
+            // discoverable even via a "hand-write md, then sync" flow.
+            if let Some(path) = crate::util::ensure_global_config_scaffold()
+                && !json_output
+            {
+                println!(
+                    "Created {} (edit to customize user_knowledge_dir).",
+                    path.display()
+                );
+            }
             let conn = crate::util::open_user_db()?.ok_or(
                 "No user-scope knowledge DB exists yet (~/.config/lk/knowledge.db). \
                  Create one with `lk add \"...\" --scope user` or `lk export --scope user`.",
             )?;
             let knowledge_dir = crate::util::get_user_knowledge_dir();
-            let root = knowledge_dir
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| knowledge_dir.clone());
+            let root = crate::util::user_md_root(&knowledge_dir);
             (conn, knowledge_dir, root)
         }
     };
@@ -265,7 +272,7 @@ pub fn import_md_file(
         } else {
             Some(entry.supersedes.join(","))
         };
-        db::add_entry_full(
+        let result = db::add_entry_full(
             conn,
             &entry.title,
             &entry.content,
@@ -281,8 +288,27 @@ pub fn import_md_file(
                 .filter(|s| crate::db::is_valid_status(s)),
             entry.superseded_by.as_deref(),
             supersedes.as_deref(),
-        )?;
-        count += 1;
+        );
+        match result {
+            Ok(_) => count += 1,
+            // A duplicate uid (e.g. the same entry left in a stale/renamed md file, or
+            // copy-pasted across files) would otherwise abort the whole sync. Skip just
+            // that entry with a pointed warning so the rest still imports. SQLite's
+            // statement-level ABORT leaves the surrounding transaction usable.
+            Err(e)
+                if e.to_string()
+                    .contains("UNIQUE constraint failed: entries.uid") =>
+            {
+                eprintln!(
+                    "sync: skipping {:?} in {} — duplicate uid {} (already imported from another file; \
+                     remove the stale copy to resolve)",
+                    entry.title,
+                    rel_path,
+                    entry.uid.as_deref().unwrap_or("?"),
+                );
+            }
+            Err(e) => return Err(e),
+        }
     }
     Ok(count)
 }

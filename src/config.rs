@@ -1,5 +1,22 @@
 use std::path::{Path, PathBuf};
 
+/// Parse a boolean config value leniently. Accepts `true/false`, `yes/no`, `1/0`,
+/// `on/off` (case-insensitive). Unknown values keep `current` and emit a warning,
+/// so a typo (e.g. `secret_detection = TRUE`) can't silently flip a safety setting
+/// to its non-default (fail-open) state.
+fn parse_bool(value: &str, key: &str, current: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" | "on" => true,
+        "false" | "no" | "0" | "off" => false,
+        other => {
+            eprintln!(
+                "Warning: invalid boolean for `{key}` in lk config: {other:?} (keeping {current})"
+            );
+            current
+        }
+    }
+}
+
 /// Project-level configuration loaded from `.knowledge/config.toml`.
 pub struct Config {
     /// Days before a shared entry is considered stale (default: 30)
@@ -83,16 +100,18 @@ impl Config {
                             }
                         }
                         "auto_sync" => {
-                            config.auto_sync = value == "true";
+                            config.auto_sync = parse_bool(value, key, config.auto_sync);
                         }
                         "secret_detection" => {
-                            config.secret_detection = value == "true";
+                            config.secret_detection =
+                                parse_bool(value, key, config.secret_detection);
                         }
                         "command_log" => {
-                            config.command_log = value == "true";
+                            config.command_log = parse_bool(value, key, config.command_log);
                         }
                         "gitattributes_generated" => {
-                            config.gitattributes_generated = value == "true";
+                            config.gitattributes_generated =
+                                parse_bool(value, key, config.gitattributes_generated);
                         }
                         _ => {} // Ignore unknown keys
                     }
@@ -198,7 +217,8 @@ impl GlobalConfig {
                             }
                         }
                         "secret_detection" => {
-                            config.secret_detection = value == "true";
+                            config.secret_detection =
+                                parse_bool(value, key, config.secret_detection);
                         }
                         _ => {} // Ignore unknown keys
                     }
@@ -215,6 +235,17 @@ impl GlobalConfig {
 /// - `~` / `~/...` expands against `home`
 /// - other relative paths are resolved against `home`
 fn resolve_path(value: &str, home: &Path) -> PathBuf {
+    // `..` components can escape HOME into unintended locations; warn (it's the
+    // user's own config, so don't hard-fail) and recommend an absolute or `~/` path.
+    if Path::new(value)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        eprintln!(
+            "Warning: `user_knowledge_dir` contains `..` ({value:?}); \
+             prefer an absolute path or one under `~/` to avoid writing outside your home."
+        );
+    }
     if value == "~" {
         return home.to_path_buf();
     }
@@ -235,7 +266,8 @@ pub const DEFAULT_GLOBAL_CONFIG_CONTENT: &str = "\
 # Governs the user-scope markdown store (`lk export/sync --scope user`).
 
 # Directory holding user-scope markdown — the source of truth for user knowledge.
-# Default: ~/.config/lk/knowledge. Point this at a dotfiles repo to version it,
+# Default: ~/.config/lk/knowledge. Point this at a dotfiles repo to version it.
+# Use an absolute path or one under ~/ (avoid `..`).
 # e.g. user_knowledge_dir = ~/dotfiles/lk-knowledge
 # user_knowledge_dir = ~/.config/lk/knowledge
 
@@ -343,6 +375,40 @@ mod tests {
         let cfg = GlobalConfig::load_from(&config_path, home.path());
         assert_eq!(cfg.user_knowledge_dir, PathBuf::from("/abs/path/knowledge"));
         assert!(!cfg.secret_detection);
+    }
+
+    #[test]
+    fn test_global_config_invalid_bool_keeps_default() {
+        let home = TempDir::new().unwrap();
+        let config_path = home.path().join("config.toml");
+        // An invalid value must NOT silently flip secret_detection off (fail-open).
+        std::fs::write(&config_path, "secret_detection = maybe\n").unwrap();
+        let cfg = GlobalConfig::load_from(&config_path, home.path());
+        assert!(
+            cfg.secret_detection,
+            "invalid bool should keep default true"
+        );
+    }
+
+    #[test]
+    fn test_global_config_bool_is_case_insensitive() {
+        let home = TempDir::new().unwrap();
+        let config_path = home.path().join("config.toml");
+        std::fs::write(&config_path, "secret_detection = FALSE\n").unwrap();
+        let cfg = GlobalConfig::load_from(&config_path, home.path());
+        assert!(!cfg.secret_detection, "FALSE should parse as false");
+    }
+
+    #[test]
+    fn test_parse_bool_accepts_common_forms() {
+        assert!(parse_bool("yes", "k", false));
+        assert!(parse_bool("1", "k", false));
+        assert!(parse_bool("ON", "k", false));
+        assert!(!parse_bool("no", "k", true));
+        assert!(!parse_bool("0", "k", true));
+        // Unknown keeps the provided current value.
+        assert!(parse_bool("weird", "k", true));
+        assert!(!parse_bool("weird", "k", false));
     }
 
     #[test]

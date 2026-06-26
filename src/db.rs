@@ -737,7 +737,10 @@ pub fn get_keywords(
     conn: &Connection,
     entry_id: i64,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare("SELECT keyword FROM keywords WHERE entry_id = ?1")?;
+    // ORDER BY id keeps a deterministic (insertion) order so derived output —
+    // e.g. the first-keyword group used for `exported-<group>.md` filenames — is stable
+    // rather than dependent on SQLite's row return order.
+    let mut stmt = conn.prepare("SELECT keyword FROM keywords WHERE entry_id = ?1 ORDER BY id")?;
     let rows = stmt.query_map(params![entry_id], |row| row.get::<_, String>(0))?;
     let mut kws = Vec::new();
     for row in rows {
