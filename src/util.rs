@@ -55,8 +55,14 @@ pub fn resolve_db_root(project_root: &Path) -> PathBuf {
 }
 
 pub fn get_db_path() -> PathBuf {
-    let root = get_project_root();
-    let db_root = resolve_db_root(&root);
+    get_db_path_for(&get_project_root())
+}
+
+/// Resolve the DB path for an explicit project root, migrating the legacy
+/// `.claude/knowledge.db` location to `.knowledge/knowledge.db` if needed.
+/// Has a migration side effect (rename + stderr note) when a legacy DB exists.
+pub fn get_db_path_for(root: &Path) -> PathBuf {
+    let db_root = resolve_db_root(root);
     let new_path = db_root.join(".knowledge").join("knowledge.db");
     if new_path.exists() {
         return new_path;
@@ -81,6 +87,27 @@ pub fn get_db_path() -> PathBuf {
 
 pub fn get_knowledge_dir() -> PathBuf {
     get_project_root().join(".knowledge")
+}
+
+/// Pure path of the current project's DB (no side effects). Unlike `get_db_path`,
+/// this never migrates the legacy `.claude/knowledge.db` location, so it is safe to
+/// call from existence checks and guards. Honors worktree resolution.
+pub fn project_db_path() -> PathBuf {
+    let root = get_project_root();
+    resolve_db_root(&root)
+        .join(".knowledge")
+        .join("knowledge.db")
+}
+
+/// Whether the current project has an initialized knowledge DB. Treats the legacy
+/// `.claude/knowledge.db` location as "initialized" too (it migrates on first open).
+/// Side-effect free.
+pub fn project_db_exists() -> bool {
+    project_db_path().is_file()
+        || get_project_root()
+            .join(".claude")
+            .join("knowledge.db")
+            .is_file()
 }
 
 /// Load a category template from `.knowledge/templates/{category}.md`.
@@ -118,6 +145,34 @@ pub fn open_db_with_migrate() -> Result<rusqlite::Connection, Box<dyn std::error
     }
     check_lk_version();
     Ok(conn)
+}
+
+/// Path to the user-scope (global) knowledge DB: `~/.config/lk/knowledge.db`.
+pub fn get_user_db_path() -> PathBuf {
+    home_dir().join(".config").join("lk").join("knowledge.db")
+}
+
+/// Open the user-scope DB if it already exists, else `None`.
+/// Reads must not create it. It is a DB-only store, so no auto-sync or
+/// `.lk-version` checks run here (those apply to per-project markdown).
+pub fn open_user_db() -> Result<Option<rusqlite::Connection>, Box<dyn std::error::Error>> {
+    let path = get_user_db_path();
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let (conn, _) = db::open_db(&path)?;
+    Ok(Some(conn))
+}
+
+/// Open the user-scope DB, creating it if absent (for `--scope user` writes).
+pub fn open_or_create_user_db() -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
+    let path = get_user_db_path();
+    if path.is_file() {
+        let (conn, _) = db::open_db(&path)?;
+        Ok(conn)
+    } else {
+        Ok(db::init_db(&path)?)
+    }
 }
 
 /// Check .knowledge/.lk-version and warn if the current binary is older than the project requires.

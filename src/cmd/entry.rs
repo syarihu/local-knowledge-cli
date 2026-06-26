@@ -1,12 +1,15 @@
 use crate::db;
 use crate::util::{confirm, days_since, get_knowledge_dir, now_iso, open_db_with_migrate};
 
-pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
-    super::log_command("get", &[("id", &id.to_string())]);
-    let conn = open_db_with_migrate()?;
+pub fn cmd_get(
+    id: &str,
+    scope: Option<super::Scope>,
+    json_output: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    super::log_command("get", &[("id", id)]);
+    let (conn, entry) = super::resolve_target(id, scope)?;
     let config = crate::config::Config::load(&get_knowledge_dir());
-    let entry = db::get_entry(&conn, id)?.ok_or_else(|| format!("Entry #{id} not found"))?;
-    let kws = db::get_keywords(&conn, id)?;
+    let kws = db::get_keywords(&conn, entry.id)?;
 
     let days = days_since(&entry.updated_at);
     let threshold = config.stale_threshold_for(&entry.source);
@@ -103,13 +106,14 @@ pub fn cmd_get(id: i64, json_output: bool) -> Result<(), Box<dyn std::error::Err
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_edit(
-    id: i64,
+    id: &str,
     title: Option<&str>,
     keywords_str: Option<&str>,
     content: Option<&str>,
     status: Option<&str>,
-    superseded_by: Option<i64>,
+    superseded_by: Option<&str>,
     touch: bool,
+    scope: Option<super::Scope>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut fields = Vec::new();
@@ -131,12 +135,9 @@ pub fn cmd_edit(
     if touch {
         fields.push("touch");
     }
-    super::log_command(
-        "edit",
-        &[("id", &id.to_string()), ("fields", &fields.join(","))],
-    );
-    let conn = open_db_with_migrate()?;
-    let _entry = db::get_entry(&conn, id)?.ok_or_else(|| format!("Entry #{id} not found"))?;
+    super::log_command("edit", &[("id", id), ("fields", &fields.join(","))]);
+    let (conn, entry) = super::resolve_target(id, scope)?;
+    let local_id = entry.id;
 
     if title.is_none()
         && keywords_str.is_none()
@@ -166,41 +167,58 @@ pub fn cmd_edit(
             .collect::<Vec<_>>()
     });
 
-    if touch && title.is_none() && keywords_str.is_none() && content.is_none() {
-        // --touch only: just update the timestamp
-        conn.execute(
-            "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
-            rusqlite::params![now_iso(), id],
-        )?;
-    } else {
-        db::update_entry(&conn, id, title, content, kws.as_deref(), &now_iso())?;
-    }
-
-    if status.is_some() || superseded_by.is_some() {
-        let current = db::get_entry(&conn, id)?.unwrap();
-        // --superseded-by 0 clears the field (sets to None)
-        let new_superseded: Option<String> = match superseded_by {
-            Some(0) => None,
-            Some(v) => {
-                let target = db::get_entry(&conn, v)?.ok_or_else(|| {
-                    format!(
-                        "Entry #{v} not found. Cannot set superseded-by to a non-existent entry."
-                    )
+    // Pre-resolve the superseded_by target BEFORE any write, so a bad/cross-scope
+    // reference can't leave a partial update behind. Outer Some = perform a status
+    // update; inner is the resolved superseded_by uid (None clears it).
+    // --superseded-by 0 clears; otherwise resolve <id-or-uid> in the SAME DB.
+    let status_update: Option<Option<String>> = if status.is_some() || superseded_by.is_some() {
+        let sb: Option<String> = match superseded_by {
+            Some("0") => None,
+            Some(s) => {
+                let target = super::lookup_in_conn(&conn, s)?.ok_or_else(|| {
+                    format!("Entry '{s}' not found in the same scope. Cannot set superseded-by.")
                 })?;
                 Some(target.uid.clone())
             }
-            None => current.superseded_by.clone(),
+            None => entry.superseded_by.clone(),
         };
-        db::update_entry_status(
-            &conn,
-            id,
-            status.unwrap_or(&current.status),
-            new_superseded.as_deref(),
-        )?;
+        Some(sb)
+    } else {
+        None
+    };
+
+    // Apply all writes atomically.
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        if touch && title.is_none() && keywords_str.is_none() && content.is_none() {
+            // --touch only: just update the timestamp
+            conn.execute(
+                "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now_iso(), local_id],
+            )?;
+        } else {
+            db::update_entry(&conn, local_id, title, content, kws.as_deref(), &now_iso())?;
+        }
+        if let Some(sb) = &status_update {
+            db::update_entry_status(
+                &conn,
+                local_id,
+                status.unwrap_or(entry.status.as_str()),
+                sb.as_deref(),
+            )?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            conn.execute_batch("ROLLBACK").ok();
+            return Err(e);
+        }
     }
 
-    let updated = db::get_entry(&conn, id)?.unwrap();
-    let updated_kws = db::get_keywords(&conn, id)?;
+    let updated = db::get_entry(&conn, local_id)?.unwrap();
+    let updated_kws = db::get_keywords(&conn, local_id)?;
 
     if json_output {
         let mut out = serde_json::json!({
@@ -239,17 +257,29 @@ pub fn cmd_edit(
     Ok(())
 }
 
-pub fn cmd_delete(id: i64, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = open_db_with_migrate()?;
-    let entry = db::get_entry(&conn, id)?.ok_or_else(|| format!("Entry #{id} not found"))?;
+pub fn cmd_delete(
+    id: &str,
+    scope: Option<super::Scope>,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (conn, entry) = super::resolve_target(id, scope)?;
 
-    if !yes && !confirm(&format!("Delete entry #{id} \"{}\"?", entry.title)) {
+    // Show both id and uid so the deletion is unambiguous (ids collide across scopes).
+    if !yes
+        && !confirm(&format!(
+            "Delete entry #{} (uid {}) \"{}\"?",
+            entry.id, entry.uid, entry.title
+        ))
+    {
         println!("Cancelled.");
         return Ok(());
     }
 
-    db::delete_entry(&conn, id)?;
-    println!("Deleted entry #{id}: {}", entry.title);
+    db::delete_entry(&conn, entry.id)?;
+    println!(
+        "Deleted entry #{} (uid {}): {}",
+        entry.id, entry.uid, entry.title
+    );
     Ok(())
 }
 
@@ -310,27 +340,21 @@ pub fn cmd_purge(
 }
 
 pub fn cmd_supersede(
-    old_id: i64,
-    new_id: i64,
+    old: &str,
+    new: &str,
+    scope: Option<super::Scope>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    super::log_command(
-        "supersede",
-        &[
-            ("old_id", &old_id.to_string()),
-            ("new_id", &new_id.to_string()),
-        ],
-    );
-    if old_id == new_id {
-        return Err("old_id and new_id must be different.".into());
+    super::log_command("supersede", &[("old", old), ("new", new)]);
+
+    // Both targets are resolved in a SINGLE connection (same scope) so the two
+    // updates stay in one transaction; cross-scope supersede is unsupported.
+    let (conn, old_entry, new_entry) = super::resolve_supersede_pair(old, new, scope)?;
+    if old_entry.id == new_entry.id {
+        return Err("old and new must be different entries.".into());
     }
-
-    let conn = open_db_with_migrate()?;
-
-    let old_entry =
-        db::get_entry(&conn, old_id)?.ok_or_else(|| format!("Entry #{old_id} not found"))?;
-    let new_entry =
-        db::get_entry(&conn, new_id)?.ok_or_else(|| format!("Entry #{new_id} not found"))?;
+    let old_id = old_entry.id;
+    let new_id = new_entry.id;
 
     // Atomic: both updates in a transaction
     conn.execute_batch("BEGIN IMMEDIATE")?;

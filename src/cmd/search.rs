@@ -1,7 +1,5 @@
 use crate::db;
-use crate::util::{
-    days_since, get_knowledge_dir, get_project_root, open_db_with_migrate, truncate_str,
-};
+use crate::util::{days_since, get_knowledge_dir, get_project_root, truncate_str};
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_search(
@@ -12,29 +10,54 @@ pub fn cmd_search(
     since: Option<&str>,
     limit: usize,
     full: bool,
+    scope: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = open_db_with_migrate()?;
+    let conns = super::read_connections(scope)?;
     let config = crate::config::Config::load(&get_knowledge_dir());
-    let results = db::search_entries(&conn, query, keyword_only, category, source, since, limit)?;
 
-    let result_count = results.len().to_string();
+    // Query each scope's DB and collect. Keywords are fetched on the SAME conn the
+    // entry came from (ids are per-DB), tagging each with its scope label.
+    let mut items: Vec<(f64, &'static str, db::Entry, Vec<String>)> = Vec::new();
+    for (conn, label) in &conns {
+        let results =
+            db::search_entries(conn, query, keyword_only, category, source, since, limit)?;
+        for r in results {
+            let kws = db::get_keywords(conn, r.id).unwrap_or_default();
+            // Entry.rank is 1/(1+|bm25|): smaller value = better match, so we sort
+            // ASCENDING to match the per-DB SQL order. Non-ranked rows (keyword/LIKE)
+            // have rank=None and sort last, preserving their DB order.
+            let score = r.rank.unwrap_or(f64::MAX);
+            items.push((score, label, r, kws));
+        }
+    }
+    // Sort by score ASC (smaller 1/(1+|bm25|) = better match), tie-break on
+    // updated_at DESC — matching the per-DB SQL order `ORDER BY rank, updated_at DESC`.
+    items.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
+    });
+    items.truncate(limit);
+
+    let result_count = items.len().to_string();
     super::log_command("search", &[("query", query), ("results", &result_count)]);
 
     if json_output {
-        let output: Vec<serde_json::Value> = results
+        let output: Vec<serde_json::Value> = items
             .iter()
-            .map(|r| {
-                let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
+            .map(|(_, label, r, kws)| {
                 let days = days_since(&r.updated_at);
                 let threshold = config.stale_threshold_for(&r.source);
                 let stale = days.map(|d| d >= threshold).unwrap_or(false);
                 let mut obj = serde_json::json!({
                     "id": r.id,
+                    "uid": r.uid,
                     "title": r.title,
                     "keywords": kws,
                     "category": r.category,
                     "source": r.source,
+                    "scope": label,
                     "score": r.rank,
                     "status": r.status,
                     "stale": stale,
@@ -54,37 +77,43 @@ pub fn cmd_search(
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
-        if results.is_empty() {
+        if items.is_empty() {
             eprintln!(
                 "Hint: No results found. Try fewer keywords, synonyms, or search in both English and Japanese."
             );
         }
-    } else if results.is_empty() {
+    } else if items.is_empty() {
         println!(
             "No results found. Try: use fewer keywords, try synonyms, or search in both English and Japanese."
         );
     } else {
-        for r in &results {
+        for (_, label, r, kws) in &items {
             let snippet = truncate_str(&r.content, 80);
-            let kws = db::get_keywords(&conn, r.id).unwrap_or_default();
             let days = days_since(&r.updated_at);
             let threshold = config.stale_threshold_for(&r.source);
             let stale = days.map(|d| d >= threshold).unwrap_or(false);
+            // User-scope ids collide with project ids; show the uid (a globally
+            // unique, copy/pasteable handle for `lk get`/`edit`/…) for user entries.
+            let id_disp = if *label == "user" {
+                r.uid.clone()
+            } else {
+                r.id.to_string()
+            };
             if r.status == "deprecated" {
                 print!(
                     "  \u{26a0} [{}] {} ({}) [DEPRECATED]",
-                    r.id, r.title, r.category
+                    id_disp, r.title, r.category
                 );
             } else if stale {
                 print!(
                     "  \u{26a0} [{}] {} ({}) [STALE: {} days since update]",
-                    r.id,
+                    id_disp,
                     r.title,
                     r.category,
                     days.unwrap_or(0)
                 );
             } else {
-                print!("  [{}] {} ({})", r.id, r.title, r.category);
+                print!("  [{}] {} ({})", id_disp, r.title, r.category);
             }
             println!();
             println!("       Keywords: {}", kws.join(", "));

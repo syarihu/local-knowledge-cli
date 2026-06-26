@@ -59,15 +59,9 @@ impl ProjectRegistry {
         for path in &paths {
             let canonical = std::fs::canonicalize(path)
                 .map_err(|e| format!("Cannot resolve project path '{}': {e}", path.display()))?;
-            let db_root = util::resolve_db_root(&canonical);
-            let db_path = db_root.join(".knowledge").join("knowledge.db");
-            if !db_path.exists() {
-                return Err(format!(
-                    "No knowledge DB found at {}. Run 'lk init' in that project first.",
-                    canonical.display()
-                )
-                .into());
-            }
+            // Note: we no longer require the project DB to exist here. Uninitialized
+            // projects are allowed; reads/writes fall back to user scope, and an
+            // explicit project operation surfaces the "run lk init" error at open time.
             let basename = canonical
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -337,6 +331,11 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
                     "type": "integer",
                     "description": "Maximum number of results (default: 5)",
                     "default": 5
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["project", "user", "all"],
+                    "description": "Which knowledge store to search: 'project' (this repo), 'user' (global ~/.config/lk/knowledge.db, carried across projects), or 'all' (default, merged)."
                 }
             },
             "required": ["query"]
@@ -379,6 +378,12 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                     "type": "boolean",
                     "description": "Skip duplicate check and force add (default: false)",
                     "default": false
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["auto", "project", "user"],
+                    "default": "auto",
+                    "description": "Where to save (default 'auto'): 'auto' = project's .knowledge DB if the project is initialized, otherwise the global user store; 'project' = this repo's .knowledge DB (errors if the project isn't initialized); 'user' = global ~/.config/lk/knowledge.db, persists across projects (good for cross-project context/preferences). The user DB is created on first use. On auto-fallback the result includes a 'note'."
                 }
             },
             "required": ["title", "content"]
@@ -412,6 +417,11 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
                     "type": "integer",
                     "description": "Skip first N results (default: 0)",
                     "default": 0
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["project", "user", "all"],
+                    "description": "Which knowledge store to list: 'project', 'user' (global), or 'all' (default, merged)."
                 }
             }
         }
@@ -423,13 +433,18 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
 fn tool_def_get(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "get_knowledge",
-        "description": "Retrieve the full content of a specific knowledge entry by ID. Use this after searching or listing to read the complete details of an entry, including its full markdown content, keywords, and metadata.",
+        "description": "Retrieve the full content of a specific knowledge entry by id or uid. Use this after searching or listing to read the complete details of an entry, including its full markdown content, keywords, and metadata.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {
-                    "type": "integer",
-                    "description": "Entry ID"
+                    "type": ["integer", "string"],
+                    "description": "Entry id (integer, project scope) or uid (string). A uid resolves across scopes (project then user)."
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["project", "user"],
+                    "description": "Optional: force the lookup scope. Omit to auto-resolve (numeric id = project; uid = project then user)."
                 }
             },
             "required": ["id"]
@@ -447,8 +462,8 @@ fn tool_def_update(registry: &ProjectRegistry) -> Value {
             "type": "object",
             "properties": {
                 "id": {
-                    "type": "integer",
-                    "description": "Entry ID to update"
+                    "type": ["integer", "string"],
+                    "description": "Entry id (integer, project scope) or uid (string; resolves project then user)."
                 },
                 "title": {
                     "type": "string",
@@ -468,8 +483,13 @@ fn tool_def_update(registry: &ProjectRegistry) -> Value {
                     "description": "Set status ('active', 'deprecated', 'proposed', 'accepted', or 'superseded')"
                 },
                 "superseded_by": {
-                    "type": "integer",
-                    "description": "ID of the entry that supersedes this one (use 0 to clear)"
+                    "type": ["integer", "string"],
+                    "description": "id or uid of the entry that supersedes this one (must be in the same scope; use 0 to clear)"
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["project", "user"],
+                    "description": "Optional: force the lookup scope. Omit to auto-resolve (numeric id = project; uid = project then user)."
                 }
             },
             "required": ["id"]
@@ -487,12 +507,17 @@ fn tool_def_supersede(registry: &ProjectRegistry) -> Value {
             "type": "object",
             "properties": {
                 "old_id": {
-                    "type": "integer",
-                    "description": "ID of the old entry being superseded"
+                    "type": ["integer", "string"],
+                    "description": "id or uid of the old entry being superseded"
                 },
                 "new_id": {
-                    "type": "integer",
-                    "description": "ID of the new entry that supersedes it"
+                    "type": ["integer", "string"],
+                    "description": "id or uid of the new entry that supersedes it (must be in the same scope as old)"
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["project", "user"],
+                    "description": "Optional: force the scope. Both entries must live in the same scope. Omit to auto-resolve from the old entry."
                 }
             },
             "required": ["old_id", "new_id"]
@@ -505,10 +530,16 @@ fn tool_def_supersede(registry: &ProjectRegistry) -> Value {
 fn tool_def_stats(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "get_stats",
-        "description": "Get a quick overview of the knowledge base: total number of entries, shared vs local counts, and unique keyword count. Useful to check if a knowledge base exists and how much content is available before searching.",
+        "description": "Get a quick overview of the knowledge base: total number of entries, shared vs local counts, and unique keyword count. Useful to check if a knowledge base exists and how much content is available before searching. Includes a per-scope breakdown.",
         "inputSchema": {
             "type": "object",
-            "properties": {}
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["project", "user", "all"],
+                    "description": "Which knowledge store to summarize: 'project', 'user' (global), or 'all' (default, combined)."
+                }
+            }
         }
     });
     inject_project_prop(&mut def, registry);
@@ -560,36 +591,6 @@ fn entry_to_json(e: &db::Entry, kws: &[String], config: &Config) -> Value {
     obj
 }
 
-/// Resolve project, open DB, load config, run auto-sync.
-fn resolve_project(
-    params: &Value,
-    registry: &ProjectRegistry,
-) -> Result<(rusqlite::Connection, Config, PathBuf, Option<String>), String> {
-    let project_param = params["project"].as_str();
-    let project_root = registry.resolve(project_param)?;
-    let knowledge_dir = project_root.join(".knowledge");
-    let db_root = util::resolve_db_root(&project_root);
-    let db_path = db_root.join(".knowledge").join("knowledge.db");
-
-    maybe_auto_sync_for(&project_root);
-
-    let (conn, _) = db::open_db(&db_path).map_err(|e| format!("DB error: {e}"))?;
-    let config = Config::load(&knowledge_dir);
-
-    // Project name for response decoration (only in multi-project mode)
-    let project_name = if registry.legacy_mode {
-        None
-    } else {
-        registry
-            .projects
-            .iter()
-            .find(|(_, p)| *p == project_root)
-            .map(|(n, _)| n.clone())
-    };
-
-    Ok((conn, config, knowledge_dir, project_name))
-}
-
 /// Add "project" and "update_available" keys to a result Value.
 fn decorate_result(mut result: Value, project_name: &Option<String>) -> Value {
     if let Some(obj) = result.as_object_mut() {
@@ -601,6 +602,145 @@ fn decorate_result(mut result: Value, project_name: &Option<String>) -> Value {
         }
     }
     result
+}
+
+fn project_name_for(registry: &ProjectRegistry, project_root: &Path) -> Option<String> {
+    if registry.legacy_mode {
+        None
+    } else {
+        registry
+            .projects
+            .iter()
+            .find(|(_, p)| *p == project_root)
+            .map(|(n, _)| n.clone())
+    }
+}
+
+/// Whether the given project (registry project_root, not CWD) has an initialized DB.
+/// Side-effect free; treats the legacy `.claude/knowledge.db` location as initialized.
+fn project_db_exists_for(project_root: &Path) -> bool {
+    let db_root = util::resolve_db_root(project_root);
+    db_root.join(".knowledge").join("knowledge.db").is_file()
+        || project_root.join(".claude").join("knowledge.db").is_file()
+}
+
+/// Open the project DB connection (runs auto-sync first, like the original flow).
+/// Uses `get_db_path_for` so a legacy `.claude/knowledge.db` is migrated/opened too,
+/// keeping it consistent with `project_db_exists_for`.
+fn open_project_conn(project_root: &Path) -> Result<rusqlite::Connection, String> {
+    let db_path = util::get_db_path_for(project_root);
+    maybe_auto_sync_for(project_root);
+    let (conn, _) = db::open_db(&db_path).map_err(|e| format!("DB error: {e}"))?;
+    Ok(conn)
+}
+
+fn open_user_conn() -> Result<Option<rusqlite::Connection>, String> {
+    util::open_user_db().map_err(|e| format!("user DB error: {e}"))
+}
+
+/// Open one scope's connection. `user` errors if no user DB exists yet.
+fn open_scope_conn_mcp(scope: &str, project_root: &Path) -> Result<rusqlite::Connection, String> {
+    match scope {
+        "project" => open_project_conn(project_root),
+        "user" => open_user_conn()?.ok_or_else(|| {
+            "No user-scope knowledge DB exists yet (~/.config/lk/knowledge.db). \
+             Add one with add_knowledge(scope=\"user\")."
+                .to_string()
+        }),
+        o => Err(format!("Invalid scope '{o}' (expected: project, user)")),
+    }
+}
+
+/// Connections to query for a read tool, honoring `scope` (project|user|all, default all).
+fn read_scope_conns(
+    scope: Option<&str>,
+    project_root: &Path,
+) -> Result<Vec<(rusqlite::Connection, &'static str)>, String> {
+    let (want_project, project_required, want_user) = match scope {
+        None | Some("all") => (true, false, true),
+        Some("project") => (true, true, false),
+        Some("user") => (false, false, true),
+        Some(o) => {
+            return Err(format!(
+                "Invalid scope '{o}' (expected: project, user, all)"
+            ));
+        }
+    };
+    let mut conns: Vec<(rusqlite::Connection, &'static str)> = Vec::new();
+    // Explicit project still errors on a missing DB; default `all` treats project as
+    // best-effort and skips it (no open / no auto-sync) when not initialized.
+    if want_project && (project_required || project_db_exists_for(project_root)) {
+        conns.push((open_project_conn(project_root)?, "project"));
+    }
+    if want_user && let Some(c) = open_user_conn()? {
+        conns.push((c, "user"));
+    }
+    Ok(conns)
+}
+
+/// Read an `id`/`old_id`/`new_id`/`superseded_by` param that may be an integer or a
+/// UID string. `Ok(None)` = absent/null; `Err` = present but a wrong type (so a
+/// malformed argument fails loudly instead of being silently dropped).
+fn id_param(v: &Value) -> Result<Option<String>, String> {
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s.clone())),
+        Value::Number(n) => n
+            .as_i64()
+            .map(|i| Some(i.to_string()))
+            .ok_or_else(|| "id must be an integer or a uid string".to_string()),
+        _ => Err("id must be an integer or a uid string".to_string()),
+    }
+}
+
+/// Look up `<id-or-uid>` within a connection (None if absent).
+fn lookup_in_conn(conn: &rusqlite::Connection, arg: &str) -> Result<Option<db::Entry>, String> {
+    let r = if let Ok(id) = arg.parse::<i64>() {
+        db::get_entry(conn, id)
+    } else {
+        db::get_entry_by_uid(conn, arg)
+    };
+    r.map_err(|e| format!("get error: {e}"))
+}
+
+/// Resolve `<id-or-uid>` across scopes. Numeric → named scope (default project);
+/// UID → named scope, or project-then-user when scope is omitted. Returns the
+/// owning connection so mutations run on the right DB.
+fn mcp_resolve_target(
+    arg: &str,
+    scope: Option<&str>,
+    project_root: &Path,
+) -> Result<(rusqlite::Connection, db::Entry, &'static str), String> {
+    let scope = match scope {
+        Some(s) => Some(s),
+        None if arg.parse::<i64>().is_ok() => Some("project"),
+        None => None,
+    };
+    match scope {
+        Some(s) => {
+            let conn = open_scope_conn_mcp(s, project_root)?;
+            let entry =
+                lookup_in_conn(&conn, arg)?.ok_or_else(|| format!("Entry not found: {arg}"))?;
+            let label = if s == "user" { "user" } else { "project" };
+            Ok((conn, entry, label))
+        }
+        None => {
+            // Auto-resolve a UID: look in project first only if it is initialized, so
+            // an uninitialized project doesn't error before we fall back to user.
+            if project_db_exists_for(project_root) {
+                let pconn = open_project_conn(project_root)?;
+                if let Some(e) = lookup_in_conn(&pconn, arg)? {
+                    return Ok((pconn, e, "project"));
+                }
+            }
+            if let Some(uconn) = open_user_conn()?
+                && let Some(e) = lookup_in_conn(&uconn, arg)?
+            {
+                return Ok((uconn, e, "user"));
+            }
+            Err(format!("Entry not found: {arg}"))
+        }
+    }
 }
 
 fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<Value, String> {
@@ -616,6 +756,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 json!({
                     "name": name,
                     "path": path.to_string_lossy(),
+                    "initialized": project_db_exists_for(path),
                 })
             })
             .collect();
@@ -625,7 +766,13 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         }));
     }
 
-    let (conn, config, knowledge_dir, project_name) = resolve_project(params, registry)?;
+    // Project context — DBs are opened per-tool below based on scope, so user-scope
+    // operations don't force a project DB open / auto-sync.
+    let project_param = params["project"].as_str();
+    let project_root = registry.resolve(project_param)?;
+    let knowledge_dir = project_root.join(".knowledge");
+    let project_name = project_name_for(registry, &project_root);
+    let config = Config::load(&knowledge_dir);
 
     match name {
         "search_knowledge" => {
@@ -636,18 +783,40 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let category = params["category"].as_str();
             let source = params["source"].as_str();
             let limit = params["limit"].as_u64().unwrap_or(5) as usize;
+            let scope = params["scope"].as_str();
 
             log_mcp_command("search", &[("query", query)], &knowledge_dir);
 
-            let entries =
-                db::search_entries(&conn, query, keyword_only, category, source, None, limit)
-                    .map_err(|e| format!("search error: {e}"))?;
+            // Query each scope; keywords are fetched on the SAME conn the entry came
+            // from (ids are per-DB). rank is 1/(1+|bm25|): smaller = better, so sort
+            // ASCENDING to match per-DB order (None ranks sort last).
+            let conns = read_scope_conns(scope, &project_root)?;
+            let mut items: Vec<(f64, &'static str, db::Entry, Vec<String>)> = Vec::new();
+            for (conn, label) in &conns {
+                let entries =
+                    db::search_entries(conn, query, keyword_only, category, source, None, limit)
+                        .map_err(|e| format!("search error: {e}"))?;
+                for e in entries {
+                    let kws = db::get_keywords(conn, e.id).unwrap_or_default();
+                    let score = e.rank.unwrap_or(f64::MAX);
+                    items.push((score, label, e, kws));
+                }
+            }
+            // Score ASC (better match first), tie-break updated_at DESC — matching
+            // the per-DB SQL order `ORDER BY rank, updated_at DESC`.
+            items.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
+            });
+            items.truncate(limit);
 
-            let results: Vec<Value> = entries
+            let results: Vec<Value> = items
                 .iter()
-                .map(|e| {
-                    let kws = db::get_keywords(&conn, e.id).unwrap_or_default();
-                    entry_to_json(e, &kws, &config)
+                .map(|(_, label, e, kws)| {
+                    let mut obj = entry_to_json(e, kws, &config);
+                    obj["scope"] = json!(label);
+                    obj
                 })
                 .collect();
 
@@ -678,6 +847,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let category = params["category"].as_str().unwrap_or("general");
             let status = params["status"].as_str();
             let force = params["force"].as_bool().unwrap_or(false);
+            let scope = params["scope"].as_str().unwrap_or("auto");
 
             // Validate status if provided
             if let Some(st) = status
@@ -689,7 +859,36 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 ));
             }
 
-            log_mcp_command("add", &[("title", title)], &knowledge_dir);
+            // "auto" (default): project if initialized, else fall back to user.
+            // Explicit "project" still errors on a missing DB (init prompt).
+            let (effective_scope, fell_back) = match scope {
+                "project" => ("project", false),
+                "user" => ("user", false),
+                "auto" => {
+                    if project_db_exists_for(&project_root) {
+                        ("project", false)
+                    } else {
+                        ("user", true)
+                    }
+                }
+                o => {
+                    return Err(format!(
+                        "Invalid scope '{o}' (expected: project, user, auto)"
+                    ));
+                }
+            };
+            let conn = match effective_scope {
+                "user" => {
+                    util::open_or_create_user_db().map_err(|e| format!("user DB error: {e}"))?
+                }
+                _ => open_project_conn(&project_root)?,
+            };
+
+            log_mcp_command(
+                "add",
+                &[("title", title), ("scope", effective_scope)],
+                &knowledge_dir,
+            );
 
             // Apply category template if content is empty
             let template_content;
@@ -712,16 +911,22 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 if !similar.is_empty() {
                     let dupes: Vec<Value> = similar
                         .iter()
-                        .map(|e| json!({"id": e.id, "title": e.title}))
+                        .map(|e| {
+                            json!({"id": e.id, "uid": e.uid, "scope": effective_scope, "title": e.title})
+                        })
                         .collect();
-                    return Ok(decorate_result(
-                        json!({
-                            "added": false,
-                            "reason": "Similar entries found. Use force=true to add anyway.",
-                            "similar_entries": dupes,
-                        }),
-                        &project_name,
-                    ));
+                    let mut out = json!({
+                        "added": false,
+                        "reason": "Similar entries found. Use force=true to add anyway.",
+                        "scope": effective_scope,
+                        "similar_entries": dupes,
+                    });
+                    if fell_back {
+                        out["note"] = json!(
+                            "Project not initialized; checked the user scope. Run `lk init` for project scope."
+                        );
+                    }
+                    return Ok(decorate_result(out, &project_name));
                 }
             }
 
@@ -741,15 +946,27 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             )
             .map_err(|e| format!("add error: {e}"))?;
 
-            Ok(decorate_result(
-                json!({
-                    "added": true,
-                    "id": id,
-                    "title": title,
-                    "status": status.unwrap_or("active"),
-                }),
-                &project_name,
-            ))
+            // Return the uid too: ids collide across scopes, so uid is the unambiguous
+            // handle for follow-up get/update calls (even without passing scope).
+            let uid = db::get_entry(&conn, id)
+                .ok()
+                .flatten()
+                .map(|e| e.uid)
+                .unwrap_or_default();
+            let mut out = json!({
+                "added": true,
+                "id": id,
+                "uid": uid,
+                "title": title,
+                "status": status.unwrap_or("active"),
+                "scope": effective_scope,
+            });
+            if fell_back {
+                out["note"] = json!(
+                    "Project not initialized; saved to user scope (global). Run `lk init` for project scope."
+                );
+            }
+            Ok(decorate_result(out, &project_name))
         }
 
         "list_knowledge" => {
@@ -757,38 +974,45 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let category = params["category"].as_str();
             let limit = params["limit"].as_u64().unwrap_or(20) as usize;
             let offset = params["offset"].as_u64().unwrap_or(0) as usize;
+            let scope = params["scope"].as_str();
 
             log_mcp_command("list", &[], &knowledge_dir);
 
-            let entries = if let Some(src) = source {
-                db::list_entries_by_source(&conn, src).map_err(|e| format!("list error: {e}"))?
-            } else {
-                db::list_entries(&conn, category).map_err(|e| format!("list error: {e}"))?
-            };
-
-            // Apply source + category filter when both specified
-            let filtered: Vec<&db::Entry> = entries
-                .iter()
-                .filter(|e| {
-                    if source.is_some() && category.is_some() {
-                        category.is_none_or(|c| e.category == c)
-                    } else {
-                        true
+            // Merge entries across scopes, tagging each with (label, keywords).
+            let conns = read_scope_conns(scope, &project_root)?;
+            let mut tagged: Vec<(&'static str, db::Entry, Vec<String>)> = Vec::new();
+            for (conn, label) in &conns {
+                let entries = if let Some(src) = source {
+                    db::list_entries_by_source(conn, src).map_err(|e| format!("list error: {e}"))?
+                } else {
+                    db::list_entries(conn, category).map_err(|e| format!("list error: {e}"))?
+                };
+                for e in entries {
+                    // Apply category filter when source is also specified.
+                    if source.is_some() && category.is_some_and(|c| e.category != c) {
+                        continue;
                     }
-                })
-                .collect();
+                    let kws = db::get_keywords(conn, e.id).unwrap_or_default();
+                    tagged.push((label, e, kws));
+                }
+            }
 
-            let page: Vec<Value> = filtered
+            // Re-sort merged set by updated_at DESC so pagination is globally correct.
+            tagged.sort_by(|a, b| b.1.updated_at.cmp(&a.1.updated_at));
+            let total = tagged.len();
+
+            let page: Vec<Value> = tagged
                 .iter()
                 .skip(offset)
                 .take(limit)
-                .map(|e| {
-                    let kws = db::get_keywords(&conn, e.id).unwrap_or_default();
+                .map(|(label, e, kws)| {
                     json!({
                         "id": e.id,
+                        "uid": e.uid,
                         "title": e.title,
                         "category": e.category,
                         "source": e.source,
+                        "scope": label,
                         "status": e.status,
                         "keywords": kws,
                         "updated_at": e.updated_at,
@@ -798,7 +1022,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
 
             Ok(decorate_result(
                 json!({
-                    "total": filtered.len(),
+                    "total": total,
                     "offset": offset,
                     "count": page.len(),
                     "entries": page,
@@ -808,32 +1032,24 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         }
 
         "get_knowledge" => {
-            let id = params["id"]
-                .as_i64()
-                .ok_or("missing required parameter: id")?;
+            let arg = id_param(&params["id"])?.ok_or("missing required parameter: id")?;
+            let scope = params["scope"].as_str();
 
-            log_mcp_command("get", &[("id", &id.to_string())], &knowledge_dir);
+            log_mcp_command("get", &[("id", &arg)], &knowledge_dir);
 
-            let entry = db::get_entry(&conn, id)
-                .map_err(|e| format!("get error: {e}"))?
-                .ok_or_else(|| format!("Entry not found: {id}"))?;
-            let kws = db::get_keywords(&conn, id).unwrap_or_default();
+            let (conn, entry, label) = mcp_resolve_target(&arg, scope, &project_root)?;
+            let kws = db::get_keywords(&conn, entry.id).unwrap_or_default();
+            let mut obj = entry_to_json(&entry, &kws, &config);
+            obj["scope"] = json!(label);
 
-            Ok(decorate_result(
-                entry_to_json(&entry, &kws, &config),
-                &project_name,
-            ))
+            Ok(decorate_result(obj, &project_name))
         }
 
         "update_knowledge" => {
-            let id = params["id"]
-                .as_i64()
-                .ok_or("missing required parameter: id")?;
-
-            // Verify entry exists
-            db::get_entry(&conn, id)
-                .map_err(|e| format!("get error: {e}"))?
-                .ok_or_else(|| format!("Entry not found: {id}"))?;
+            let arg = id_param(&params["id"])?.ok_or("missing required parameter: id")?;
+            let scope = params["scope"].as_str();
+            let (conn, entry, _label) = mcp_resolve_target(&arg, scope, &project_root)?;
+            let local_id = entry.id;
 
             let title = params["title"].as_str();
             let content = params["content"].as_str();
@@ -843,90 +1059,97 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     .collect()
             });
             let status = params["status"].as_str();
+            // superseded_by may be an integer id or a uid string; "0" clears it.
+            // Resolved within the SAME DB as the edited entry (no cross-scope refs).
+            let sb_arg = id_param(&params["superseded_by"])?;
 
-            log_mcp_command("update", &[("id", &id.to_string())], &knowledge_dir);
+            log_mcp_command("update", &[("id", &arg)], &knowledge_dir);
 
-            let now = util::now_iso();
-            db::update_entry(&conn, id, title, content, keywords.as_deref(), &now)
-                .map_err(|e| format!("update error: {e}"))?;
+            let resolve_sb = |s: &str| -> Result<Option<String>, String> {
+                if s == "0" {
+                    Ok(None)
+                } else {
+                    let target = lookup_in_conn(&conn, s)?.ok_or_else(|| {
+                        format!("Entry '{s}' not found in the same scope for superseded_by")
+                    })?;
+                    Ok(Some(target.uid.clone()))
+                }
+            };
 
-            if let Some(st) = status {
+            // Validate status and resolve superseded_by BEFORE any write, so a bad
+            // value can't leave a partial update. status_update = (status, sb_uid).
+            let status_update: Option<(String, Option<String>)> = if let Some(st) = status {
                 if !db::is_valid_status(st) {
                     return Err(format!(
                         "Invalid status: {st}. Must be one of: {}",
                         db::VALID_STATUSES.join(", ")
                     ));
                 }
-                let superseded_by_id = params["superseded_by"].as_i64();
-                let superseded_by_uid: Option<String> = match superseded_by_id {
-                    Some(0) => None,
-                    Some(v) => {
-                        let target = db::get_entry(&conn, v)
-                            .map_err(|e| format!("get error: {e}"))?
-                            .ok_or_else(|| format!("Entry #{v} not found for superseded_by"))?;
-                        Some(target.uid.clone())
-                    }
-                    None => {
-                        let current = db::get_entry(&conn, id)
-                            .map_err(|e| format!("get error: {e}"))?
-                            .unwrap();
-                        current.superseded_by.clone()
-                    }
+                let sb = match sb_arg.as_deref() {
+                    Some(s) => resolve_sb(s)?,
+                    None => entry.superseded_by.clone(),
                 };
-                db::update_entry_status(&conn, id, st, superseded_by_uid.as_deref())
-                    .map_err(|e| format!("status update error: {e}"))?;
-            } else if let Some(v) = params["superseded_by"].as_i64() {
-                let current = db::get_entry(&conn, id)
-                    .map_err(|e| format!("get error: {e}"))?
-                    .unwrap();
-                let uid = if v == 0 {
-                    None
-                } else {
-                    let target = db::get_entry(&conn, v)
-                        .map_err(|e| format!("get error: {e}"))?
-                        .ok_or_else(|| format!("Entry #{v} not found for superseded_by"))?;
-                    Some(target.uid.clone())
-                };
-                db::update_entry_status(&conn, id, &current.status, uid.as_deref())
-                    .map_err(|e| format!("status update error: {e}"))?;
+                Some((st.to_string(), sb))
+            } else if let Some(s) = sb_arg.as_deref() {
+                Some((entry.status.clone(), resolve_sb(s)?))
+            } else {
+                None
+            };
+
+            // Apply all writes atomically.
+            let now = util::now_iso();
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| format!("update error: {e}"))?;
+            let result = (|| -> Result<(), String> {
+                db::update_entry(&conn, local_id, title, content, keywords.as_deref(), &now)
+                    .map_err(|e| format!("update error: {e}"))?;
+                if let Some((st, sb)) = &status_update {
+                    db::update_entry_status(&conn, local_id, st, sb.as_deref())
+                        .map_err(|e| format!("status update error: {e}"))?;
+                }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => conn
+                    .execute_batch("COMMIT")
+                    .map_err(|e| format!("update error: {e}"))?,
+                Err(e) => {
+                    conn.execute_batch("ROLLBACK").ok();
+                    return Err(e);
+                }
             }
 
             Ok(decorate_result(
                 json!({
                     "updated": true,
-                    "id": id,
+                    "id": local_id,
                 }),
                 &project_name,
             ))
         }
 
         "supersede_knowledge" => {
-            let old_id = params["old_id"]
-                .as_i64()
-                .ok_or("missing required parameter: old_id")?;
-            let new_id = params["new_id"]
-                .as_i64()
-                .ok_or("missing required parameter: new_id")?;
-
-            if old_id == new_id {
-                return Err("old_id and new_id must be different".to_string());
-            }
+            let old = id_param(&params["old_id"])?.ok_or("missing required parameter: old_id")?;
+            let new = id_param(&params["new_id"])?.ok_or("missing required parameter: new_id")?;
+            let scope = params["scope"].as_str();
 
             log_mcp_command(
                 "supersede",
-                &[
-                    ("old_id", &old_id.to_string()),
-                    ("new_id", &new_id.to_string()),
-                ],
+                &[("old_id", &old), ("new_id", &new)],
                 &knowledge_dir,
             );
 
-            let old_entry = db::get_entry(&conn, old_id)
-                .map_err(|e| format!("get error: {e}"))?
-                .ok_or_else(|| format!("Entry #{old_id} not found"))?;
-            let new_entry = db::get_entry(&conn, new_id)
-                .map_err(|e| format!("get error: {e}"))?
-                .ok_or_else(|| format!("Entry #{new_id} not found"))?;
+            // Resolve `old` (which fixes the owning connection/scope), then resolve
+            // `new` in the SAME connection so both updates share one transaction.
+            // Cross-scope supersede is unsupported (new must live in old's DB).
+            let (conn, old_entry, _label) = mcp_resolve_target(&old, scope, &project_root)?;
+            let new_entry = lookup_in_conn(&conn, &new)?
+                .ok_or_else(|| format!("Entry '{new}' not found in the same scope as '{old}'"))?;
+            if old_entry.id == new_entry.id {
+                return Err("old and new must be different entries".to_string());
+            }
+            let old_id = old_entry.id;
+            let new_id = new_entry.id;
 
             // Atomic: both updates in a transaction
             conn.execute_batch("BEGIN IMMEDIATE")
@@ -968,16 +1191,40 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         }
 
         "get_stats" => {
+            let scope = params["scope"].as_str();
             log_mcp_command("stats", &[], &knowledge_dir);
 
-            let stats = db::get_stats(&conn).map_err(|e| format!("stats error: {e}"))?;
+            let conns = read_scope_conns(scope, &project_root)?;
+            let mut total = 0i64;
+            let mut shared = 0i64;
+            let mut local = 0i64;
+            // unique keywords is a UNION across DBs, not a sum of per-DB DISTINCT counts.
+            let mut kw_union: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut scopes: Vec<Value> = Vec::new();
+            for (conn, label) in &conns {
+                let s = db::get_stats(conn).map_err(|e| format!("stats error: {e}"))?;
+                total += s.total;
+                shared += s.shared;
+                local += s.local;
+                for (kw, _) in db::keyword_counts(conn).map_err(|e| format!("stats error: {e}"))? {
+                    kw_union.insert(kw);
+                }
+                scopes.push(json!({
+                    "scope": label,
+                    "total": s.total,
+                    "shared": s.shared,
+                    "local": s.local,
+                    "keywords": s.keywords,
+                }));
+            }
 
             Ok(decorate_result(
                 json!({
-                    "total": stats.total,
-                    "shared": stats.shared,
-                    "local": stats.local,
-                    "keywords": stats.keywords,
+                    "total": total,
+                    "shared": shared,
+                    "local": local,
+                    "keywords": kw_union.len(),
+                    "scopes": scopes,
                 }),
                 &project_name,
             ))

@@ -2,6 +2,7 @@ use crate::db;
 use crate::keywords;
 use crate::util::{open_db_with_migrate, truncate_str};
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_add(
     title: &str,
     keywords_str: Option<&str>,
@@ -9,13 +10,29 @@ pub fn cmd_add(
     category: Option<&str>,
     force: bool,
     allow_secrets: bool,
+    scope: &str,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // "auto" (default) saves to project when initialized, else falls back to user.
+    let (scope, fell_back) = super::resolve_write_scope(scope)?;
     super::log_command(
         "add",
-        &[("title", title), ("category", category.unwrap_or(""))],
+        &[
+            ("title", title),
+            ("category", category.unwrap_or("")),
+            ("scope", scope.label()),
+        ],
     );
-    let conn = open_db_with_migrate()?;
+    if fell_back && !json_output {
+        eprintln!(
+            "Note: this project is not initialized; saving to user scope (~/.config/lk/knowledge.db). \
+             Run `lk init` for project-scoped knowledge."
+        );
+    }
+    let conn = match scope {
+        super::Scope::Project => open_db_with_migrate()?,
+        super::Scope::User => crate::util::open_or_create_user_db()?,
+    };
     let category = category.unwrap_or("");
     // Apply category template if content is not provided or empty
     let template_content;
@@ -86,6 +103,7 @@ pub fn cmd_add(
         if !force {
             let similar = db::find_similar_entries(&conn, title, &kws)?;
             if !similar.is_empty() {
+                let scope_label = scope.label();
                 if json_output {
                     let similar_json: Vec<serde_json::Value> = similar
                         .iter()
@@ -94,22 +112,39 @@ pub fn cmd_add(
                             let snippet = truncate_str(&e.content, 300);
                             serde_json::json!({
                                 "id": e.id,
+                                "uid": e.uid,
+                                "scope": scope_label,
                                 "title": e.title,
                                 "keywords": ekws,
                                 "snippet": snippet,
                             })
                         })
                         .collect();
-                    let out = serde_json::json!({
+                    let mut out = serde_json::json!({
                         "added": false,
+                        "scope": scope_label,
                         "similar_entries": similar_json,
                     });
+                    if fell_back {
+                        out["fell_back_to_user"] = serde_json::json!(true);
+                    }
                     println!("{}", serde_json::to_string_pretty(&out)?);
                 } else {
                     println!("Similar entries found (use --force to add anyway):");
                     for e in &similar {
                         let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
-                        println!("  [{}] {} (keywords: {})", e.id, e.title, ekws.join(", "));
+                        // Show the uid (globally unique, copy/pasteable) for user scope.
+                        let id_disp = if scope == super::Scope::User {
+                            e.uid.clone()
+                        } else {
+                            e.id.to_string()
+                        };
+                        println!(
+                            "  [{}] {} (keywords: {})",
+                            id_disp,
+                            e.title,
+                            ekws.join(", ")
+                        );
                     }
                 }
                 return Err("duplicate_found".into());
@@ -122,7 +157,12 @@ pub fn cmd_add(
     match result {
         Ok(entry_id) => {
             conn.execute_batch("COMMIT")?;
-            print_success(entry_id, title, &kws, json_output);
+            let uid = db::get_entry(&conn, entry_id)
+                .ok()
+                .flatten()
+                .map(|e| e.uid)
+                .unwrap_or_default();
+            print_success(entry_id, &uid, title, &kws, scope, fell_back, json_output);
             Ok(())
         }
         Err(e) if e.to_string() == "duplicate_found" => {
@@ -136,17 +176,34 @@ pub fn cmd_add(
     }
 }
 
-fn print_success(entry_id: i64, title: &str, kws: &[String], json_output: bool) {
+fn print_success(
+    entry_id: i64,
+    uid: &str,
+    title: &str,
+    kws: &[String],
+    scope: super::Scope,
+    fell_back: bool,
+    json_output: bool,
+) {
     if json_output {
-        let out = serde_json::json!({
+        let mut out = serde_json::json!({
             "added": true,
             "id": entry_id,
+            "uid": uid,
             "title": title,
             "keywords": kws,
+            "scope": scope.label(),
         });
+        if fell_back {
+            out["fell_back_to_user"] = serde_json::json!(true);
+        }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
-        println!("Added entry #{entry_id}: {title}");
+        // User-scope ids collide with project ids, so reference user entries by uid.
+        match scope {
+            super::Scope::User => println!("Added entry {uid}: {title} (user scope)"),
+            super::Scope::Project => println!("Added entry #{entry_id}: {title}"),
+        }
         println!("Keywords: {}", kws.join(", "));
     }
 }
