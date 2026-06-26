@@ -35,11 +35,11 @@ pub fn cmd_sync(
             get_project_root(),
         ),
         super::Scope::User => {
-            // Scaffold the global config on first touch so `user_knowledge_dir` is
-            // discoverable even via a "hand-write md, then sync" flow.
-            if let Some(path) = crate::util::ensure_global_config_scaffold()
-                && !json_output
-            {
+            // Always scaffold the global config on first touch (so `user_knowledge_dir`
+            // is discoverable even via a "hand-write md, then sync" flow); only the
+            // human-facing note is suppressed in --json mode.
+            let scaffolded = crate::util::ensure_global_config_scaffold();
+            if !json_output && let Some(path) = scaffolded {
                 println!(
                     "Created {} (edit to customize user_knowledge_dir).",
                     path.display()
