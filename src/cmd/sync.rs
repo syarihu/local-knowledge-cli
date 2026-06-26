@@ -45,10 +45,10 @@ pub fn cmd_sync(
                     path.display()
                 );
             }
-            let conn = crate::util::open_user_db()?.ok_or(
-                "No user-scope knowledge DB exists yet (~/.config/lk/knowledge.db). \
-                 Create one with `lk add \"...\" --scope user` or `lk export --scope user`.",
-            )?;
+            // sync is a write op: create the user DB on first run so a fresh machine with
+            // only the markdown store (e.g. freshly cloned dotfiles) can bootstrap
+            // ~/.config/lk/knowledge.db directly with `lk sync --scope user`.
+            let conn = crate::util::open_or_create_user_db()?;
             let knowledge_dir = crate::util::get_user_knowledge_dir();
             let root = crate::util::user_md_root(&knowledge_dir);
             (conn, knowledge_dir, root)

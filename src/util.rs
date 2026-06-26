@@ -254,8 +254,15 @@ pub fn ensure_global_config_scaffold() -> Option<PathBuf> {
         .open(&config_path)
     {
         Ok(mut f) => {
-            f.write_all(crate::config::DEFAULT_GLOBAL_CONFIG_CONTENT.as_bytes())
-                .ok()?;
+            if f.write_all(crate::config::DEFAULT_GLOBAL_CONFIG_CONTENT.as_bytes())
+                .is_err()
+            {
+                // Don't strand a half-written/empty config that future runs would skip
+                // over (the file now "exists"); remove it so scaffolding retries later.
+                drop(f);
+                let _ = std::fs::remove_file(&config_path);
+                return None;
+            }
             drop(f);
             // Harden only when we actually created the store (mirrors the DB path).
             restrict_to_owner(&config_dir, true);

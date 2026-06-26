@@ -1466,6 +1466,52 @@ fn test_user_scope_export_preserves_existing_dir_perms() {
     );
 }
 
+/// Bootstrap flow: a fresh machine with only a markdown store (no user DB yet) can
+/// run `lk sync --scope user` to create and populate `~/.config/lk/knowledge.db`.
+#[test]
+fn test_user_scope_sync_bootstraps_db_from_markdown() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    // Hand-place a markdown store (as if cloned from dotfiles); no user DB exists yet.
+    let kdir = home.path().join(".config/lk/knowledge");
+    std::fs::create_dir_all(&kdir).unwrap();
+    std::fs::write(
+        kdir.join("exported-prefs.md"),
+        "---\nkeywords: [prefs]\ncategory: exported\n---\n\n\
+         # Exported: prefs\n\n\
+         ## Entry: editor choice\nkeywords: [editor]\nuid: bootstrapuid01\n\n\
+         use neovim\n",
+    )
+    .unwrap();
+    assert!(!home.path().join(".config/lk/knowledge.db").exists());
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+
+    let sync = run(&["sync", "--scope", "user", "--json"]);
+    assert!(
+        sync.status.success(),
+        "bootstrap sync should create the DB, not error: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(
+        home.path().join(".config/lk/knowledge.db").is_file(),
+        "sync should have created the user DB"
+    );
+    let search = run(&["search", "neovim", "--scope", "user", "--full", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&search.stdout).contains("use neovim"),
+        "bootstrapped entry should be searchable"
+    );
+}
+
 /// Project-scope `export --dir <X>` to a dir outside `.knowledge/` is a one-off dump:
 /// entries stay `local` so a later `lk sync` (which only reads `.knowledge/`) can't
 /// delete them. Without `--dir`, export flips to `shared` as before.
