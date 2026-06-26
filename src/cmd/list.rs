@@ -77,8 +77,9 @@ pub fn cmd_list(
             } else {
                 String::new()
             };
+            // Show the uid (globally unique, copy/pasteable) for user-scope entries.
             let id_disp = if *label == "user" {
-                format!("user:{}", e.uid)
+                e.uid.clone()
             } else {
                 e.id.to_string()
             };

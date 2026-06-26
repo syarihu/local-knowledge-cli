@@ -92,9 +92,10 @@ pub fn cmd_search(
             let days = days_since(&r.updated_at);
             let threshold = config.stale_threshold_for(&r.source);
             let stale = days.map(|d| d >= threshold).unwrap_or(false);
-            // User-scope entry ids collide with project ids, so show scope + uid.
+            // User-scope ids collide with project ids; show the uid (a globally
+            // unique, copy/pasteable handle for `lk get`/`edit`/…) for user entries.
             let id_disp = if *label == "user" {
-                format!("user:{}", r.uid)
+                r.uid.clone()
             } else {
                 r.id.to_string()
             };

@@ -133,9 +133,9 @@ pub fn cmd_add(
                     println!("Similar entries found (use --force to add anyway):");
                     for e in &similar {
                         let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
-                        // user-scope ids collide with project ids, so show scope+uid.
+                        // Show the uid (globally unique, copy/pasteable) for user scope.
                         let id_disp = if scope == super::Scope::User {
-                            format!("user:{}", e.uid)
+                            e.uid.clone()
                         } else {
                             e.id.to_string()
                         };
@@ -201,7 +201,7 @@ fn print_success(
     } else {
         // User-scope ids collide with project ids, so reference user entries by uid.
         match scope {
-            super::Scope::User => println!("Added entry user:{uid}: {title} (user scope)"),
+            super::Scope::User => println!("Added entry {uid}: {title} (user scope)"),
             super::Scope::Project => println!("Added entry #{entry_id}: {title}"),
         }
         println!("Keywords: {}", kws.join(", "));
