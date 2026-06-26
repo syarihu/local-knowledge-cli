@@ -241,16 +241,29 @@ pub fn warn_if_not_owner_only(path: &Path) {
 /// discover the `user_knowledge_dir` option. Best-effort; returns the path if
 /// it created the file (for an informational note), else `None`.
 pub fn ensure_global_config_scaffold() -> Option<PathBuf> {
+    use std::io::Write;
     let config_dir = get_user_config_dir();
     let config_path = config_dir.join("config.toml");
-    if config_path.exists() {
-        return None;
-    }
     std::fs::create_dir_all(&config_dir).ok()?;
-    restrict_to_owner(&config_dir, true);
-    std::fs::write(&config_path, crate::config::DEFAULT_GLOBAL_CONFIG_CONTENT).ok()?;
-    restrict_to_owner(&config_path, false);
-    Some(config_path)
+    // Atomic create-or-bail (O_CREAT|O_EXCL): a plain exists()-then-write is racy and
+    // could clobber a real config written by a concurrent `lk`. create_new fails with
+    // AlreadyExists instead, so we never overwrite an existing file.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&config_path)
+    {
+        Ok(mut f) => {
+            f.write_all(crate::config::DEFAULT_GLOBAL_CONFIG_CONTENT.as_bytes())
+                .ok()?;
+            drop(f);
+            // Harden only when we actually created the store (mirrors the DB path).
+            restrict_to_owner(&config_dir, true);
+            restrict_to_owner(&config_path, false);
+            Some(config_path)
+        }
+        Err(_) => None, // AlreadyExists (or any error) → don't claim we scaffolded it.
+    }
 }
 
 /// Open the user-scope DB if it already exists, else `None`.
