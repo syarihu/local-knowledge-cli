@@ -1465,3 +1465,45 @@ fn test_user_scope_export_preserves_existing_dir_perms() {
         "export must not clobber a pre-existing dir's permissions"
     );
 }
+
+/// Project-scope `export --dir <X>` to a dir outside `.knowledge/` is a one-off dump:
+/// entries stay `local` so a later `lk sync` (which only reads `.knowledge/`) can't
+/// delete them. Without `--dir`, export flips to `shared` as before.
+#[test]
+fn test_project_export_dir_outside_knowledge_is_dump_only() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    assert!(
+        run(&["add", "p dump", "--keywords", "pd", "--content", "body"])
+            .status
+            .success()
+    );
+
+    let dump = dir.path().join("outside");
+    let export = run(&["export", "--dir", dump.to_str().unwrap()]);
+    assert!(export.status.success());
+    assert!(
+        String::from_utf8_lossy(&export.stderr).contains("one-off dump"),
+        "project export outside .knowledge/ should warn it's a dump"
+    );
+
+    // Entry stays local (not flipped to shared) and survives a later sync.
+    let local = run(&["list", "--source", "local", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&local.stdout).contains("p dump"),
+        "dumped entry should stay local"
+    );
+    assert!(run(&["sync", "--json"]).status.success());
+    let after = run(&["search", "p dump", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&after.stdout).contains("p dump"),
+        "entry must survive sync (no data loss)"
+    );
+}

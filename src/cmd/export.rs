@@ -47,18 +47,25 @@ pub fn cmd_export(
     let dir_existed = output_dir.exists();
     std::fs::create_dir_all(&output_dir)?;
 
-    // A user-scope export to a dir OTHER than the managed `user_knowledge_dir` is a
-    // one-off DUMP, not a managed store: `lk sync --scope user` only reads the managed
-    // dir, so if we flipped these entries to `shared` with a source_file pointing at
-    // the custom dir, the next user-scope sync would treat those files as "missing" and
-    // DELETE the entries. So dump-only: write the md but leave entries `local`. When the
-    // dir equals the managed store (compared canonically), it's a normal managed export.
-    let dump_only =
-        scope == super::Scope::User && !crate::util::paths_equivalent(&output_dir, &managed_dir);
+    // An export to a dir OTHER than the scope's managed store is a one-off DUMP, not a
+    // managed export: `lk sync` only reads the managed dir (project `.knowledge/` or
+    // user `user_knowledge_dir`), so if we flipped these entries to `shared` with a
+    // source_file pointing at the custom dir, the next sync would treat those files as
+    // "missing" and DELETE the entries (data loss). So dump-only: write the md but leave
+    // entries `local`. When the dir equals the managed store (compared canonically), it's
+    // a normal managed export.
+    let dump_only = !crate::util::paths_equivalent(&output_dir, &managed_dir);
     if dump_only {
+        let hint = match scope {
+            super::Scope::Project => {
+                "export without `--dir` (into the project's .knowledge/) to manage a synced store."
+            }
+            super::Scope::User => {
+                "set `user_knowledge_dir` in ~/.config/lk/config.toml to manage a synced store."
+            }
+        };
         eprintln!(
-            "Warning: `--dir` is a one-off dump; entries stay local and are NOT synced. \
-             Set `user_knowledge_dir` in ~/.config/lk/config.toml to manage a synced store."
+            "Warning: `--dir` is a one-off dump; entries stay local and are NOT synced. {hint}"
         );
     }
 

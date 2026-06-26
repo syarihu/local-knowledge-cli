@@ -277,13 +277,16 @@ fn check_no_duplicate_uids(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locations: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
+    // walkdir_md yields canonicalized paths, so strip against a canonical base to keep
+    // the displayed filenames relative/readable (e.g. through a symlinked knowledge dir).
+    let base = crate::util::canonicalize_or(knowledge_dir);
     for filepath in walkdir_md(knowledge_dir) {
         let fname = filepath.file_name().and_then(|n| n.to_str());
         if fname == Some("README.md") || fname == Some("lk-instructions.md") {
             continue;
         }
         let display = filepath
-            .strip_prefix(knowledge_dir)
+            .strip_prefix(&base)
             .unwrap_or(&filepath)
             .to_string_lossy()
             .to_string();
