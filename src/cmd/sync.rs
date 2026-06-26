@@ -251,6 +251,21 @@ pub fn sync_knowledge_dir(
     Ok(stats)
 }
 
+/// True if `e` is a SQLite UNIQUE-constraint violation on `entries.uid`.
+///
+/// Matches the structured `rusqlite` error (constraint-violation code) rather than the
+/// human-readable "UNIQUE constraint failed:" prose, which can vary across SQLite/rusqlite
+/// versions. `entries.uid` is the schema identifier SQLite echoes for the offending
+/// constraint, so it stays stable and scopes the match to the uid column.
+fn is_duplicate_uid_error(e: &(dyn std::error::Error + 'static)) -> bool {
+    matches!(
+        e.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(info, Some(msg)))
+            if info.code == rusqlite::ErrorCode::ConstraintViolation
+                && msg.contains("entries.uid")
+    )
+}
+
 pub fn import_md_file(
     conn: &rusqlite::Connection,
     filepath: &std::path::Path,
@@ -295,10 +310,7 @@ pub fn import_md_file(
             // copy-pasted across files) would otherwise abort the whole sync. Skip just
             // that entry with a pointed warning so the rest still imports. SQLite's
             // statement-level ABORT leaves the surrounding transaction usable.
-            Err(e)
-                if e.to_string()
-                    .contains("UNIQUE constraint failed: entries.uid") =>
-            {
+            Err(e) if is_duplicate_uid_error(e.as_ref()) => {
                 eprintln!(
                     "sync: skipping {:?} in {} — duplicate uid {} (already imported from another file; \
                      remove the stale copy to resolve)",
