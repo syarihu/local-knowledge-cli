@@ -43,26 +43,20 @@ fn merge_projects(
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut set: BTreeSet<PathBuf> = BTreeSet::new();
 
-    // Add existing projects (skip paths that no longer exist)
+    // Add existing projects (skip only paths that no longer exist on disk). DB
+    // presence is not required: uninitialized projects fall back to user scope at
+    // runtime, so we keep them registered.
     for p in existing {
-        if let Ok(canonical) = std::fs::canonicalize(p)
-            && canonical.join(".knowledge").join("knowledge.db").exists()
-        {
+        if let Ok(canonical) = std::fs::canonicalize(p) {
             set.insert(canonical);
         }
     }
 
-    // Add new projects
+    // Add new projects (the path must exist; the project DB need not — the server
+    // falls back to user scope when a project isn't initialized).
     for p in add {
         let canonical = std::fs::canonicalize(p)
             .map_err(|e| format!("Cannot resolve path '{}': {e}", p.display()))?;
-        if !canonical.join(".knowledge").join("knowledge.db").exists() {
-            return Err(format!(
-                "No knowledge DB found at {}. Run 'lk init' in that project first.",
-                canonical.display()
-            )
-            .into());
-        }
         set.insert(canonical);
     }
 

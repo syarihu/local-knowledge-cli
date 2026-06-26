@@ -382,6 +382,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 "scope": {
                     "type": "string",
                     "enum": ["auto", "project", "user"],
+                    "default": "auto",
                     "description": "Where to save (default 'auto'): 'auto' = project's .knowledge DB if the project is initialized, otherwise the global user store; 'project' = this repo's .knowledge DB (errors if the project isn't initialized); 'user' = global ~/.config/lk/knowledge.db, persists across projects (good for cross-project context/preferences). The user DB is created on first use. On auto-fallback the result includes a 'note'."
                 }
             },
@@ -624,9 +625,10 @@ fn project_db_exists_for(project_root: &Path) -> bool {
 }
 
 /// Open the project DB connection (runs auto-sync first, like the original flow).
+/// Uses `get_db_path_for` so a legacy `.claude/knowledge.db` is migrated/opened too,
+/// keeping it consistent with `project_db_exists_for`.
 fn open_project_conn(project_root: &Path) -> Result<rusqlite::Connection, String> {
-    let db_root = util::resolve_db_root(project_root);
-    let db_path = db_root.join(".knowledge").join("knowledge.db");
+    let db_path = util::get_db_path_for(project_root);
     maybe_auto_sync_for(project_root);
     let (conn, _) = db::open_db(&db_path).map_err(|e| format!("DB error: {e}"))?;
     Ok(conn)
@@ -909,16 +911,22 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 if !similar.is_empty() {
                     let dupes: Vec<Value> = similar
                         .iter()
-                        .map(|e| json!({"id": e.id, "title": e.title}))
+                        .map(|e| {
+                            json!({"id": e.id, "uid": e.uid, "scope": effective_scope, "title": e.title})
+                        })
                         .collect();
-                    return Ok(decorate_result(
-                        json!({
-                            "added": false,
-                            "reason": "Similar entries found. Use force=true to add anyway.",
-                            "similar_entries": dupes,
-                        }),
-                        &project_name,
-                    ));
+                    let mut out = json!({
+                        "added": false,
+                        "reason": "Similar entries found. Use force=true to add anyway.",
+                        "scope": effective_scope,
+                        "similar_entries": dupes,
+                    });
+                    if fell_back {
+                        out["note"] = json!(
+                            "Project not initialized; checked the user scope. Run `lk init` for project scope."
+                        );
+                    }
+                    return Ok(decorate_result(out, &project_name));
                 }
             }
 

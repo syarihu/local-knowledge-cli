@@ -55,8 +55,14 @@ pub fn resolve_db_root(project_root: &Path) -> PathBuf {
 }
 
 pub fn get_db_path() -> PathBuf {
-    let root = get_project_root();
-    let db_root = resolve_db_root(&root);
+    get_db_path_for(&get_project_root())
+}
+
+/// Resolve the DB path for an explicit project root, migrating the legacy
+/// `.claude/knowledge.db` location to `.knowledge/knowledge.db` if needed.
+/// Has a migration side effect (rename + stderr note) when a legacy DB exists.
+pub fn get_db_path_for(root: &Path) -> PathBuf {
+    let db_root = resolve_db_root(root);
     let new_path = db_root.join(".knowledge").join("knowledge.db");
     if new_path.exists() {
         return new_path;

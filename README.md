@@ -149,7 +149,7 @@ A good rule of thumb: shared knowledge is for stable facts that would help a new
 
 Knowledge lives in one of two stores:
 
-- **Project scope** (default) — the per-project `.knowledge/knowledge.db` resolved from the current directory. This is where shared and local knowledge for *this* repo lives.
+- **Project scope** — the per-project `.knowledge/knowledge.db` resolved from the current directory. This is where shared and local knowledge for *this* repo lives.
 - **User scope** — a single global DB at `~/.config/lk/knowledge.db`, shared across every project. It is DB-only (not git-tracked, no markdown/sync) and never committed. Use it for personal notes and cross-project context such as session handoff logs. The DB is created on first `--scope user` write.
 
 How scope is selected:

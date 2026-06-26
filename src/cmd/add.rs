@@ -103,6 +103,7 @@ pub fn cmd_add(
         if !force {
             let similar = db::find_similar_entries(&conn, title, &kws)?;
             if !similar.is_empty() {
+                let scope_label = scope.label();
                 if json_output {
                     let similar_json: Vec<serde_json::Value> = similar
                         .iter()
@@ -111,22 +112,39 @@ pub fn cmd_add(
                             let snippet = truncate_str(&e.content, 300);
                             serde_json::json!({
                                 "id": e.id,
+                                "uid": e.uid,
+                                "scope": scope_label,
                                 "title": e.title,
                                 "keywords": ekws,
                                 "snippet": snippet,
                             })
                         })
                         .collect();
-                    let out = serde_json::json!({
+                    let mut out = serde_json::json!({
                         "added": false,
+                        "scope": scope_label,
                         "similar_entries": similar_json,
                     });
+                    if fell_back {
+                        out["fell_back_to_user"] = serde_json::json!(true);
+                    }
                     println!("{}", serde_json::to_string_pretty(&out)?);
                 } else {
                     println!("Similar entries found (use --force to add anyway):");
                     for e in &similar {
                         let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
-                        println!("  [{}] {} (keywords: {})", e.id, e.title, ekws.join(", "));
+                        // user-scope ids collide with project ids, so show scope+uid.
+                        let id_disp = if scope == super::Scope::User {
+                            format!("user:{}", e.uid)
+                        } else {
+                            e.id.to_string()
+                        };
+                        println!(
+                            "  [{}] {} (keywords: {})",
+                            id_disp,
+                            e.title,
+                            ekws.join(", ")
+                        );
                     }
                 }
                 return Err("duplicate_found".into());

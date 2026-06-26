@@ -809,3 +809,82 @@ fn test_init_global_appends_to_existing_claude_md() {
     assert!(claude_md.starts_with("# My Config\n"));
     assert!(claude_md.contains("@lk-instructions.md"));
 }
+
+// ── user-scope fallback for uninitialized projects ───────────────────
+
+/// An uninitialized project (no `lk init`) whose `add` (default scope) falls back
+/// to the user store under a temp HOME, plus reads against it.
+#[test]
+fn test_uninit_add_falls_back_to_user() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project(); // has .git, but no `lk init`
+
+    // add with default (auto) scope → should fall back to user
+    let output = lk_bin()
+        .args([
+            "add",
+            "global note",
+            "--keywords",
+            "fb",
+            "--content",
+            "saved via fallback",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "uninit add should succeed via fallback"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"scope\": \"user\""),
+        "should save to user scope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"fell_back_to_user\": true"),
+        "should report fallback: {stdout}"
+    );
+    // user DB created under the temp HOME, never inside the project
+    assert!(home.path().join(".config/lk/knowledge.db").is_file());
+    assert!(!proj.path().join(".knowledge/knowledge.db").exists());
+
+    // reads against an uninitialized project should not error, returning user entries
+    let search = lk_bin()
+        .args(["search", "fallback", "--json"])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(search.status.success(), "uninit search should not error");
+    let s = String::from_utf8_lossy(&search.stdout);
+    assert!(
+        s.contains("\"scope\": \"user\""),
+        "search should surface user entry: {s}"
+    );
+}
+
+/// An explicit `--scope project` must still error (init prompt) when uninitialized.
+#[test]
+fn test_uninit_explicit_project_errors() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let output = lk_bin()
+        .args(["add", "x", "--content", "c", "--scope", "project"])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "explicit --scope project must error when uninitialized"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lk init"),
+        "error should prompt to run lk init: {stderr}"
+    );
+}
