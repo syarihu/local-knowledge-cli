@@ -672,12 +672,18 @@ fn read_scope_conns(
     Ok(conns)
 }
 
-/// Read an `id`/`old_id`/`new_id` param that may be an integer or a UID string.
-fn id_param(v: &Value) -> Option<String> {
-    if let Some(i) = v.as_i64() {
-        Some(i.to_string())
-    } else {
-        v.as_str().map(|s| s.to_string())
+/// Read an `id`/`old_id`/`new_id`/`superseded_by` param that may be an integer or a
+/// UID string. `Ok(None)` = absent/null; `Err` = present but a wrong type (so a
+/// malformed argument fails loudly instead of being silently dropped).
+fn id_param(v: &Value) -> Result<Option<String>, String> {
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s.clone())),
+        Value::Number(n) => n
+            .as_i64()
+            .map(|i| Some(i.to_string()))
+            .ok_or_else(|| "id must be an integer or a uid string".to_string()),
+        _ => Err("id must be an integer or a uid string".to_string()),
     }
 }
 
@@ -785,7 +791,13 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     items.push((score, label, e, kws));
                 }
             }
-            items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            // Score ASC (better match first), tie-break updated_at DESC — matching
+            // the per-DB SQL order `ORDER BY rank, updated_at DESC`.
+            items.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
+            });
             items.truncate(limit);
 
             let results: Vec<Value> = items
@@ -971,7 +983,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         }
 
         "get_knowledge" => {
-            let arg = id_param(&params["id"]).ok_or("missing required parameter: id")?;
+            let arg = id_param(&params["id"])?.ok_or("missing required parameter: id")?;
             let scope = params["scope"].as_str();
 
             log_mcp_command("get", &[("id", &arg)], &knowledge_dir);
@@ -985,7 +997,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         }
 
         "update_knowledge" => {
-            let arg = id_param(&params["id"]).ok_or("missing required parameter: id")?;
+            let arg = id_param(&params["id"])?.ok_or("missing required parameter: id")?;
             let scope = params["scope"].as_str();
             let (conn, entry, _label) = mcp_resolve_target(&arg, scope, &project_root)?;
             let local_id = entry.id;
@@ -1000,13 +1012,9 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let status = params["status"].as_str();
             // superseded_by may be an integer id or a uid string; "0" clears it.
             // Resolved within the SAME DB as the edited entry (no cross-scope refs).
-            let sb_arg = id_param(&params["superseded_by"]);
+            let sb_arg = id_param(&params["superseded_by"])?;
 
             log_mcp_command("update", &[("id", &arg)], &knowledge_dir);
-
-            let now = util::now_iso();
-            db::update_entry(&conn, local_id, title, content, keywords.as_deref(), &now)
-                .map_err(|e| format!("update error: {e}"))?;
 
             let resolve_sb = |s: &str| -> Result<Option<String>, String> {
                 if s == "0" {
@@ -1019,23 +1027,47 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 }
             };
 
-            if let Some(st) = status {
+            // Validate status and resolve superseded_by BEFORE any write, so a bad
+            // value can't leave a partial update. status_update = (status, sb_uid).
+            let status_update: Option<(String, Option<String>)> = if let Some(st) = status {
                 if !db::is_valid_status(st) {
                     return Err(format!(
                         "Invalid status: {st}. Must be one of: {}",
                         db::VALID_STATUSES.join(", ")
                     ));
                 }
-                let superseded_by_uid: Option<String> = match sb_arg.as_deref() {
+                let sb = match sb_arg.as_deref() {
                     Some(s) => resolve_sb(s)?,
                     None => entry.superseded_by.clone(),
                 };
-                db::update_entry_status(&conn, local_id, st, superseded_by_uid.as_deref())
-                    .map_err(|e| format!("status update error: {e}"))?;
+                Some((st.to_string(), sb))
             } else if let Some(s) = sb_arg.as_deref() {
-                let uid = resolve_sb(s)?;
-                db::update_entry_status(&conn, local_id, &entry.status, uid.as_deref())
-                    .map_err(|e| format!("status update error: {e}"))?;
+                Some((entry.status.clone(), resolve_sb(s)?))
+            } else {
+                None
+            };
+
+            // Apply all writes atomically.
+            let now = util::now_iso();
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| format!("update error: {e}"))?;
+            let result = (|| -> Result<(), String> {
+                db::update_entry(&conn, local_id, title, content, keywords.as_deref(), &now)
+                    .map_err(|e| format!("update error: {e}"))?;
+                if let Some((st, sb)) = &status_update {
+                    db::update_entry_status(&conn, local_id, st, sb.as_deref())
+                        .map_err(|e| format!("status update error: {e}"))?;
+                }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => conn
+                    .execute_batch("COMMIT")
+                    .map_err(|e| format!("update error: {e}"))?,
+                Err(e) => {
+                    conn.execute_batch("ROLLBACK").ok();
+                    return Err(e);
+                }
             }
 
             Ok(decorate_result(
@@ -1048,8 +1080,8 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         }
 
         "supersede_knowledge" => {
-            let old = id_param(&params["old_id"]).ok_or("missing required parameter: old_id")?;
-            let new = id_param(&params["new_id"]).ok_or("missing required parameter: new_id")?;
+            let old = id_param(&params["old_id"])?.ok_or("missing required parameter: old_id")?;
+            let new = id_param(&params["new_id"])?.ok_or("missing required parameter: new_id")?;
             let scope = params["scope"].as_str();
 
             log_mcp_command(

@@ -167,21 +167,12 @@ pub fn cmd_edit(
             .collect::<Vec<_>>()
     });
 
-    if touch && title.is_none() && keywords_str.is_none() && content.is_none() {
-        // --touch only: just update the timestamp
-        conn.execute(
-            "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
-            rusqlite::params![now_iso(), local_id],
-        )?;
-    } else {
-        db::update_entry(&conn, local_id, title, content, kws.as_deref(), &now_iso())?;
-    }
-
-    if status.is_some() || superseded_by.is_some() {
-        let current = db::get_entry(&conn, local_id)?.unwrap();
-        // --superseded-by 0 clears the field; otherwise resolve <id-or-uid> in the
-        // SAME DB as the edited entry (cross-scope references are not supported).
-        let new_superseded: Option<String> = match superseded_by {
+    // Pre-resolve the superseded_by target BEFORE any write, so a bad/cross-scope
+    // reference can't leave a partial update behind. Outer Some = perform a status
+    // update; inner is the resolved superseded_by uid (None clears it).
+    // --superseded-by 0 clears; otherwise resolve <id-or-uid> in the SAME DB.
+    let status_update: Option<Option<String>> = if status.is_some() || superseded_by.is_some() {
+        let sb: Option<String> = match superseded_by {
             Some("0") => None,
             Some(s) => {
                 let target = super::lookup_in_conn(&conn, s)?.ok_or_else(|| {
@@ -189,14 +180,41 @@ pub fn cmd_edit(
                 })?;
                 Some(target.uid.clone())
             }
-            None => current.superseded_by.clone(),
+            None => entry.superseded_by.clone(),
         };
-        db::update_entry_status(
-            &conn,
-            local_id,
-            status.unwrap_or(&current.status),
-            new_superseded.as_deref(),
-        )?;
+        Some(sb)
+    } else {
+        None
+    };
+
+    // Apply all writes atomically.
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        if touch && title.is_none() && keywords_str.is_none() && content.is_none() {
+            // --touch only: just update the timestamp
+            conn.execute(
+                "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now_iso(), local_id],
+            )?;
+        } else {
+            db::update_entry(&conn, local_id, title, content, kws.as_deref(), &now_iso())?;
+        }
+        if let Some(sb) = &status_update {
+            db::update_entry_status(
+                &conn,
+                local_id,
+                status.unwrap_or(entry.status.as_str()),
+                sb.as_deref(),
+            )?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            conn.execute_batch("ROLLBACK").ok();
+            return Err(e);
+        }
     }
 
     let updated = db::get_entry(&conn, local_id)?.unwrap();

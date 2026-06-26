@@ -314,7 +314,21 @@ fn main() {
             | Commands::Export { .. }
     );
 
-    if needs_auto_sync {
+    // Skip project auto-sync for user-scope-only operations (they never touch the
+    // project DB), mirroring the MCP server's lazy per-scope open.
+    let user_scope_only = match &cli.command {
+        Commands::Add { scope, .. }
+        | Commands::Search { scope, .. }
+        | Commands::List { scope, .. }
+        | Commands::Stats { scope, .. } => scope == "user",
+        Commands::Get { scope, .. }
+        | Commands::Edit { scope, .. }
+        | Commands::Delete { scope, .. }
+        | Commands::Supersede { scope, .. } => scope.as_deref() == Some("user"),
+        _ => false,
+    };
+
+    if needs_auto_sync && !user_scope_only {
         cmd::maybe_auto_sync();
     }
 

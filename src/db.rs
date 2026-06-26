@@ -443,7 +443,14 @@ pub fn generate_uid() -> String {
     let pid = std::process::id();
     let input = format!("{}-{}-{}", now.as_nanos(), pid, counter);
     let hash = Sha256::digest(input.as_bytes());
-    hex::encode(&hash[..6]) // 6 bytes = 12 hex chars
+    let uid = hex::encode(&hash[..6]); // 6 bytes = 12 hex chars
+    // Guarantee at least one hex letter (a-f) so a UID is never all-digits and thus
+    // never mistaken for a numeric entry id by id-or-uid resolution.
+    if uid.bytes().any(|b| b.is_ascii_alphabetic()) {
+        uid
+    } else {
+        format!("a{}", &uid[1..])
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

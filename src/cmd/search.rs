@@ -31,7 +31,13 @@ pub fn cmd_search(
             items.push((score, label, r, kws));
         }
     }
-    items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score ASC (smaller 1/(1+|bm25|) = better match), tie-break on
+    // updated_at DESC — matching the per-DB SQL order `ORDER BY rank, updated_at DESC`.
+    items.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
+    });
     items.truncate(limit);
 
     let result_count = items.len().to_string();
