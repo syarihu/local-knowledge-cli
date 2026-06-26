@@ -49,13 +49,19 @@ pub fn cmd_export(
     }
 
     let output_dir = dir.unwrap_or(default_dir);
+    // Only harden a directory we actually create — never clobber the permissions of
+    // a pre-existing dir the user manages (e.g. a custom `user_knowledge_dir`).
+    let dir_existed = output_dir.exists();
     std::fs::create_dir_all(&output_dir)?;
+    let restrict_files = scope == super::Scope::User;
     let root = match scope {
         super::Scope::Project => get_project_root(),
         // Canonicalized parent so export and sync agree on the rel-path even through
         // a symlinked knowledge dir (keeps source_file relative + portable).
         super::Scope::User => {
-            crate::util::restrict_to_owner(&output_dir, true);
+            if !dir_existed {
+                crate::util::restrict_to_owner(&output_dir, true);
+            }
             crate::util::user_md_root(&output_dir)
         }
     };
@@ -68,6 +74,7 @@ pub fn cmd_export(
         query,
         allow_secrets,
         secret_detection,
+        restrict_files,
     )
 }
 
@@ -80,6 +87,7 @@ fn export_to_dir(
     query: Option<&str>,
     allow_secrets: bool,
     secret_detection: bool,
+    restrict_files: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let entries = if let Some(ids_str) = ids {
         // Export specific entries by ID
@@ -199,6 +207,12 @@ fn export_to_dir(
         }
 
         std::fs::write(&filepath, lines.join("\n"))?;
+        // User-scope md can hold private knowledge — keep it owner-only even if the
+        // containing dir is loosened. (Git tracks only the exec bit, so 0600 vs 0644
+        // causes no diff churn for a dotfiles-tracked store.)
+        if restrict_files {
+            crate::util::restrict_to_owner(&filepath, false);
+        }
 
         // Compute the stored source_file from the canonicalized path so it matches
         // what `sync`/`import_md_file` derive from walkdir (which canonicalizes).

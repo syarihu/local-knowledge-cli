@@ -1331,4 +1331,71 @@ fn test_user_scope_store_is_owner_only() {
         0o600,
         "user DB should be 0600"
     );
+
+    // Exported markdown itself must be owner-only too.
+    let export = lk_bin()
+        .args(["export", "--scope", "user"])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    let kdir = home.path().join(".config/lk/knowledge");
+    assert_eq!(mode(&kdir), 0o700, "auto-created md dir should be 0700");
+    let md = std::fs::read_dir(&kdir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("exported-"))
+        })
+        .unwrap();
+    assert_eq!(mode(&md), 0o600, "exported md should be 0600");
+}
+
+/// A pre-existing user_knowledge_dir keeps its own permissions — export must not
+/// clobber a dir the user manages (e.g. a shared dotfiles location).
+#[cfg(unix)]
+#[test]
+fn test_user_scope_export_preserves_existing_dir_perms() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    // Pre-create the default knowledge dir at a deliberately looser 0755.
+    let kdir = home.path().join(".config/lk/knowledge");
+    std::fs::create_dir_all(&kdir).unwrap();
+    std::fs::set_permissions(&kdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+    assert!(
+        run(&[
+            "add",
+            "k note",
+            "--keywords",
+            "k",
+            "--content",
+            "c",
+            "--scope",
+            "user",
+        ])
+        .status
+        .success()
+    );
+    assert!(run(&["export", "--scope", "user"]).status.success());
+
+    let mode = std::fs::metadata(&kdir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o755,
+        "export must not clobber a pre-existing dir's permissions"
+    );
 }
