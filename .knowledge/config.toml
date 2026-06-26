@@ -1,0 +1,30 @@
+# lk configuration
+# This file is read by lk commands. Environment variables override these values.
+
+# Days before a shared entry is considered stale (default: 30)
+stale_threshold_days = 30
+
+# Days before a local entry is considered stale (default: 7)
+local_stale_threshold_days = 7
+
+# Default limit for `lk search` results (default: 5)
+search_default_limit = 5
+
+# Auto-sync .knowledge/ markdown files before read commands (default: true)
+# Override with LK_NO_AUTO_SYNC=1
+auto_sync = true
+
+# Detect potential secrets in content when adding/exporting entries (default: true)
+secret_detection = true
+
+# Enable command logging to .knowledge/command.log (default: false)
+# Override with LK_COMMAND_LOG=1
+command_log = false
+
+# Mark .knowledge/**/*.md as linguist-generated in .gitattributes (default: true)
+# Set to false to show full diffs for .knowledge/**/*.md in GitHub PRs
+gitattributes_generated = true
+
+# Category templates: Place markdown files in .knowledge/templates/
+# e.g., .knowledge/templates/decisions.md will be used as default content
+# when running `lk add "Title" --category decisions` without --content
