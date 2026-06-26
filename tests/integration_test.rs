@@ -888,3 +888,192 @@ fn test_uninit_explicit_project_errors() {
         "error should prompt to run lk init: {stderr}"
     );
 }
+
+// ── user-scope markdown export/sync (ADR id:33) ──────────────────────
+
+/// `lk add --scope user` → `lk export --scope user` writes markdown under
+/// `~/.config/lk/knowledge/`, flips the entry to `shared`, and a default global
+/// `config.toml` is scaffolded.
+#[test]
+fn test_user_scope_export_writes_markdown() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+
+    // Seed a user-scope entry.
+    let add = run(&[
+        "add",
+        "user pref",
+        "--keywords",
+        "prefs",
+        "--content",
+        "always use tabs",
+        "--scope",
+        "user",
+    ]);
+    assert!(add.status.success());
+
+    // Export it to the user-scope markdown dir.
+    let export = run(&["export", "--scope", "user"]);
+    assert!(
+        export.status.success(),
+        "user export failed: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+
+    // Markdown landed under the user knowledge dir, never inside the project.
+    let knowledge_dir = home.path().join(".config/lk/knowledge");
+    let exported: Vec<_> = std::fs::read_dir(&knowledge_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("exported-"))
+        .collect();
+    assert_eq!(exported.len(), 1, "expected one exported-*.md file");
+    assert!(!proj.path().join(".knowledge").exists());
+
+    // Default global config.toml was scaffolded.
+    assert!(home.path().join(".config/lk/config.toml").is_file());
+
+    // The entry is now shared in the user DB.
+    let list = run(&["list", "--scope", "user", "--source", "shared", "--json"]);
+    let s = String::from_utf8_lossy(&list.stdout);
+    assert!(s.contains("user pref"), "entry should be shared now: {s}");
+}
+
+/// Editing the exported markdown and running `lk sync --scope user` imports the
+/// change back into the user DB (md is the source of truth). `--write-uids` bakes
+/// the uid into the markdown.
+#[test]
+fn test_user_scope_sync_round_trip() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+
+    assert!(
+        run(&[
+            "add",
+            "rt note",
+            "--keywords",
+            "sync",
+            "--content",
+            "v1",
+            "--scope",
+            "user",
+        ])
+        .status
+        .success()
+    );
+    assert!(run(&["export", "--scope", "user"]).status.success());
+
+    // Locate the single exported markdown file (group name = first keyword).
+    let knowledge_dir = home.path().join(".config/lk/knowledge");
+    let md = std::fs::read_dir(&knowledge_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("exported-"))
+        })
+        .expect("expected an exported-*.md file");
+
+    // Edit the markdown content, then sync it back.
+    let text = std::fs::read_to_string(&md).unwrap();
+    std::fs::write(&md, text.replace("v1", "v2-edited")).unwrap();
+
+    let sync = run(&["sync", "--scope", "user", "--write-uids", "--json"]);
+    assert!(
+        sync.status.success(),
+        "user sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    let out = String::from_utf8_lossy(&sync.stdout);
+    assert!(
+        out.contains("\"updated\":") || out.contains("\"added\":"),
+        "sync json should report stats: {out}"
+    );
+
+    // The DB now reflects the edited content.
+    let search = run(&["search", "v2-edited", "--scope", "user", "--full", "--json"]);
+    let s = String::from_utf8_lossy(&search.stdout);
+    assert!(s.contains("v2-edited"), "edited content not synced: {s}");
+
+    // UID was written back into the markdown.
+    let md_after = std::fs::read_to_string(&md).unwrap();
+    assert!(
+        md_after.contains("uid:"),
+        "write_uids should bake a uid into md: {md_after}"
+    );
+}
+
+/// `user_knowledge_dir` in the global config.toml redirects the export target.
+#[test]
+fn test_user_scope_export_honors_config_dir() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    // Point the user knowledge dir at a custom location under HOME.
+    let cfg_dir = home.path().join(".config/lk");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "user_knowledge_dir = ~/custom-knowledge\n",
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+
+    assert!(
+        run(&[
+            "add",
+            "cfg note",
+            "--keywords",
+            "cfg",
+            "--content",
+            "c",
+            "--scope",
+            "user",
+        ])
+        .status
+        .success()
+    );
+    assert!(run(&["export", "--scope", "user"]).status.success());
+
+    // Exported to the configured dir, not the default ~/.config/lk/knowledge.
+    let custom = home.path().join("custom-knowledge");
+    let exported: Vec<_> = std::fs::read_dir(&custom)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("exported-"))
+        .collect();
+    assert_eq!(
+        exported.len(),
+        1,
+        "export should honor user_knowledge_dir and write one file"
+    );
+    assert!(!home.path().join(".config/lk/knowledge").exists());
+}

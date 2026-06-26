@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Project-level configuration loaded from `.knowledge/config.toml`.
 pub struct Config {
@@ -148,6 +148,101 @@ gitattributes_generated = true
 # when running `lk add \"Title\" --category decisions` without --content
 ";
 
+/// Global (user-scope) configuration loaded from `~/.config/lk/config.toml`.
+///
+/// This is the first global config file for lk. It governs the user-scope
+/// markdown store used by `lk export --scope user` / `lk sync --scope user`.
+/// (`~/.config/lk/config.json` remains install/update metadata only.)
+pub struct GlobalConfig {
+    /// Directory holding user-scope markdown (the source of truth for user knowledge).
+    /// Default: `~/.config/lk/knowledge`. Can point at a dotfiles repo path.
+    pub user_knowledge_dir: PathBuf,
+    /// Detect potential secrets when exporting user-scope entries (default: true).
+    pub secret_detection: bool,
+}
+
+impl GlobalConfig {
+    fn default_with_home(home: &Path) -> Self {
+        Self {
+            user_knowledge_dir: home.join(".config").join("lk").join("knowledge"),
+            secret_detection: true,
+        }
+    }
+
+    /// Load config from `~/.config/lk/config.toml`. Returns defaults if the file
+    /// doesn't exist. Paths are resolved to absolute (see [`resolve_path`]).
+    pub fn load() -> Self {
+        let home = crate::util::home_dir();
+        Self::load_from(&home.join(".config").join("lk").join("config.toml"), &home)
+    }
+
+    /// Load from an explicit config path, resolving relative/`~` paths against `home`.
+    /// Exposed for testing.
+    pub fn load_from(config_path: &Path, home: &Path) -> Self {
+        let mut config = Self::default_with_home(home);
+
+        if let Ok(content) = std::fs::read_to_string(config_path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once('=') {
+                    let key = key.trim();
+                    // Strip optional surrounding quotes from the value.
+                    let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+                    match key {
+                        "user_knowledge_dir" => {
+                            if !value.is_empty() {
+                                config.user_knowledge_dir = resolve_path(value, home);
+                            }
+                        }
+                        "secret_detection" => {
+                            config.secret_detection = value == "true";
+                        }
+                        _ => {} // Ignore unknown keys
+                    }
+                }
+            }
+        }
+
+        config
+    }
+}
+
+/// Resolve a config path value to an absolute path:
+/// - absolute paths are used as-is
+/// - `~` / `~/...` expands against `home`
+/// - other relative paths are resolved against `home`
+fn resolve_path(value: &str, home: &Path) -> PathBuf {
+    if value == "~" {
+        return home.to_path_buf();
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        return home.join(rest);
+    }
+    let p = Path::new(value);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        home.join(p)
+    }
+}
+
+/// Default content for `~/.config/lk/config.toml`.
+pub const DEFAULT_GLOBAL_CONFIG_CONTENT: &str = "\
+# lk global configuration (user scope)
+# Governs the user-scope markdown store (`lk export/sync --scope user`).
+
+# Directory holding user-scope markdown — the source of truth for user knowledge.
+# Default: ~/.config/lk/knowledge. Point this at a dotfiles repo to version it,
+# e.g. user_knowledge_dir = ~/dotfiles/lk-knowledge
+# user_knowledge_dir = ~/.config/lk/knowledge
+
+# Detect potential secrets when exporting user-scope entries (default: true).
+secret_detection = true
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +318,44 @@ mod tests {
         assert_eq!(config.stale_threshold_for("local"), 7);
         assert_eq!(config.stale_threshold_for("shared"), 30);
         assert_eq!(config.stale_threshold_for("unknown"), 30);
+    }
+
+    #[test]
+    fn test_global_config_defaults_when_missing() {
+        let home = TempDir::new().unwrap();
+        let cfg = GlobalConfig::load_from(&home.path().join("config.toml"), home.path());
+        assert_eq!(
+            cfg.user_knowledge_dir,
+            home.path().join(".config").join("lk").join("knowledge")
+        );
+        assert!(cfg.secret_detection);
+    }
+
+    #[test]
+    fn test_global_config_custom_values() {
+        let home = TempDir::new().unwrap();
+        let config_path = home.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "# global\nuser_knowledge_dir = /abs/path/knowledge\nsecret_detection = false\n",
+        )
+        .unwrap();
+        let cfg = GlobalConfig::load_from(&config_path, home.path());
+        assert_eq!(cfg.user_knowledge_dir, PathBuf::from("/abs/path/knowledge"));
+        assert!(!cfg.secret_detection);
+    }
+
+    #[test]
+    fn test_global_config_tilde_and_relative_expansion() {
+        let home = TempDir::new().unwrap();
+        let config_path = home.path().join("config.toml");
+
+        std::fs::write(&config_path, "user_knowledge_dir = ~/dotfiles/lk\n").unwrap();
+        let cfg = GlobalConfig::load_from(&config_path, home.path());
+        assert_eq!(cfg.user_knowledge_dir, home.path().join("dotfiles/lk"));
+
+        std::fs::write(&config_path, "user_knowledge_dir = \"rel/knowledge\"\n").unwrap();
+        let cfg = GlobalConfig::load_from(&config_path, home.path());
+        assert_eq!(cfg.user_knowledge_dir, home.path().join("rel/knowledge"));
     }
 }

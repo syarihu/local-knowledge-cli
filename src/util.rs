@@ -152,6 +152,31 @@ pub fn get_user_db_path() -> PathBuf {
     home_dir().join(".config").join("lk").join("knowledge.db")
 }
 
+/// The global lk config directory: `~/.config/lk`.
+pub fn get_user_config_dir() -> PathBuf {
+    home_dir().join(".config").join("lk")
+}
+
+/// Directory holding user-scope markdown (source of truth for user knowledge).
+/// Defaults to `~/.config/lk/knowledge`, overridable via `user_knowledge_dir` in
+/// `~/.config/lk/config.toml` (e.g. to point at a dotfiles repo).
+pub fn get_user_knowledge_dir() -> PathBuf {
+    crate::config::GlobalConfig::load().user_knowledge_dir
+}
+
+/// Write a default `~/.config/lk/config.toml` if none exists, so users can
+/// discover the `user_knowledge_dir` option. Best-effort; returns the path if
+/// it created the file (for an informational note), else `None`.
+pub fn ensure_global_config_scaffold() -> Option<PathBuf> {
+    let config_path = get_user_config_dir().join("config.toml");
+    if config_path.exists() {
+        return None;
+    }
+    std::fs::create_dir_all(get_user_config_dir()).ok()?;
+    std::fs::write(&config_path, crate::config::DEFAULT_GLOBAL_CONFIG_CONTENT).ok()?;
+    Some(config_path)
+}
+
 /// Open the user-scope DB if it already exists, else `None`.
 /// Reads must not create it. It is a DB-only store, so no auto-sync or
 /// `.lk-version` checks run here (those apply to per-project markdown).

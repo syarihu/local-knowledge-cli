@@ -10,12 +10,65 @@ pub fn cmd_export(
     ids: Option<&str>,
     query: Option<&str>,
     allow_secrets: bool,
+    scope: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = open_db_with_migrate()?;
-    let output_dir = dir.unwrap_or_else(get_knowledge_dir);
-    std::fs::create_dir_all(&output_dir)?;
-    let root = get_project_root();
+    let scope = super::parse_scope(scope)?;
 
+    // Resolve the (connection, default output dir, root for rel-path, secret config)
+    // per scope. Project keeps its historical root (the project root) so stored
+    // source_file paths are unchanged; user scope uses the output dir's parent.
+    let (conn, default_dir, secret_detection) = match scope {
+        super::Scope::Project => (
+            open_db_with_migrate()?,
+            get_knowledge_dir(),
+            crate::config::Config::load(&get_knowledge_dir()).secret_detection,
+        ),
+        super::Scope::User => {
+            if let Some(path) = crate::util::ensure_global_config_scaffold() {
+                println!(
+                    "Created {} (edit to customize user_knowledge_dir).",
+                    path.display()
+                );
+            }
+            (
+                crate::util::open_or_create_user_db()?,
+                crate::util::get_user_knowledge_dir(),
+                crate::config::GlobalConfig::load().secret_detection,
+            )
+        }
+    };
+
+    let output_dir = dir.unwrap_or(default_dir);
+    std::fs::create_dir_all(&output_dir)?;
+    let root = match scope {
+        super::Scope::Project => get_project_root(),
+        super::Scope::User => output_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| output_dir.clone()),
+    };
+
+    export_to_dir(
+        &conn,
+        &output_dir,
+        &root,
+        ids,
+        query,
+        allow_secrets,
+        secret_detection,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_to_dir(
+    conn: &rusqlite::Connection,
+    output_dir: &std::path::Path,
+    root: &std::path::Path,
+    ids: Option<&str>,
+    query: Option<&str>,
+    allow_secrets: bool,
+    secret_detection: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let entries = if let Some(ids_str) = ids {
         // Export specific entries by ID
         let mut selected = Vec::new();
@@ -24,7 +77,7 @@ pub fn cmd_export(
                 .trim()
                 .parse()
                 .map_err(|_| format!("Invalid ID: {}", id_str.trim()))?;
-            match db::get_entry(&conn, id)? {
+            match db::get_entry(conn, id)? {
                 Some(entry) => {
                     if entry.source != "local" {
                         eprintln!("Warning: Entry #{id} is already shared, skipping.");
@@ -41,10 +94,10 @@ pub fn cmd_export(
     } else if let Some(q) = query {
         // Export entries matching a search query
 
-        db::search_entries(&conn, q, false, None, Some("local"), None, 100)?
+        db::search_entries(conn, q, false, None, Some("local"), None, 100)?
     } else {
         // Export all local entries
-        db::list_entries_by_source(&conn, "local")?
+        db::list_entries_by_source(conn, "local")?
     };
 
     if entries.is_empty() {
@@ -53,28 +106,25 @@ pub fn cmd_export(
     }
 
     // Secret detection before export
-    if !allow_secrets {
-        let config = crate::config::Config::load(&crate::util::get_knowledge_dir());
-        if config.secret_detection {
-            let mut all_matches = Vec::new();
-            for entry in &entries {
-                let text = format!("{}\n{}", entry.title, entry.content);
-                let matches = crate::secrets::check_for_secrets(&text);
-                for m in matches {
-                    all_matches.push((entry.id, entry.title.clone(), m));
-                }
+    if !allow_secrets && secret_detection {
+        let mut all_matches = Vec::new();
+        for entry in &entries {
+            let text = format!("{}\n{}", entry.title, entry.content);
+            let matches = crate::secrets::check_for_secrets(&text);
+            for m in matches {
+                all_matches.push((entry.id, entry.title.clone(), m));
             }
-            if !all_matches.is_empty() {
-                eprintln!("Potential secrets detected in entries to export:");
-                for (id, title, m) in &all_matches {
-                    eprintln!(
-                        "  Entry #{id} \"{title}\": {} ({})",
-                        m.pattern_name, m.matched
-                    );
-                }
-                eprintln!("\nUse --allow-secrets to override this check.");
-                return Err("secret_detected".into());
+        }
+        if !all_matches.is_empty() {
+            eprintln!("Potential secrets detected in entries to export:");
+            for (id, title, m) in &all_matches {
+                eprintln!(
+                    "  Entry #{id} \"{title}\": {} ({})",
+                    m.pattern_name, m.matched
+                );
             }
+            eprintln!("\nUse --allow-secrets to override this check.");
+            return Err("secret_detected".into());
         }
     }
 
@@ -82,7 +132,7 @@ pub fn cmd_export(
     let mut groups: std::collections::BTreeMap<String, Vec<db::Entry>> =
         std::collections::BTreeMap::new();
     for entry in entries {
-        let kws = db::get_keywords(&conn, entry.id)?;
+        let kws = db::get_keywords(conn, entry.id)?;
         let group = kws
             .first()
             .cloned()
@@ -98,14 +148,10 @@ pub fn cmd_export(
 
         let filename = format!("exported-{group_name}.md");
         let filepath = output_dir.join(&filename);
-        let rel_path = filepath
-            .strip_prefix(&root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| filepath.to_string_lossy().to_string());
 
         let mut all_kws: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for entry in &sorted_entries {
-            let kws = db::get_keywords(&conn, entry.id)?;
+            let kws = db::get_keywords(conn, entry.id)?;
             all_kws.extend(kws);
         }
 
@@ -120,7 +166,7 @@ pub fn cmd_export(
         lines.push(format!("# Exported: {group_name}\n"));
 
         for entry in &sorted_entries {
-            let kws = db::get_keywords(&conn, entry.id)?;
+            let kws = db::get_keywords(conn, entry.id)?;
             lines.push(format!("## Entry: {}", entry.title));
             lines.push(format!("keywords: [{}]", kws.join(", ")));
             if !entry.uid.is_empty() {
@@ -142,10 +188,20 @@ pub fn cmd_export(
 
         std::fs::write(&filepath, lines.join("\n"))?;
 
+        // Compute the stored source_file from the canonicalized path so it matches
+        // what `sync`/`import_md_file` derive from walkdir (which canonicalizes).
+        // Without this, a symlinked knowledge dir (the dotfiles use case) would make
+        // export and sync disagree on the path, breaking the md→DB round-trip.
+        let canonical = std::fs::canonicalize(&filepath).unwrap_or_else(|_| filepath.clone());
+        let rel_path = canonical
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| canonical.to_string_lossy().to_string());
+
         let fhash = markdown::file_hash(&filepath)?;
         let now = now_iso();
         for entry in group_entries {
-            db::update_entry_to_shared(&conn, entry.id, &rel_path, &fhash, &now)?;
+            db::update_entry_to_shared(conn, entry.id, &rel_path, &fhash, &now)?;
         }
 
         total += group_entries.len();

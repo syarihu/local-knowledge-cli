@@ -11,14 +11,43 @@ pub struct SyncStats {
     pub unchanged: usize,
 }
 
-pub fn cmd_sync(json_output: bool, write_uids: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_sync(
+    json_output: bool,
+    write_uids: bool,
+    scope: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = super::parse_scope(scope)?;
     super::log_command(
         "sync",
-        &[("write_uids", if write_uids { "true" } else { "false" })],
+        &[
+            ("write_uids", if write_uids { "true" } else { "false" }),
+            ("scope", scope.label()),
+        ],
     );
-    let conn = open_db_with_migrate()?;
-    let root = get_project_root();
-    let knowledge_dir = get_knowledge_dir();
+
+    // Resolve (connection, markdown dir, root for rel-path) per scope. User scope
+    // reads the configured `user_knowledge_dir` into the global ~/.config/lk DB,
+    // requiring an existing user DB (created on first `lk add`/`export --scope user`).
+    let (conn, knowledge_dir, root) = match scope {
+        super::Scope::Project => (
+            open_db_with_migrate()?,
+            get_knowledge_dir(),
+            get_project_root(),
+        ),
+        super::Scope::User => {
+            let conn = crate::util::open_user_db()?.ok_or(
+                "No user-scope knowledge DB exists yet (~/.config/lk/knowledge.db). \
+                 Create one with `lk add \"...\" --scope user` or `lk export --scope user`.",
+            )?;
+            let knowledge_dir = crate::util::get_user_knowledge_dir();
+            let root = knowledge_dir
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| knowledge_dir.clone());
+            (conn, knowledge_dir, root)
+        }
+    };
+
     let stats = sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
 
     let mut uids_written = 0;
