@@ -13,6 +13,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Export local entries to markdown for team sharing (stable output order)
 - Secret detection — warns when content contains API keys, tokens, or credentials
 - Project config via `.knowledge/config.toml` (git-tracked, team-shareable)
+- User-scope (global) knowledge at `~/.config/lk/knowledge.db` — carry personal notes and cross-project context (e.g. session handoff logs) across all projects with `--scope user`; reads merge project + user by default
 - Bulk delete with `purge` by category or source
 - Auto-extract keywords from entries
 - Self-update from GitHub Releases
@@ -107,6 +108,7 @@ Commands:
 - `--full` - Include full content in JSON output, eliminating the need for `lk get` (for `search`)
 - `--force` - Skip duplicate check when adding (for `add`)
 - `--allow-secrets` - Allow content that contains potential secrets (for `add`, `export`)
+- `--scope <scope>` - Knowledge store to use. Writes (`add`) and targets (`get`/`edit`/`delete`/`supersede`): `project` (default) or `user`. Reads (`search`/`list`/`stats`): `project`, `user`, or `all` (default, merged)
 
 ## How It Works
 
@@ -142,6 +144,21 @@ Knowledge entries have two categories:
 - **Local** (DB only, git-ignored) — LLM investigation cache that reduces context consumption when working on similar tasks repeatedly. These stay on your machine as disposable cache. Stale after 7 days (configurable). When stale, re-investigate rather than updating.
 
 A good rule of thumb: shared knowledge is for stable facts that would help a new team member or Claude understand the project. Local knowledge is a performance optimization — it lets Claude skip re-reading code it recently investigated.
+
+### Project scope vs user scope
+
+Knowledge lives in one of two stores:
+
+- **Project scope** (default) — the per-project `.knowledge/knowledge.db` resolved from the current directory. This is where shared and local knowledge for *this* repo lives.
+- **User scope** — a single global DB at `~/.config/lk/knowledge.db`, shared across every project. It is DB-only (not git-tracked, no markdown/sync) and never committed. Use it for personal notes and cross-project context such as session handoff logs. The DB is created on first `--scope user` write.
+
+How scope is selected:
+
+- **Writes** (`add`): `--scope project` (default) or `--scope user`.
+- **Reads** (`search`, `list`, `stats`): `--scope all` (default — merges both stores and tags each result with its `scope`), or restrict to `project` / `user`.
+- **Targets** (`get`, `edit`, `delete`, `supersede`): pass an entry id or uid. A numeric id resolves in the project DB (or the DB named by `--scope`); a uid resolves across scopes (project, then user). Because project and user ids both start at 1, address user-scope entries by uid (shown in `--json` output). `supersede` requires both entries in the same scope.
+
+The `lk-knowledge` MCP tools mirror this: `search_knowledge` / `list_knowledge` / `get_stats` take a `scope`, `add_knowledge` takes a `scope`, and `get_knowledge` / `update_knowledge` / `supersede_knowledge` accept an id or uid string.
 
 ### Team workflow
 
