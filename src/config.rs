@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 /// Parse a boolean config value leniently. Accepts `true/false`, `yes/no`, `1/0`,
-/// `on/off` (case-insensitive). Unknown values keep `current` and emit a warning,
-/// so a typo (e.g. `secret_detection = TRUE`) can't silently flip a safety setting
-/// to its non-default (fail-open) state.
+/// `on/off` (case-insensitive, so `TRUE` and `False` are valid). An unrecognized
+/// value (e.g. `secret_detection = treu`) keeps `current` and emits a warning, so a
+/// typo can't silently flip a safety setting to its non-default (fail-open) state.
 fn parse_bool(value: &str, key: &str, current: bool) -> bool {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "yes" | "1" | "on" => true,
