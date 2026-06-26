@@ -217,7 +217,7 @@ pub fn warn_if_not_owner_only(path: &Path) {
             if mode & 0o077 != 0 {
                 eprintln!(
                     "Warning: {} is not owner-only ({mode:#o}); other users can list its \
-                     filenames. Run `chmod 700 {}` to restrict it.",
+                     filenames. Run `chmod 700 '{}'` to restrict it.",
                     path.display(),
                     path.display(),
                 );

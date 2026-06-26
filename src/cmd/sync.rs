@@ -369,7 +369,7 @@ pub fn import_md_file(
             // transaction rolls back, leaving the DB untouched.
             Err(e) if is_duplicate_uid_error(e.as_ref()) => {
                 return Err(format!(
-                    "duplicate uid {} for {:?} in {} — it collides with an existing entry \
+                    "duplicate uid {} for '{}' in {} — it collides with an existing entry \
                      (e.g. a local entry of the same uid). Resolve the conflict and retry.",
                     entry.uid.as_deref().unwrap_or("?"),
                     entry.title,
