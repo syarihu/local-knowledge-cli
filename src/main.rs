@@ -219,7 +219,7 @@ enum Commands {
         #[arg(long)]
         skip_verify: bool,
     },
-    /// Install Claude Code slash commands
+    /// Install Claude Code slash commands and refresh existing lk-instructions.md (project + global)
     InstallCommands,
     /// Uninstall lk from current project (removes .knowledge/, CLAUDE.md section, .gitignore entries)
     Uninstall {
@@ -390,7 +390,7 @@ fn main() {
         Commands::Stats { json, verbose } => cmd::cmd_stats(json, verbose),
         Commands::CommandLog { lines } => cmd::cmd_command_log(lines),
         Commands::Update { skip_verify } => cmd::cmd_update(skip_verify),
-        Commands::InstallCommands => cmd::install_embedded_commands(),
+        Commands::InstallCommands => cmd::cmd_install_commands(),
         Commands::Uninstall { yes } => cmd::cmd_uninstall(yes),
         Commands::Mcp { project } => mcp::run_server(project),
         Commands::InstallMcp {
