@@ -8,12 +8,15 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = home_dir().join(".config").join("lk");
     let config_path = config_dir.join("config.json");
 
-    let repo = if config_path.exists() {
+    let (repo, prior_version) = if config_path.exists() {
         let config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path)?)?;
-        config["repo"].as_str().unwrap_or(DEFAULT_REPO).to_string()
+        (
+            config["repo"].as_str().unwrap_or(DEFAULT_REPO).to_string(),
+            config["version"].as_str().map(|s| s.to_string()),
+        )
     } else {
-        DEFAULT_REPO.to_string()
+        (DEFAULT_REPO.to_string(), None)
     };
 
     let homebrew = is_homebrew_install();
@@ -29,11 +32,20 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
                 "brew upgrade failed. Try: brew update && brew upgrade syarihu/tap/lk".into(),
             );
         }
-        // Resolve via PATH (not current_exe): `brew upgrade` repoints the brew
-        // symlink to the new keg, but this process's current_exe still canonicalizes
-        // to the OLD keg, which would re-run the pre-upgrade binary and reintroduce
-        // the one-version content lag. `lk` on PATH points at the upgraded binary.
-        PathBuf::from("lk")
+        // Resolve the brew-managed symlink directly. `brew upgrade` repoints it to
+        // the new keg, whereas this process's current_exe still canonicalizes to the
+        // OLD keg (re-running the pre-upgrade binary would reintroduce the one-version
+        // content lag). Using `$(brew --prefix)/bin/lk` avoids that and does not depend
+        // on PATH ordering or PATH containing the brew bin dir; fall back to PATH `lk`.
+        std::process::Command::new("brew")
+            .arg("--prefix")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| PathBuf::from(s.trim()).join("bin").join("lk"))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| PathBuf::from("lk"))
     } else {
         // Manual installation: download from GitHub releases
         let target = detect_target()?;
@@ -119,23 +131,35 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
     // binary (not this still-running old process), so new embedded content applies
     // immediately instead of lagging one `lk update` behind. `include_str!` bakes
     // content in at compile time, so the in-process copy is the pre-update version.
-    let install_status = std::process::Command::new(&dest)
-        .arg("install-commands")
-        .status();
-    if !matches!(install_status, Ok(ref s) if s.success()) {
+    let install_ok = matches!(
+        std::process::Command::new(&dest).arg("install-commands").status(),
+        Ok(s) if s.success()
+    );
+    if !install_ok {
+        // The new binary is already in place; this post-step is best-effort, so we
+        // don't abort, but we must not report a clean success either.
         eprintln!(
-            "Warning: could not refresh commands/instructions from the updated binary. \
-             Run `lk install-commands` manually."
+            "Warning: the updated binary was installed, but refreshing commands/instructions \
+             failed. Run `lk install-commands` manually."
         );
     }
 
-    // Get the version from the newly installed binary
-    let new_version = std::process::Command::new(&dest)
+    // Confirm the version from the newly installed binary. None = could not confirm
+    // (e.g. the new binary wasn't invokable); never silently claim the old in-process
+    // VERSION as if it were freshly installed.
+    let new_version: Option<String> = std::process::Command::new(&dest)
         .arg("--version")
         .output()
         .ok()
+        .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().strip_prefix("lk ").map(|v| v.to_string()))
+        .and_then(|s| s.trim().strip_prefix("lk ").map(|v| v.to_string()));
+
+    // Record the confirmed version; if unconfirmed, keep the previously recorded one
+    // rather than overwriting it with a possibly-wrong value.
+    let recorded_version = new_version
+        .clone()
+        .or(prior_version)
         .unwrap_or_else(|| VERSION.to_string());
 
     // Update config
@@ -143,7 +167,7 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config_json = serde_json::json!({
         "install_dir": "",
         "installed_at": now_iso(),
-        "version": new_version,
+        "version": recorded_version,
         "repo": repo,
     });
     std::fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
@@ -154,7 +178,10 @@ pub fn cmd_update(skip_verify: bool) -> Result<(), Box<dyn std::error::Error>> {
         let _ = open_db_with_migrate(); // run migration + auto-sync if needed
     }
 
-    println!("\nUpdate complete! (lk {new_version})");
+    match new_version {
+        Some(v) => println!("\nUpdate complete! (lk {v})"),
+        None => println!("\nUpdate complete! (binary updated; run `lk --version` to confirm)"),
+    }
     Ok(())
 }
 
