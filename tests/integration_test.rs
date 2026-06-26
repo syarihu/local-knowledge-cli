@@ -1078,10 +1078,10 @@ fn test_user_scope_export_honors_config_dir() {
     assert!(!home.path().join(".config/lk/knowledge").exists());
 }
 
-/// Two markdown files sharing a uid must not abort the whole user-scope sync:
-/// the duplicate is skipped with a warning and the rest still imports.
+/// Two markdown files sharing a uid is an identity conflict: sync fails up front
+/// with a clear, actionable message and leaves the DB untouched (no silent data loss).
 #[test]
-fn test_user_scope_sync_skips_duplicate_uid() {
+fn test_user_scope_sync_rejects_duplicate_uid() {
     let home = tempfile::tempdir().unwrap();
     let proj = setup_temp_project();
 
@@ -1124,17 +1124,68 @@ fn test_user_scope_sync_skips_duplicate_uid() {
         .unwrap();
     std::fs::copy(&orig, kdir.join("zzz-copy.md")).unwrap();
 
-    // Sync must still succeed (not crash on UNIQUE(uid)).
+    // Sync must fail with a clear conflict message, not silently skip.
     let sync = run(&["sync", "--scope", "user", "--json"]);
     assert!(
-        sync.status.success(),
-        "sync should skip the dup uid, not fail: {}",
-        String::from_utf8_lossy(&sync.stderr)
+        !sync.status.success(),
+        "sync should reject the duplicate uid"
     );
     let stderr = String::from_utf8_lossy(&sync.stderr);
     assert!(
         stderr.contains("duplicate uid"),
-        "should warn about the duplicate uid: {stderr}"
+        "should explain the duplicate uid conflict: {stderr}"
+    );
+
+    // The original entry is untouched — still findable after the rejected sync.
+    let search = run(&["search", "dup note", "--scope", "user", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&search.stdout).contains("dup note"),
+        "rejected sync must not delete the existing entry"
+    );
+}
+
+/// Exporting into a `--dir` that equals the configured user_knowledge_dir is a
+/// normal managed export (flips to shared, syncable) — not a dump.
+#[test]
+fn test_user_scope_export_dir_equal_to_managed_is_managed() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let kdir = home.path().join(".config/lk/knowledge");
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap()
+    };
+    assert!(
+        run(&[
+            "add",
+            "m note",
+            "--keywords",
+            "m",
+            "--content",
+            "c",
+            "--scope",
+            "user",
+        ])
+        .status
+        .success()
+    );
+    // --dir explicitly set to the default managed dir → should behave as managed.
+    let export = run(&["export", "--scope", "user", "--dir", kdir.to_str().unwrap()]);
+    assert!(export.status.success());
+    assert!(
+        !String::from_utf8_lossy(&export.stderr).contains("one-off dump"),
+        "exporting to the managed dir should not warn about a dump"
+    );
+    // Entry is now shared (managed), not left local.
+    let shared = run(&["list", "--scope", "user", "--source", "shared", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&shared.stdout).contains("m note"),
+        "export to managed dir should flip entry to shared"
     );
 }
 

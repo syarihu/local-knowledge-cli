@@ -39,12 +39,22 @@ pub fn cmd_export(
         }
     };
 
-    // A custom `--dir` for user scope is a one-off DUMP, not a managed store:
-    // `lk sync --scope user` only reads `user_knowledge_dir`, so if we flipped these
-    // entries to `shared` with a source_file pointing at the custom dir, the next
-    // user-scope sync would treat those files as "missing" and DELETE the entries.
-    // So dump-only: write the md but leave entries `local` (and don't touch source_file).
-    let dump_only = scope == super::Scope::User && dir.is_some();
+    // The managed store for this scope (project `.knowledge` or user `user_knowledge_dir`).
+    let managed_dir = default_dir.clone();
+    let output_dir = dir.unwrap_or(default_dir);
+    // Only harden a directory we actually create — never clobber the permissions of
+    // a pre-existing dir the user manages (e.g. a custom `user_knowledge_dir`).
+    let dir_existed = output_dir.exists();
+    std::fs::create_dir_all(&output_dir)?;
+
+    // A user-scope export to a dir OTHER than the managed `user_knowledge_dir` is a
+    // one-off DUMP, not a managed store: `lk sync --scope user` only reads the managed
+    // dir, so if we flipped these entries to `shared` with a source_file pointing at
+    // the custom dir, the next user-scope sync would treat those files as "missing" and
+    // DELETE the entries. So dump-only: write the md but leave entries `local`. When the
+    // dir equals the managed store (compared canonically), it's a normal managed export.
+    let dump_only =
+        scope == super::Scope::User && !crate::util::paths_equivalent(&output_dir, &managed_dir);
     if dump_only {
         eprintln!(
             "Warning: `--dir` is a one-off dump; entries stay local and are NOT synced. \
@@ -52,11 +62,6 @@ pub fn cmd_export(
         );
     }
 
-    let output_dir = dir.unwrap_or(default_dir);
-    // Only harden a directory we actually create — never clobber the permissions of
-    // a pre-existing dir the user manages (e.g. a custom `user_knowledge_dir`).
-    let dir_existed = output_dir.exists();
-    std::fs::create_dir_all(&output_dir)?;
     let restrict_files = scope == super::Scope::User;
     let root = match scope {
         super::Scope::Project => get_project_root(),

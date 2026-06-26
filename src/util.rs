@@ -196,6 +196,15 @@ pub fn restrict_to_owner(path: &Path, is_dir: bool) {
     }
 }
 
+/// Whether two paths refer to the same location. Compares canonicalized paths
+/// (resolving symlinks and `.`/`..`), falling back to the literal path when a side
+/// doesn't exist yet so equal-as-typed paths still compare equal.
+pub fn paths_equivalent(a: &Path, b: &Path) -> bool {
+    let ca = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
+    let cb = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    ca == cb
+}
+
 /// On Unix, warn if an existing directory is group/world-accessible. Even when the
 /// markdown files inside are forced to `0600`, a readable/executable dir lets other
 /// users list filenames (which can themselves leak sensitive info). No-op on non-Unix.

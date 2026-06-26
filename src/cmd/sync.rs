@@ -191,6 +191,12 @@ pub fn sync_knowledge_dir(
         });
     }
 
+    // Pre-flight: a uid appearing in more than one markdown file is an identity
+    // conflict. Fail with a clear, actionable message *before* mutating anything —
+    // silently skipping the duplicate insert could later delete the entry when one
+    // of the files is removed while the other (unchanged) file still holds the uid.
+    check_no_duplicate_uids(knowledge_dir)?;
+
     let mut stats = SyncStats {
         added: 0,
         updated: 0,
@@ -251,6 +257,56 @@ pub fn sync_knowledge_dir(
     Ok(stats)
 }
 
+/// Fail if any uid appears in more than one markdown file under `knowledge_dir`.
+/// Such a duplicate is an identity conflict (e.g. a stale/renamed copy left behind,
+/// or a hand-copied entry) that the user must resolve — proceeding would either abort
+/// mid-import or, worse, silently drop the entry on a later sync.
+fn check_no_duplicate_uids(
+    knowledge_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut locations: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for filepath in walkdir_md(knowledge_dir) {
+        let fname = filepath.file_name().and_then(|n| n.to_str());
+        if fname == Some("README.md") || fname == Some("lk-instructions.md") {
+            continue;
+        }
+        let display = filepath
+            .strip_prefix(knowledge_dir)
+            .unwrap_or(&filepath)
+            .to_string_lossy()
+            .to_string();
+        let text = std::fs::read_to_string(&filepath)?;
+        for entry in markdown::parse_md_entries(&text) {
+            if let Some(uid) = entry.uid.as_deref().filter(|u| !u.trim().is_empty()) {
+                locations
+                    .entry(uid.to_string())
+                    .or_default()
+                    .push(display.clone());
+            }
+        }
+    }
+
+    let mut dups: Vec<(&String, &Vec<String>)> = locations
+        .iter()
+        .filter(|(_, files)| files.len() > 1)
+        .collect();
+    if dups.is_empty() {
+        return Ok(());
+    }
+    dups.sort_by_key(|(uid, _)| uid.as_str());
+    let detail = dups
+        .iter()
+        .map(|(uid, files)| format!("  uid {uid}: {}", files.join(", ")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "duplicate uid(s) found across markdown files — each uid must live in exactly \
+         one file. Remove the stale/duplicate copy and retry:\n{detail}"
+    )
+    .into())
+}
+
 /// True if `e` is a SQLite UNIQUE-constraint violation on `entries.uid`.
 ///
 /// Matches the structured `rusqlite` error (constraint-violation code) rather than the
@@ -306,18 +362,20 @@ pub fn import_md_file(
         );
         match result {
             Ok(_) => count += 1,
-            // A duplicate uid (e.g. the same entry left in a stale/renamed md file, or
-            // copy-pasted across files) would otherwise abort the whole sync. Skip just
-            // that entry with a pointed warning so the rest still imports. SQLite's
-            // statement-level ABORT leaves the surrounding transaction usable.
+            // Cross-file md duplicates are caught up front by `check_no_duplicate_uids`,
+            // so a UNIQUE(uid) failure here means the md uid collides with an existing
+            // entry already in the DB (e.g. a `local` entry of the same uid). Fail with a
+            // clear, actionable message rather than the opaque SQLite error; the caller's
+            // transaction rolls back, leaving the DB untouched.
             Err(e) if is_duplicate_uid_error(e.as_ref()) => {
-                eprintln!(
-                    "sync: skipping {:?} in {} — duplicate uid {} (already imported from another file; \
-                     remove the stale copy to resolve)",
+                return Err(format!(
+                    "duplicate uid {} for {:?} in {} — it collides with an existing entry \
+                     (e.g. a local entry of the same uid). Resolve the conflict and retry.",
+                    entry.uid.as_deref().unwrap_or("?"),
                     entry.title,
                     rel_path,
-                    entry.uid.as_deref().unwrap_or("?"),
-                );
+                )
+                .into());
             }
             Err(e) => return Err(e),
         }
