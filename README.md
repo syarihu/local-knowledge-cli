@@ -13,7 +13,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Export local entries to markdown for team sharing (stable output order)
 - Secret detection — warns when content contains API keys, tokens, or credentials
 - Project config via `.knowledge/config.toml` (git-tracked, team-shareable)
-- User-scope (global) knowledge at `~/.config/lk/knowledge.db` — carry personal notes and cross-project context (e.g. session handoff logs) across all projects with `--scope user`; reads merge project + user by default
+- User-scope (global) knowledge at `~/.config/lk/knowledge.db` — carry personal notes and cross-project context (e.g. session handoff logs) across all projects with `--scope user`; reads merge project + user by default. In projects without `lk init`, `lk add` automatically falls back to this global store, so it works anywhere
 - Bulk delete with `purge` by category or source
 - Auto-extract keywords from entries
 - Self-update from GitHub Releases
@@ -108,7 +108,7 @@ Commands:
 - `--full` - Include full content in JSON output, eliminating the need for `lk get` (for `search`)
 - `--force` - Skip duplicate check when adding (for `add`)
 - `--allow-secrets` - Allow content that contains potential secrets (for `add`, `export`)
-- `--scope <scope>` - Knowledge store to use. Writes (`add`) and targets (`get`/`edit`/`delete`/`supersede`): `project` (default) or `user`. Reads (`search`/`list`/`stats`): `project`, `user`, or `all` (default, merged)
+- `--scope <scope>` - Knowledge store to use. `add`: `auto` (default — project if initialized, else user), `project`, or `user`. Targets (`get`/`edit`/`delete`/`supersede`): `project` or `user` (omit to auto-resolve). Reads (`search`/`list`/`stats`): `project`, `user`, or `all` (default, merged)
 
 ## How It Works
 
@@ -154,11 +154,11 @@ Knowledge lives in one of two stores:
 
 How scope is selected:
 
-- **Writes** (`add`): `--scope project` (default) or `--scope user`.
-- **Reads** (`search`, `list`, `stats`): `--scope all` (default — merges both stores and tags each result with its `scope`), or restrict to `project` / `user`.
-- **Targets** (`get`, `edit`, `delete`, `supersede`): pass an entry id or uid. A numeric id resolves in the project DB (or the DB named by `--scope`); a uid resolves across scopes (project, then user). Because project and user ids both start at 1, address user-scope entries by uid (shown in `--json` output). `supersede` requires both entries in the same scope.
+- **Writes** (`add`): `--scope auto` (default), `project`, or `user`. **`auto` falls back to user scope when the current project isn't initialized** (no `.knowledge/knowledge.db`), so `lk add` works anywhere without `lk init` — it saves to the project when initialized, otherwise globally (with a note). An explicit `--scope project` still errors with an init prompt when the project isn't set up.
+- **Reads** (`search`, `list`, `stats`): `--scope all` (default — merges both stores and tags each result with its `scope`), or restrict to `project` / `user`. In an uninitialized project the (missing) project store is simply skipped, so reads return user-scope results instead of erroring.
+- **Targets** (`get`, `edit`, `delete`, `supersede`): pass an entry id or uid. A numeric id resolves in the project DB (or the DB named by `--scope`); a uid resolves across scopes (project, then user — and skips the project store when it isn't initialized). Because project and user ids both start at 1, address user-scope entries by uid (shown in `--json` output). `supersede` requires both entries in the same scope.
 
-The `lk-knowledge` MCP tools mirror this: `search_knowledge` / `list_knowledge` / `get_stats` take a `scope`, `add_knowledge` takes a `scope`, and `get_knowledge` / `update_knowledge` / `supersede_knowledge` accept an id or uid string.
+The `lk-knowledge` MCP tools mirror this: `search_knowledge` / `list_knowledge` / `get_stats` take a `scope` and gracefully skip an uninitialized project; `add_knowledge` takes a `scope` (default `auto`, same user-scope fallback); and `get_knowledge` / `update_knowledge` / `supersede_knowledge` accept an id or uid string.
 
 ### Team workflow
 
