@@ -7,11 +7,14 @@ pub struct SecretMatch {
     pub matched: String,
 }
 
-/// Redact a detected secret to a short, non-reconstructable preview: at most the first
-/// few characters (enough to recognize the kind/prefix, e.g. `AKIA`, `ghp_`) plus `***`.
-/// The trailing length is fixed so it doesn't reveal how long the secret was.
+/// Redact a detected secret to a short, non-reconstructable preview: a recognizable
+/// prefix (e.g. `AKIA`, `ghp_`) plus `***`, with a fixed trailing marker so the length
+/// isn't revealed. The prefix is capped to at most `len - 1` characters so the full
+/// value is never shown — even for very short matches (`"abc"` → `"ab***"`, `"a"` → `"***"`).
 fn redact(raw: &str) -> String {
-    let prefix: String = raw.chars().take(4).collect();
+    let len = raw.chars().count();
+    let show = len.saturating_sub(1).min(4);
+    let prefix: String = raw.chars().take(show).collect();
     format!("{prefix}***")
 }
 
@@ -104,6 +107,21 @@ mod tests {
         assert!(matches[0].matched.ends_with("***"));
         // The warning text built from matches is likewise safe.
         assert!(!format_warning(&matches).contains(secret));
+    }
+
+    #[test]
+    fn test_redact_never_returns_full_input() {
+        // Even short inputs must not be shown whole (at least one char hidden).
+        for raw in ["a", "ab", "abc", "abcd", "abcdefghij"] {
+            let r = redact(raw);
+            assert!(r.ends_with("***"));
+            let shown = r.trim_end_matches("***");
+            assert!(
+                shown.len() < raw.len(),
+                "redact({raw:?}) = {r:?} revealed the whole input"
+            );
+        }
+        assert_eq!(redact("a"), "***");
     }
 
     #[test]

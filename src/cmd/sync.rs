@@ -27,7 +27,7 @@ pub fn cmd_sync(
 
     // Resolve (connection, markdown dir, root for rel-path) per scope. User scope
     // reads the configured `user_knowledge_dir` into the global ~/.config/lk DB,
-    // requiring an existing user DB (created on first `lk add`/`export --scope user`).
+    // creating that DB on first run so a fresh machine can bootstrap from markdown alone.
     let (conn, knowledge_dir, root) = match scope {
         super::Scope::Project => (
             open_db_with_migrate()?,

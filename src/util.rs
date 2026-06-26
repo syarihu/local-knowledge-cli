@@ -212,6 +212,13 @@ pub fn paths_equivalent(a: &Path, b: &Path) -> bool {
     canonicalize_or(a) == canonicalize_or(b)
 }
 
+/// POSIX single-quote a string so it's a safe, copy/pastable shell argument for ANY
+/// path — spaces, `$`, `"`, and embedded `'` (escaped as `'\''`) are all handled.
+#[cfg(unix)]
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// On Unix, warn if an existing directory is group/world-accessible. Even when the
 /// markdown files inside are forced to `0600`, a readable/executable dir lets other
 /// users list filenames (which can themselves leak sensitive info). No-op on non-Unix.
@@ -224,9 +231,9 @@ pub fn warn_if_not_owner_only(path: &Path) {
             if mode & 0o077 != 0 {
                 eprintln!(
                     "Warning: {} is not owner-only ({mode:#o}); other users can list its \
-                     filenames. Run `chmod 700 '{}'` to restrict it.",
+                     filenames. Run `chmod 700 {}` to restrict it.",
                     path.display(),
-                    path.display(),
+                    shell_quote(&path.display().to_string()),
                 );
             }
         }
@@ -403,6 +410,14 @@ mod tests {
     fn test_canonicalize_or_falls_back_when_missing() {
         let p = Path::new("/no/such/path/lk-test-xyz");
         assert_eq!(canonicalize_or(p), p.to_path_buf());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_shell_quote_escapes_single_quotes_and_spaces() {
+        assert_eq!(shell_quote("/a/b c"), "'/a/b c'");
+        // An embedded single quote is closed, escaped, and reopened.
+        assert_eq!(shell_quote("/a/o'brien"), "'/a/o'\\''brien'");
     }
 
     /// A symlinked path and its real target must compare equal, so `--dir` matching the
