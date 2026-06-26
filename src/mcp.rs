@@ -59,15 +59,9 @@ impl ProjectRegistry {
         for path in &paths {
             let canonical = std::fs::canonicalize(path)
                 .map_err(|e| format!("Cannot resolve project path '{}': {e}", path.display()))?;
-            let db_root = util::resolve_db_root(&canonical);
-            let db_path = db_root.join(".knowledge").join("knowledge.db");
-            if !db_path.exists() {
-                return Err(format!(
-                    "No knowledge DB found at {}. Run 'lk init' in that project first.",
-                    canonical.display()
-                )
-                .into());
-            }
+            // Note: we no longer require the project DB to exist here. Uninitialized
+            // projects are allowed; reads/writes fall back to user scope, and an
+            // explicit project operation surfaces the "run lk init" error at open time.
             let basename = canonical
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -387,8 +381,8 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 },
                 "scope": {
                     "type": "string",
-                    "enum": ["project", "user"],
-                    "description": "Where to save: 'project' (default, this repo's .knowledge DB) or 'user' (global ~/.config/lk/knowledge.db, persists across projects — good for cross-project context/preferences). The user DB is created on first use."
+                    "enum": ["auto", "project", "user"],
+                    "description": "Where to save (default 'auto'): 'auto' = project's .knowledge DB if the project is initialized, otherwise the global user store; 'project' = this repo's .knowledge DB (errors if the project isn't initialized); 'user' = global ~/.config/lk/knowledge.db, persists across projects (good for cross-project context/preferences). The user DB is created on first use. On auto-fallback the result includes a 'note'."
                 }
             },
             "required": ["title", "content"]
@@ -621,6 +615,14 @@ fn project_name_for(registry: &ProjectRegistry, project_root: &Path) -> Option<S
     }
 }
 
+/// Whether the given project (registry project_root, not CWD) has an initialized DB.
+/// Side-effect free; treats the legacy `.claude/knowledge.db` location as initialized.
+fn project_db_exists_for(project_root: &Path) -> bool {
+    let db_root = util::resolve_db_root(project_root);
+    db_root.join(".knowledge").join("knowledge.db").is_file()
+        || project_root.join(".claude").join("knowledge.db").is_file()
+}
+
 /// Open the project DB connection (runs auto-sync first, like the original flow).
 fn open_project_conn(project_root: &Path) -> Result<rusqlite::Connection, String> {
     let db_root = util::resolve_db_root(project_root);
@@ -652,10 +654,10 @@ fn read_scope_conns(
     scope: Option<&str>,
     project_root: &Path,
 ) -> Result<Vec<(rusqlite::Connection, &'static str)>, String> {
-    let (want_project, want_user) = match scope {
-        None | Some("all") => (true, true),
-        Some("project") => (true, false),
-        Some("user") => (false, true),
+    let (want_project, project_required, want_user) = match scope {
+        None | Some("all") => (true, false, true),
+        Some("project") => (true, true, false),
+        Some("user") => (false, false, true),
         Some(o) => {
             return Err(format!(
                 "Invalid scope '{o}' (expected: project, user, all)"
@@ -663,7 +665,9 @@ fn read_scope_conns(
         }
     };
     let mut conns: Vec<(rusqlite::Connection, &'static str)> = Vec::new();
-    if want_project {
+    // Explicit project still errors on a missing DB; default `all` treats project as
+    // best-effort and skips it (no open / no auto-sync) when not initialized.
+    if want_project && (project_required || project_db_exists_for(project_root)) {
         conns.push((open_project_conn(project_root)?, "project"));
     }
     if want_user && let Some(c) = open_user_conn()? {
@@ -719,9 +723,13 @@ fn mcp_resolve_target(
             Ok((conn, entry, label))
         }
         None => {
-            let pconn = open_project_conn(project_root)?;
-            if let Some(e) = lookup_in_conn(&pconn, arg)? {
-                return Ok((pconn, e, "project"));
+            // Auto-resolve a UID: look in project first only if it is initialized, so
+            // an uninitialized project doesn't error before we fall back to user.
+            if project_db_exists_for(project_root) {
+                let pconn = open_project_conn(project_root)?;
+                if let Some(e) = lookup_in_conn(&pconn, arg)? {
+                    return Ok((pconn, e, "project"));
+                }
             }
             if let Some(uconn) = open_user_conn()?
                 && let Some(e) = lookup_in_conn(&uconn, arg)?
@@ -746,6 +754,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 json!({
                     "name": name,
                     "path": path.to_string_lossy(),
+                    "initialized": project_db_exists_for(path),
                 })
             })
             .collect();
@@ -836,7 +845,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let category = params["category"].as_str().unwrap_or("general");
             let status = params["status"].as_str();
             let force = params["force"].as_bool().unwrap_or(false);
-            let scope = params["scope"].as_str().unwrap_or("project");
+            let scope = params["scope"].as_str().unwrap_or("auto");
 
             // Validate status if provided
             if let Some(st) = status
@@ -848,15 +857,36 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 ));
             }
 
-            let conn = match scope {
-                "project" => open_project_conn(&project_root)?,
+            // "auto" (default): project if initialized, else fall back to user.
+            // Explicit "project" still errors on a missing DB (init prompt).
+            let (effective_scope, fell_back) = match scope {
+                "project" => ("project", false),
+                "user" => ("user", false),
+                "auto" => {
+                    if project_db_exists_for(&project_root) {
+                        ("project", false)
+                    } else {
+                        ("user", true)
+                    }
+                }
+                o => {
+                    return Err(format!(
+                        "Invalid scope '{o}' (expected: project, user, auto)"
+                    ));
+                }
+            };
+            let conn = match effective_scope {
                 "user" => {
                     util::open_or_create_user_db().map_err(|e| format!("user DB error: {e}"))?
                 }
-                o => return Err(format!("Invalid scope '{o}' (expected: project, user)")),
+                _ => open_project_conn(&project_root)?,
             };
 
-            log_mcp_command("add", &[("title", title), ("scope", scope)], &knowledge_dir);
+            log_mcp_command(
+                "add",
+                &[("title", title), ("scope", effective_scope)],
+                &knowledge_dir,
+            );
 
             // Apply category template if content is empty
             let template_content;
@@ -908,16 +938,19 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             )
             .map_err(|e| format!("add error: {e}"))?;
 
-            Ok(decorate_result(
-                json!({
-                    "added": true,
-                    "id": id,
-                    "title": title,
-                    "status": status.unwrap_or("active"),
-                    "scope": scope,
-                }),
-                &project_name,
-            ))
+            let mut out = json!({
+                "added": true,
+                "id": id,
+                "title": title,
+                "status": status.unwrap_or("active"),
+                "scope": effective_scope,
+            });
+            if fell_back {
+                out["note"] = json!(
+                    "Project not initialized; saved to user scope (global). Run `lk init` for project scope."
+                );
+            }
+            Ok(decorate_result(out, &project_name))
         }
 
         "list_knowledge" => {

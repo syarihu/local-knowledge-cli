@@ -51,6 +51,25 @@ pub fn parse_scope(s: &str) -> Result<Scope, Box<dyn std::error::Error>> {
     }
 }
 
+/// Resolve a write (`add`) scope, applying the "auto" fallback: `auto` → project if
+/// the project DB exists, else user. Returns the resolved scope plus whether it fell
+/// back to user (for notifying the user). Explicit `project`/`user` are honored as-is
+/// (an explicit `project` against a missing DB still errors at open time = init prompt).
+pub fn resolve_write_scope(s: &str) -> Result<(Scope, bool), Box<dyn std::error::Error>> {
+    match s {
+        "project" => Ok((Scope::Project, false)),
+        "user" => Ok((Scope::User, false)),
+        "auto" => {
+            if crate::util::project_db_exists() {
+                Ok((Scope::Project, false))
+            } else {
+                Ok((Scope::User, true))
+            }
+        }
+        other => Err(format!("Invalid --scope '{other}' (expected: project, user, auto)").into()),
+    }
+}
+
 /// Parse an optional write/target `--scope` value (None = auto-resolve).
 pub fn parse_scope_opt(s: Option<&str>) -> Result<Option<Scope>, Box<dyn std::error::Error>> {
     match s {
@@ -100,9 +119,13 @@ fn infer_scope(arg: &str) -> Result<Scope, Box<dyn std::error::Error>> {
     if arg.parse::<i64>().is_ok() {
         return Ok(Scope::Project);
     }
-    let pconn = crate::util::open_db_with_migrate()?;
-    if crate::db::get_entry_by_uid(&pconn, arg)?.is_some() {
-        return Ok(Scope::Project);
+    // For a UID, look in project first only if it's initialized (so an uninitialized
+    // project doesn't error before we can fall back to user scope).
+    if crate::util::project_db_exists() {
+        let pconn = crate::util::open_db_with_migrate()?;
+        if crate::db::get_entry_by_uid(&pconn, arg)?.is_some() {
+            return Ok(Scope::Project);
+        }
     }
     if let Some(uconn) = crate::util::open_user_db()?
         && crate::db::get_entry_by_uid(&uconn, arg)?.is_some()
@@ -154,16 +177,18 @@ pub fn resolve_supersede_pair(
 pub fn read_connections(
     scope: Option<&str>,
 ) -> Result<Vec<(Connection, &'static str)>, Box<dyn std::error::Error>> {
-    let (want_project, want_user) = match scope {
-        None | Some("all") => (true, true),
-        Some("project") => (true, false),
-        Some("user") => (false, true),
+    let (want_project, project_required, want_user) = match scope {
+        None | Some("all") => (true, false, true),
+        Some("project") => (true, true, false),
+        Some("user") => (false, false, true),
         Some(other) => {
             return Err(format!("Invalid --scope '{other}' (expected: project, user, all)").into());
         }
     };
     let mut conns: Vec<(Connection, &'static str)> = Vec::new();
-    if want_project {
+    // Explicit `--scope project` still errors on a missing DB (init prompt); the
+    // default `all` treats project as best-effort and skips it when not initialized.
+    if want_project && (project_required || crate::util::project_db_exists()) {
         conns.push((crate::util::open_db_with_migrate()?, "project"));
     }
     if want_user && let Some(c) = crate::util::open_user_db()? {

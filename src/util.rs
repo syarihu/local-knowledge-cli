@@ -83,6 +83,27 @@ pub fn get_knowledge_dir() -> PathBuf {
     get_project_root().join(".knowledge")
 }
 
+/// Pure path of the current project's DB (no side effects). Unlike `get_db_path`,
+/// this never migrates the legacy `.claude/knowledge.db` location, so it is safe to
+/// call from existence checks and guards. Honors worktree resolution.
+pub fn project_db_path() -> PathBuf {
+    let root = get_project_root();
+    resolve_db_root(&root)
+        .join(".knowledge")
+        .join("knowledge.db")
+}
+
+/// Whether the current project has an initialized knowledge DB. Treats the legacy
+/// `.claude/knowledge.db` location as "initialized" too (it migrates on first open).
+/// Side-effect free.
+pub fn project_db_exists() -> bool {
+    project_db_path().is_file()
+        || get_project_root()
+            .join(".claude")
+            .join("knowledge.db")
+            .is_file()
+}
+
 /// Load a category template from `.knowledge/templates/{category}.md`.
 /// Returns None if the template file doesn't exist or category is invalid.
 pub fn load_category_template(category: &str) -> Option<String> {

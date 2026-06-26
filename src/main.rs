@@ -47,8 +47,8 @@ enum Commands {
         /// Allow content that contains potential secrets
         #[arg(long)]
         allow_secrets: bool,
-        /// Knowledge scope: "project" (default) or "user" (global ~/.config/lk/knowledge.db)
-        #[arg(long, default_value = "project")]
+        /// Knowledge scope: "auto" (default — project if initialized, else user), "project", or "user" (global ~/.config/lk/knowledge.db)
+        #[arg(long, default_value = "auto")]
         scope: String,
         /// Output as JSON
         #[arg(long)]
@@ -328,7 +328,9 @@ fn main() {
         _ => false,
     };
 
-    if needs_auto_sync && !user_scope_only {
+    // Auto-sync is a project-DB operation: skip it for user-scope-only commands and
+    // for uninitialized projects (where reads/writes fall back to user scope).
+    if needs_auto_sync && !user_scope_only && util::project_db_exists() {
         cmd::maybe_auto_sync();
     }
 
@@ -343,18 +345,16 @@ fn main() {
             allow_secrets,
             scope,
             json,
-        } => cmd::parse_scope(&scope).and_then(|s| {
-            cmd::cmd_add(
-                &title,
-                keywords.as_deref(),
-                content.as_deref(),
-                category.as_deref(),
-                force,
-                allow_secrets,
-                s,
-                json,
-            )
-        }),
+        } => cmd::cmd_add(
+            &title,
+            keywords.as_deref(),
+            content.as_deref(),
+            category.as_deref(),
+            force,
+            allow_secrets,
+            &scope,
+            json,
+        ),
         Commands::Search {
             query,
             keyword_only,

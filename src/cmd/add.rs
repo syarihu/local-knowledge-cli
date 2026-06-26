@@ -10,9 +10,11 @@ pub fn cmd_add(
     category: Option<&str>,
     force: bool,
     allow_secrets: bool,
-    scope: super::Scope,
+    scope: &str,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // "auto" (default) saves to project when initialized, else falls back to user.
+    let (scope, fell_back) = super::resolve_write_scope(scope)?;
     super::log_command(
         "add",
         &[
@@ -21,6 +23,12 @@ pub fn cmd_add(
             ("scope", scope.label()),
         ],
     );
+    if fell_back && !json_output {
+        eprintln!(
+            "Note: this project is not initialized; saving to user scope (~/.config/lk/knowledge.db). \
+             Run `lk init` for project-scoped knowledge."
+        );
+    }
     let conn = match scope {
         super::Scope::Project => open_db_with_migrate()?,
         super::Scope::User => crate::util::open_or_create_user_db()?,
@@ -131,7 +139,7 @@ pub fn cmd_add(
     match result {
         Ok(entry_id) => {
             conn.execute_batch("COMMIT")?;
-            print_success(entry_id, title, &kws, scope, json_output);
+            print_success(entry_id, title, &kws, scope, fell_back, json_output);
             Ok(())
         }
         Err(e) if e.to_string() == "duplicate_found" => {
@@ -150,16 +158,20 @@ fn print_success(
     title: &str,
     kws: &[String],
     scope: super::Scope,
+    fell_back: bool,
     json_output: bool,
 ) {
     if json_output {
-        let out = serde_json::json!({
+        let mut out = serde_json::json!({
             "added": true,
             "id": entry_id,
             "title": title,
             "keywords": kws,
             "scope": scope.label(),
         });
+        if fell_back {
+            out["fell_back_to_user"] = serde_json::json!(true);
+        }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         let scope_note = match scope {
