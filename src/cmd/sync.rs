@@ -99,6 +99,10 @@ fn write_uids_to_md(
     let mut total_written = 0;
     let uid_re = regex::Regex::new(r"(?m)^uid:\s*.+$").unwrap();
 
+    // Match the canonical rel-path root used by sync_knowledge_dir (see note there).
+    let canonical_root = crate::util::canonicalize_or(root);
+    let root = canonical_root.as_path();
+
     for filepath in walkdir_md(knowledge_dir) {
         let fname = filepath.file_name().and_then(|n| n.to_str());
         if fname == Some("README.md") || fname == Some("lk-instructions.md") {
@@ -190,6 +194,13 @@ pub fn sync_knowledge_dir(
             unchanged: 0,
         });
     }
+
+    // Canonicalize the rel-path root: walkdir returns canonicalized file paths, so the
+    // root they're stripped against must be canonical too — otherwise (e.g. a symlinked
+    // project/knowledge path) strip_prefix fails and source_file is stored as an unstable
+    // absolute path, causing churn / wrong add-remove decisions across runs.
+    let canonical_root = crate::util::canonicalize_or(root);
+    let root = canonical_root.as_path();
 
     // Pre-flight: a uid appearing in more than one markdown file is an identity
     // conflict. Fail with a clear, actionable message *before* mutating anything —
@@ -330,8 +341,11 @@ pub fn import_md_file(
     let filepath = std::fs::canonicalize(filepath).unwrap_or_else(|_| filepath.to_path_buf());
     let text = std::fs::read_to_string(&filepath)?;
     let fhash = markdown::file_hash(&filepath)?;
+    // Strip against a canonical root so source_file stays relative/stable even when the
+    // root is reached via a symlink (the file path above is already canonicalized).
+    let root = crate::util::canonicalize_or(root);
     let rel_path = filepath
-        .strip_prefix(root)
+        .strip_prefix(&root)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| filepath.to_string_lossy().to_string());
 

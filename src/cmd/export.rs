@@ -104,6 +104,13 @@ fn export_to_dir(
     restrict_files: bool,
     flip_to_shared: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Canonical rel-path root: the stored source_file is computed from the canonicalized
+    // written file, so the root it's stripped against must be canonical too (else a
+    // symlinked project/knowledge path yields an unstable absolute source_file). Matches
+    // what sync derives from walkdir, keeping the md→DB round-trip stable.
+    let canonical_root = crate::util::canonicalize_or(root);
+    let root = canonical_root.as_path();
+
     let entries = if let Some(ids_str) = ids {
         // Export specific entries by ID
         let mut selected = Vec::new();

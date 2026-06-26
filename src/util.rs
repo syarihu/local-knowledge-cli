@@ -164,13 +164,22 @@ pub fn get_user_knowledge_dir() -> PathBuf {
     crate::config::GlobalConfig::load().user_knowledge_dir
 }
 
+/// Canonicalize a path (resolving symlinks and `.`/`..`), falling back to the path
+/// unchanged when it doesn't exist yet. Used to derive a stable rel-path root for
+/// `source_file`: `walkdir`/`export` work with canonicalized file paths, so the root
+/// they're stripped against must be canonical too, or `strip_prefix` fails and the
+/// stored `source_file` becomes an absolute, non-portable, run-dependent path.
+pub fn canonicalize_or(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// The rel-path root for user-scope markdown. Computed from the **canonicalized**
 /// knowledge dir so that `export` (which canonicalizes the file it just wrote) and
 /// `sync` (which canonicalizes via walkdir) derive the *same, relative* `source_file`
 /// even when the knowledge dir is reached through a symlink (the dotfiles use case).
 /// Falls back to the uncanonicalized parent when the dir doesn't exist yet.
 pub fn user_md_root(knowledge_dir: &Path) -> PathBuf {
-    let base = std::fs::canonicalize(knowledge_dir).unwrap_or_else(|_| knowledge_dir.to_path_buf());
+    let base = canonicalize_or(knowledge_dir);
     base.parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| base.clone())
@@ -200,9 +209,7 @@ pub fn restrict_to_owner(path: &Path, is_dir: bool) {
 /// (resolving symlinks and `.`/`..`), falling back to the literal path when a side
 /// doesn't exist yet so equal-as-typed paths still compare equal.
 pub fn paths_equivalent(a: &Path, b: &Path) -> bool {
-    let ca = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
-    let cb = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
-    ca == cb
+    canonicalize_or(a) == canonicalize_or(b)
 }
 
 /// On Unix, warn if an existing directory is group/world-accessible. Even when the
@@ -366,4 +373,31 @@ pub fn days_since(updated_at: &str) -> Option<i64> {
     let now = OffsetDateTime::now_utc().date();
     let duration = now - date;
     Some(duration.whole_days())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_canonicalize_or_falls_back_when_missing() {
+        let p = Path::new("/no/such/path/lk-test-xyz");
+        assert_eq!(canonicalize_or(p), p.to_path_buf());
+    }
+
+    /// A symlinked path and its real target must compare equal, so `--dir` matching the
+    /// configured store (and rel-path roots) are detected through symlinks.
+    #[cfg(unix)]
+    #[test]
+    fn test_paths_equivalent_through_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(paths_equivalent(&link, &real));
+        // user_md_root resolves the symlink before taking the parent, so both forms agree.
+        assert_eq!(user_md_root(&link), user_md_root(&real));
+    }
 }
