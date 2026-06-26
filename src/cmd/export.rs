@@ -94,7 +94,7 @@ pub fn cmd_export(
     for (group_name, group_entries) in &groups {
         // Sort entries within each group by title for stable output
         let mut sorted_entries: Vec<&db::Entry> = group_entries.iter().collect();
-        sorted_entries.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        sorted_entries.sort_by_key(|e| e.title.to_lowercase());
 
         let filename = format!("exported-{group_name}.md");
         let filepath = output_dir.join(&filename);
