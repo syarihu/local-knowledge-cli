@@ -946,9 +946,17 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             )
             .map_err(|e| format!("add error: {e}"))?;
 
+            // Return the uid too: ids collide across scopes, so uid is the unambiguous
+            // handle for follow-up get/update calls (even without passing scope).
+            let uid = db::get_entry(&conn, id)
+                .ok()
+                .flatten()
+                .map(|e| e.uid)
+                .unwrap_or_default();
             let mut out = json!({
                 "added": true,
                 "id": id,
+                "uid": uid,
                 "title": title,
                 "status": status.unwrap_or("active"),
                 "scope": effective_scope,

@@ -157,7 +157,12 @@ pub fn cmd_add(
     match result {
         Ok(entry_id) => {
             conn.execute_batch("COMMIT")?;
-            print_success(entry_id, title, &kws, scope, fell_back, json_output);
+            let uid = db::get_entry(&conn, entry_id)
+                .ok()
+                .flatten()
+                .map(|e| e.uid)
+                .unwrap_or_default();
+            print_success(entry_id, &uid, title, &kws, scope, fell_back, json_output);
             Ok(())
         }
         Err(e) if e.to_string() == "duplicate_found" => {
@@ -173,6 +178,7 @@ pub fn cmd_add(
 
 fn print_success(
     entry_id: i64,
+    uid: &str,
     title: &str,
     kws: &[String],
     scope: super::Scope,
@@ -183,6 +189,7 @@ fn print_success(
         let mut out = serde_json::json!({
             "added": true,
             "id": entry_id,
+            "uid": uid,
             "title": title,
             "keywords": kws,
             "scope": scope.label(),
@@ -192,11 +199,11 @@ fn print_success(
         }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
-        let scope_note = match scope {
-            super::Scope::User => " (user scope)",
-            super::Scope::Project => "",
-        };
-        println!("Added entry #{entry_id}: {title}{scope_note}");
+        // User-scope ids collide with project ids, so reference user entries by uid.
+        match scope {
+            super::Scope::User => println!("Added entry user:{uid}: {title} (user scope)"),
+            super::Scope::Project => println!("Added entry #{entry_id}: {title}"),
+        }
         println!("Keywords: {}", kws.join(", "));
     }
 }

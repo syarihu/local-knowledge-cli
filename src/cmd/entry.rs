@@ -264,13 +264,22 @@ pub fn cmd_delete(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (conn, entry) = super::resolve_target(id, scope)?;
 
-    if !yes && !confirm(&format!("Delete entry \"{}\"?", entry.title)) {
+    // Show both id and uid so the deletion is unambiguous (ids collide across scopes).
+    if !yes
+        && !confirm(&format!(
+            "Delete entry #{} (uid {}) \"{}\"?",
+            entry.id, entry.uid, entry.title
+        ))
+    {
         println!("Cancelled.");
         return Ok(());
     }
 
     db::delete_entry(&conn, entry.id)?;
-    println!("Deleted entry: {}", entry.title);
+    println!(
+        "Deleted entry #{} (uid {}): {}",
+        entry.id, entry.uid, entry.title
+    );
     Ok(())
 }
 
