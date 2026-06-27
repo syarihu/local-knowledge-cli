@@ -9,6 +9,17 @@ pub fn cmd_list(
     scope: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate the status filter before any DB work so a typo errors loudly instead
+    // of silently returning an empty list (matching add/search/edit/MCP behaviour).
+    if let Some(st) = status
+        && !db::is_valid_status(st)
+    {
+        return Err(format!(
+            "Invalid status: {st}. Must be one of: {}",
+            db::VALID_STATUSES.join(", ")
+        )
+        .into());
+    }
     super::log_command(
         "list",
         &[

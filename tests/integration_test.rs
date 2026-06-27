@@ -398,6 +398,26 @@ fn test_search_rejects_invalid_status() {
 }
 
 #[test]
+fn test_list_rejects_invalid_status() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // `lk list --status bogus` must error, not silently return an empty list
+    let output = lk_bin()
+        .args(["list", "--status", "bogus"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Invalid status"));
+}
+
+#[test]
 fn test_search_status_filter_user_scope_merged() {
     let home = tempfile::tempdir().unwrap();
     let proj = setup_temp_project();

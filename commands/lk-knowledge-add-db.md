@@ -23,10 +23,10 @@ $ARGUMENTS contains a description of what knowledge to save, or is empty to auto
 
 ## Design Decisions (ADR)
 When the knowledge is a design decision (technology choice, architecture change, pattern adoption), record it as an ADR entry instead of a plain note:
-- `lk add "<title>" --keywords "adr,<kw>" --category decisions --content "<content>"` (MCP: `add_knowledge(..., category: "decisions", status: "proposed")`)
+- `lk add "<title>" --keywords "adr,<kw>" --category decisions --status proposed --content "<content>"` (MCP: `add_knowledge(..., category: "decisions", status: "proposed")`)
 - Content follows ADR format: **Context / Decision / Alternatives Considered / Consequences**
 - Status flow: `proposed` → `accepted` (or `superseded` if replaced). After approval: `lk edit <id> --status accepted`
-- Note: `lk add` always saves as `active` (no `--status` flag). To start a decision at `proposed` via CLI, follow the add with `lk edit <id> --status proposed`. The `add_knowledge` MCP tool can set `status` directly.
+- Both `lk add` and the `add_knowledge` MCP tool accept `--status`/`status` directly, so a decision can be created at `proposed` in one step.
 - To replace a previous decision: `lk supersede <old_id> <new_id>` (MCP: `supersede_knowledge`) — bidirectional link
 
 ## Guidelines

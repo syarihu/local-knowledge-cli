@@ -1,11 +1,11 @@
 ---
 description: Save plans to tackle later and resume them from a working list
-allowed-tools: Bash(lk *)
+allowed-tools: Bash(lk *), Read
 ---
 
-Manage plans as first-class knowledge entries: save a plan, list open plans, resume one, and close it when done. Plans use `category: plan` with `status` as the lifecycle: `proposed` = open (not started), `accepted` = done, `deprecated` = dropped.
+Manage plans as first-class knowledge entries: save a plan, list open plans, resume one, and close it when done. Plans use `category: plan` with `status` as the lifecycle: `proposed` = open/captured (whether or not you've started), `accepted` = done, `deprecated` = dropped. A plan you execute immediately is still saved (as `proposed`) and then closed with `done` once finished — it's a record, not only a deferred-work queue.
 
-**Proactive auto-save**: this isn't only a manual command. After you design *any* plan — a plan-mode plan after `ExitPlanMode`, or an approach worked out in plain conversation — save it here **proactively, without asking first** (the same instinct as `/lk-knowledge-save-context`). Save **every** plan you design, not just deferred ones: it persists across compaction and session crashes, so the work is instantly recoverable from lk later even if the session is lost. Do the save once the plan is settled and tools are available again (i.e. after leaving plan mode).
+**Proactive auto-save**: this isn't only a manual command. After you design *any* plan — a plan-mode plan after `ExitPlanMode`, or an approach worked out in plain conversation — save it here **proactively, without asking first** (the same instinct as `/lk-knowledge-save-context`). Save **every** plan you design, regardless of whether you'll execute it now or later: it persists across compaction and session crashes, so the work is instantly recoverable from lk even if the session is lost. Do the save once the plan is settled and tools are available again (i.e. after leaving plan mode).
 
 ## Arguments
 $ARGUMENTS selects the mode:
@@ -20,10 +20,10 @@ $ARGUMENTS selects the mode:
 ### No arguments — auto-route
 Decide between Save and List based on the **current conversation state**:
 
-- **If we were just designing a plan that hasn't been saved yet** — i.e. this conversation has produced a concrete, unsaved plan (a plan-mode plan, an approach just worked out, a "here's how we'd do it" that the user is deferring rather than executing now) — then **run the Save procedure automatically** (no confirmation; proactive, like `/lk-knowledge-save-context`). Briefly report the id/uid afterward.
+- **If we were just designing a plan that hasn't been saved yet** — i.e. this conversation has produced a concrete, unsaved plan (a plan-mode plan, an approach just worked out, a "here's how we'd do it") — then **run the Save procedure automatically** (no confirmation; proactive, like `/lk-knowledge-save-context`). This holds whether or not you're about to execute it. Briefly report the id/uid afterward.
 - **Otherwise** (no fresh unsaved plan in context — e.g. a cold session, or you already saved this plan earlier in the conversation) — **run the List procedure**.
 
-Guard against double-saving: if you already saved this plan earlier this session, treat it as "no fresh plan" and List instead. `lk add`'s duplicate detection is a backstop, but don't rely on it — check the conversation first. When genuinely ambiguous, prefer Save (deferring work is the reason the command was invoked mid-design) and say which branch you took.
+Guard against double-saving: if you already saved this plan earlier this session, treat it as "no fresh plan" and List instead. `lk add`'s duplicate detection is a backstop, but don't rely on it — check the conversation first. When genuinely ambiguous, prefer Save (capturing a fresh plan is the reason the command was invoked mid-design) and say which branch you took.
 
 ### List
 1. Run `lk list --category plan --status proposed --json` (reads merge project + user, so plans from any scope show up).
@@ -32,7 +32,7 @@ Guard against double-saving: if you already saved this plan earlier this session
 
 ### Save
 Invoked by `save [hint]`, or automatically by the no-argument auto-route when a fresh plan is in context.
-1. Review the conversation for the plan worth deferring: the decision reached, the approach, concrete identifiers (files/functions), rejected alternatives, and any dead-ends. Write it **dense** — enough to resume cold weeks later without the conversation.
+1. Capture the plan you designed: the decision reached, the approach, concrete identifiers (files/functions), rejected alternatives, and any dead-ends. Write it **dense** — enough to resume cold weeks later without the conversation.
 2. Choose the scope: personal/cross-project work lists → `--scope user`; plans tied to this repo → default (`auto`).
 3. Run:
    `lk add "<title>" --category plan --status proposed --keywords "plan,<kw1>,<kw2>" --content "<dense content>"`
@@ -46,6 +46,6 @@ Invoked by `save [hint]`, or automatically by the no-argument auto-route when a 
 
 ## Guidelines
 - category must be `plan` (distinct from `decisions`/ADR and `context`).
-- Lifecycle: `proposed` (open) → `accepted` (done) / `deprecated` (dropped). Only `proposed` plans appear in the default list.
+- Lifecycle: `proposed` (open/captured) → `accepted` (done) / `deprecated` (dropped). Only `proposed` plans appear in the default list, so close finished ones with `done` to keep the list meaningful.
 - Content must be self-contained and high-density — the same standard as `/lk-knowledge-save-context`: what/why, rejected options, dead-ends, concrete identifiers.
 - Address user-scope plans by uid (numeric ids are project-only).
