@@ -304,11 +304,42 @@ impl Commands {
             _ => false,
         }
     }
+
+    /// The `--status` value for commands that accept one (add/edit set it, search/list
+    /// filter by it). Used to preflight-validate before any DB work / auto-sync.
+    fn status_arg(&self) -> Option<&str> {
+        match self {
+            Commands::Add { status, .. }
+            | Commands::Search { status, .. }
+            | Commands::List { status, .. }
+            | Commands::Edit { status, .. } => status.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 fn main() {
     let cli = Cli::parse();
     let json_mode = cli.command.is_json_mode();
+
+    // Preflight: reject an invalid --status before any DB work (auto-sync opens and
+    // syncs the project DB below). The per-command handlers re-validate as a guard,
+    // but this keeps "bad input → no side effects" true at the CLI entry point.
+    if let Some(st) = cli.command.status_arg()
+        && !db::is_valid_status(st)
+    {
+        let msg = format!(
+            "Invalid status: {st}. Must be one of: {}",
+            db::VALID_STATUSES.join(", ")
+        );
+        if json_mode {
+            let err = serde_json::json!({ "error": msg });
+            eprintln!("{}", serde_json::to_string(&err).unwrap_or_default());
+        } else {
+            eprintln!("Error: {msg}");
+        }
+        std::process::exit(1);
+    }
 
     // Auto-sync before read commands (if enabled)
     let needs_auto_sync = matches!(

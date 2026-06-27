@@ -103,7 +103,7 @@ Commands:
 - `--content "..."` - Entry content (for `add`)
 - `--category <cat>` - Filter by category (for `search`, `list`, `purge`)
 - `--source <src>` - Filter by source: `local` or `shared` (for `search`, `list`, `purge`)
-- `--status <status>` - Status `active`, `deprecated`, `proposed`, `accepted`, `superseded` — set the initial status (for `add`) or filter by it (for `search`, `list`)
+- `--status <status>` - Status `active`, `deprecated`, `proposed`, `accepted`, `superseded` — set the status (for `add`, `edit`) or filter by it (for `search`, `list`)
 - `--limit <n>` - Max results, default 5 (for `search`)
 - `--since <YYYY-MM-DD>` - Only return entries updated since this date (for `search`)
 - `--full` - Include full content in JSON output, eliminating the need for `lk get` (for `search`)
@@ -242,7 +242,7 @@ lk can be used to manage ADRs by leveraging its status and supersede features. E
 
 ```bash
 # Propose a new decision
-lk add "Use JWT for API auth" --category decisions --content "We propose using JWT tokens for stateless authentication..."
+lk add "Use JWT for API auth" --category decisions --status proposed --content "We propose using JWT tokens for stateless authentication..."
 
 # Accept it (using the entry ID from add)
 lk edit 42 --status accepted
@@ -302,7 +302,7 @@ This complements Claude Code's built-in memory — Claude memory stores user pre
 "Let's plan this and tackle it later" is a recurring pattern. lk turns those plans into a resumable working list by combining a `plan` category with the entry status lifecycle — no schema change, since categories are free-form.
 
 - **Save** a plan with `proposed` (= open) status, **list** open plans, **resume** one, then **close** it with `accepted` (= done) or drop it with `deprecated`. Entries are kept as a record rather than deleted.
-- Reads merge project + user scope by default, so a single list surfaces plans across every project. Use `--scope user` for a personal, cross-project work list.
+- Reads merge the **current project + user scope** by default (not every project's `.knowledge`). For a single work list that follows you across every repo, save plans with `--scope user`.
 - **Auto-save**: after `lk init`, Claude proactively saves every plan it designs (plan-mode plans and approaches worked out in conversation) as a `plan` entry — without asking — so the plan survives a compact or session crash and is instantly recoverable from lk later, the same way `context` entries are saved.
 
 ```bash

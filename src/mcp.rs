@@ -1100,6 +1100,20 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         "update_knowledge" => {
             let arg = id_param(&params["id"])?.ok_or("missing required parameter: id")?;
             let scope = params["scope"].as_str();
+            let status = params["status"].as_str();
+
+            // Validate status before resolving the target / opening the DB, so a bad
+            // value errors consistently with add/search/list/CLI (an `Invalid status`
+            // message) rather than a target/DB error for a nonexistent id.
+            if let Some(st) = status
+                && !db::is_valid_status(st)
+            {
+                return Err(format!(
+                    "Invalid status: {st}. Must be one of: {}",
+                    db::VALID_STATUSES.join(", ")
+                ));
+            }
+
             let (conn, entry, _label) = mcp_resolve_target(&arg, scope, &project_root)?;
             let local_id = entry.id;
 
@@ -1110,7 +1124,6 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             });
-            let status = params["status"].as_str();
             // superseded_by may be an integer id or a uid string; "0" clears it.
             // Resolved within the SAME DB as the edited entry (no cross-scope refs).
             let sb_arg = id_param(&params["superseded_by"])?;
@@ -1128,15 +1141,9 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 }
             };
 
-            // Validate status and resolve superseded_by BEFORE any write, so a bad
-            // value can't leave a partial update. status_update = (status, sb_uid).
+            // Resolve superseded_by BEFORE any write, so a bad value can't leave a
+            // partial update. status is already validated above. status_update = (status, sb_uid).
             let status_update: Option<(String, Option<String>)> = if let Some(st) = status {
-                if !db::is_valid_status(st) {
-                    return Err(format!(
-                        "Invalid status: {st}. Must be one of: {}",
-                        db::VALID_STATUSES.join(", ")
-                    ));
-                }
                 let sb = match sb_arg.as_deref() {
                     Some(s) => resolve_sb(s)?,
                     None => entry.superseded_by.clone(),

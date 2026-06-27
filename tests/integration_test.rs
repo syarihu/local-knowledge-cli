@@ -418,6 +418,30 @@ fn test_list_rejects_invalid_status() {
 }
 
 #[test]
+fn test_edit_invalid_status_validated_before_target() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Status is validated before the target is resolved: even for a nonexistent id,
+    // a bad status reports "Invalid status" (not a "not found" error).
+    let output = lk_bin()
+        .args(["edit", "99999", "--status", "bogus"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid status"),
+        "expected Invalid status, got: {stderr}"
+    );
+}
+
+#[test]
 fn test_search_status_filter_user_scope_merged() {
     let home = tempfile::tempdir().unwrap();
     let proj = setup_temp_project();
