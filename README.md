@@ -14,6 +14,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Secret detection — warns when content contains API keys, tokens, or credentials
 - Project config via `.knowledge/config.toml` (git-tracked, team-shareable)
 - User-scope (global) knowledge at `~/.config/lk/knowledge.db` — carry personal notes and cross-project context (e.g. session handoff logs) across all projects with `--scope user`; reads merge project + user by default. In projects without `lk init`, `lk add` automatically falls back to this global store, so it works anywhere
+- User-scope markdown export/sync — `lk export/sync --scope user` mirrors user knowledge to `~/.config/lk/knowledge/*.md` so personal notes can be versioned and synced across machines (e.g. via a dotfiles repo)
 - Bulk delete with `purge` by category or source
 - Auto-extract keywords from entries
 - Self-update from GitHub Releases
@@ -150,7 +151,7 @@ A good rule of thumb: shared knowledge is for stable facts that would help a new
 Knowledge lives in one of two stores:
 
 - **Project scope** — the per-project `.knowledge/knowledge.db` resolved from the current directory. This is where shared and local knowledge for *this* repo lives.
-- **User scope** — a single global DB at `~/.config/lk/knowledge.db`, shared across every project. It is DB-only (not git-tracked, no markdown/sync) and never committed. Use it for personal notes and cross-project context such as session handoff logs. The DB is created on first `--scope user` write.
+- **User scope** — a single global DB at `~/.config/lk/knowledge.db`, shared across every project. Use it for personal notes and cross-project context such as session handoff logs. The DB is created on first `--scope user` write. Unlike project scope (where `.knowledge/` is committed to the repo), user-scope markdown lives outside any project — see [User-scope markdown](#user-scope-markdown) below.
 
 How scope is selected:
 
@@ -159,6 +160,23 @@ How scope is selected:
 - **Targets** (`get`, `edit`, `delete`, `supersede`): pass an entry id or uid. A numeric id resolves in the project DB (or the DB named by `--scope`); a uid resolves across scopes (project, then user — and skips the project store when it isn't initialized). Because project and user ids both start at 1, address user-scope entries by uid (shown in `--json` output). `supersede` requires both entries in the same scope.
 
 The `lk-knowledge` MCP tools mirror this: `search_knowledge` / `list_knowledge` / `get_stats` take a `scope` and gracefully skip an uninitialized project; `add_knowledge` takes a `scope` (default `auto`, same user-scope fallback); and `get_knowledge` / `update_knowledge` / `supersede_knowledge` accept an id or uid string.
+
+#### User-scope markdown
+
+User-scope knowledge can be mirrored to markdown so it can be versioned and synced across machines — the same md⇄DB model as project scope, but stored globally instead of in a repo.
+
+```bash
+# Export the user DB to markdown (md becomes the source of truth; entries flip to `shared`)
+lk export --scope user        # writes ~/.config/lk/knowledge/*.md
+
+# Sync those markdown files back into the user DB (e.g. on another machine after `git pull`)
+lk sync --scope user
+
+# Bake the globally-unique uid into the markdown as a cross-machine merge key
+lk sync --scope user --write-uids
+```
+
+The markdown directory defaults to `~/.config/lk/knowledge` and is configurable via `user_knowledge_dir` in the global config (`~/.config/lk/config.toml`) — point it at a dotfiles repo (or a symlink) to version your personal knowledge. The global config is scaffolded automatically on the first `lk export --scope user`. See [Global config](#global-config-user-scope) for the available settings.
 
 ### Team workflow
 
@@ -377,6 +395,22 @@ command_log = false
 # Mark .knowledge/*.md as linguist-generated in .gitattributes (default: true)
 # Set to false to show full diffs for .knowledge/*.md in GitHub PRs
 gitattributes_generated = true
+```
+
+### Global config (user scope)
+
+User-scope markdown export/sync is governed by a separate global config at `~/.config/lk/config.toml`, scaffolded automatically on the first `lk export --scope user`.
+
+```toml
+# ~/.config/lk/config.toml
+
+# Directory holding user-scope markdown — the source of truth for user knowledge.
+# Default: ~/.config/lk/knowledge. Point this at a dotfiles repo to version it.
+# Use an absolute path or one under ~/ (avoid `..`).
+# user_knowledge_dir = ~/dotfiles/lk-knowledge
+
+# Detect potential secrets when exporting user-scope entries (default: true)
+secret_detection = true
 ```
 
 ### Environment variable overrides
