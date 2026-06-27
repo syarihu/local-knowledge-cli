@@ -454,6 +454,10 @@ pub fn generate_uid() -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Convenience wrapper over [`add_entry_full`] with default uid/status/supersede
+/// fields. Only used by the unit tests now that production paths pass an explicit
+/// status through `add_entry_full`.
+#[cfg(test)]
 pub fn add_entry(
     conn: &Connection,
     title: &str,
@@ -540,12 +544,14 @@ pub fn get_entry_by_uid(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn search_entries(
     conn: &Connection,
     query: &str,
     keyword_only: bool,
     category: Option<&str>,
     source: Option<&str>,
+    status: Option<&str>,
     since: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
@@ -557,6 +563,7 @@ pub fn search_entries(
         params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
         category: Option<&str>,
         source: Option<&str>,
+        status: Option<&str>,
         since: Option<&str>,
     ) {
         if let Some(cat) = category {
@@ -568,6 +575,11 @@ pub fn search_entries(
             let idx = params.len() + 1;
             sql.push_str(&format!(" AND e.source = ?{idx}"));
             params.push(Box::new(src.to_string()));
+        }
+        if let Some(st) = status {
+            let idx = params.len() + 1;
+            sql.push_str(&format!(" AND e.status = ?{idx}"));
+            params.push(Box::new(st.to_string()));
         }
         if let Some(s) = since {
             let idx = params.len() + 1;
@@ -593,7 +605,7 @@ pub fn search_entries(
         }
         sql.push(')');
 
-        append_filters(&mut sql, &mut param_values, category, source, since);
+        append_filters(&mut sql, &mut param_values, category, source, status, since);
         sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
         param_values.push(Box::new(limit as i64));
 
@@ -615,7 +627,14 @@ pub fn search_entries(
         let mut fts_sql = fts_sql_base;
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(sanitized)];
 
-        append_filters(&mut fts_sql, &mut param_values, category, source, since);
+        append_filters(
+            &mut fts_sql,
+            &mut param_values,
+            category,
+            source,
+            status,
+            since,
+        );
         fts_sql.push_str(" ORDER BY rank, e.updated_at DESC LIMIT ?");
         param_values.push(Box::new(limit as i64));
 
@@ -660,7 +679,7 @@ pub fn search_entries(
             }
             kw_sql.push(')');
 
-            append_filters(&mut kw_sql, &mut kw_params, category, source, since);
+            append_filters(&mut kw_sql, &mut kw_params, category, source, status, since);
             kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
             kw_params.push(Box::new(remaining as i64));
 
@@ -699,7 +718,14 @@ pub fn search_entries(
             }
             like_sql.push(')');
 
-            append_filters(&mut like_sql, &mut like_params, category, source, since);
+            append_filters(
+                &mut like_sql,
+                &mut like_params,
+                category,
+                source,
+                status,
+                since,
+            );
             like_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
             like_params.push(Box::new(remaining as i64));
 
@@ -1303,7 +1329,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_entries(&conn, "OAuth", false, None, None, None, 10).unwrap();
+        let results = search_entries(&conn, "OAuth", false, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "OAuth Login");
     }
@@ -1323,7 +1349,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_entries(&conn, "mykey", true, None, None, None, 10).unwrap();
+        let results = search_entries(&conn, "mykey", true, None, None, None, None, 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "A");
     }
@@ -1388,12 +1414,12 @@ mod tests {
         .unwrap();
 
         // 3+ char Japanese query via trigram FTS
-        let results = search_entries(&conn, "トークン", false, None, None, None, 10).unwrap();
+        let results = search_entries(&conn, "トークン", false, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty(), "trigram should match 3+ char Japanese");
         assert_eq!(results[0].title, "認証フロー");
 
         // 2-char Japanese query falls back to LIKE
-        let results = search_entries(&conn, "認証", false, None, None, None, 10).unwrap();
+        let results = search_entries(&conn, "認証", false, None, None, None, None, 10).unwrap();
         assert!(
             !results.is_empty(),
             "LIKE fallback should match 2-char Japanese"
@@ -1401,7 +1427,8 @@ mod tests {
         assert_eq!(results[0].title, "認証フロー");
 
         // Multi-word Japanese query
-        let results = search_entries(&conn, "レート制限", false, None, None, None, 10).unwrap();
+        let results =
+            search_entries(&conn, "レート制限", false, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty(), "should match multi-char Japanese");
     }
 
@@ -1606,7 +1633,7 @@ mod tests {
         .unwrap();
 
         // Hyphenated query should still find the entry
-        let results = search_entries(&conn, "auth-API", false, None, None, None, 10).unwrap();
+        let results = search_entries(&conn, "auth-API", false, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty(), "hyphenated query should find entry");
         assert!(results[0].title.contains("Auth"));
     }

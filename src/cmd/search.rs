@@ -7,6 +7,7 @@ pub fn cmd_search(
     keyword_only: bool,
     category: Option<&str>,
     source: Option<&str>,
+    status: Option<&str>,
     since: Option<&str>,
     limit: usize,
     full: bool,
@@ -20,8 +21,16 @@ pub fn cmd_search(
     // entry came from (ids are per-DB), tagging each with its scope label.
     let mut items: Vec<(f64, &'static str, db::Entry, Vec<String>)> = Vec::new();
     for (conn, label) in &conns {
-        let results =
-            db::search_entries(conn, query, keyword_only, category, source, since, limit)?;
+        let results = db::search_entries(
+            conn,
+            query,
+            keyword_only,
+            category,
+            source,
+            status,
+            since,
+            limit,
+        )?;
         for r in results {
             let kws = db::get_keywords(conn, r.id).unwrap_or_default();
             // Entry.rank is 1/(1+|bm25|): smaller value = better match, so we sort

@@ -8,11 +8,22 @@ pub fn cmd_add(
     keywords_str: Option<&str>,
     content: Option<&str>,
     category: Option<&str>,
+    status: Option<&str>,
     force: bool,
     allow_secrets: bool,
     scope: &str,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate status up front so a bad value fails before any DB work.
+    if let Some(st) = status
+        && !db::is_valid_status(st)
+    {
+        return Err(format!(
+            "Invalid status: {st}. Must be one of: {}",
+            db::VALID_STATUSES.join(", ")
+        )
+        .into());
+    }
     // "auto" (default) saves to project when initialized, else falls back to user.
     let (scope, fell_back) = super::resolve_write_scope(scope)?;
     super::log_command(
@@ -151,7 +162,9 @@ pub fn cmd_add(
             }
         }
 
-        db::add_entry(&conn, title, content, &kws, category, "local", None, None)
+        db::add_entry_full(
+            &conn, title, content, &kws, category, "local", None, None, None, status, None, None,
+        )
     })();
 
     match result {

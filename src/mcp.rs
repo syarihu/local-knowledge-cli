@@ -327,6 +327,10 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
                     "type": "string",
                     "description": "Filter by source ('local' or 'shared')"
                 },
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Use 'proposed' to find open plan items."
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum number of results (default: 5)",
@@ -396,7 +400,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
 fn tool_def_list(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "list_knowledge",
-        "description": "Browse all knowledge entries in the project's knowledge base. Use this to get an overview of what knowledge is available, or to find entries by source ('shared' = team knowledge from .knowledge/ markdown files, 'local' = entries added via CLI or MCP). Supports filtering by category and pagination.",
+        "description": "Browse all knowledge entries in the project's knowledge base. Use this to get an overview of what knowledge is available, or to find entries by source ('shared' = team knowledge from .knowledge/ markdown files, 'local' = entries added via CLI or MCP). Supports filtering by category, status, and pagination.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -407,6 +411,10 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
                 "category": {
                     "type": "string",
                     "description": "Filter by category"
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Use 'proposed' to list open plan items."
                 },
                 "limit": {
                     "type": "integer",
@@ -782,8 +790,19 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let keyword_only = params["keyword_only"].as_bool().unwrap_or(false);
             let category = params["category"].as_str();
             let source = params["source"].as_str();
+            let status = params["status"].as_str();
             let limit = params["limit"].as_u64().unwrap_or(5) as usize;
             let scope = params["scope"].as_str();
+
+            // Validate status if provided
+            if let Some(st) = status
+                && !db::is_valid_status(st)
+            {
+                return Err(format!(
+                    "Invalid status: {st}. Must be one of: {}",
+                    db::VALID_STATUSES.join(", ")
+                ));
+            }
 
             log_mcp_command("search", &[("query", query)], &knowledge_dir);
 
@@ -793,9 +812,17 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let conns = read_scope_conns(scope, &project_root)?;
             let mut items: Vec<(f64, &'static str, db::Entry, Vec<String>)> = Vec::new();
             for (conn, label) in &conns {
-                let entries =
-                    db::search_entries(conn, query, keyword_only, category, source, None, limit)
-                        .map_err(|e| format!("search error: {e}"))?;
+                let entries = db::search_entries(
+                    conn,
+                    query,
+                    keyword_only,
+                    category,
+                    source,
+                    status,
+                    None,
+                    limit,
+                )
+                .map_err(|e| format!("search error: {e}"))?;
                 for e in entries {
                     let kws = db::get_keywords(conn, e.id).unwrap_or_default();
                     let score = e.rank.unwrap_or(f64::MAX);
@@ -972,6 +999,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         "list_knowledge" => {
             let source = params["source"].as_str();
             let category = params["category"].as_str();
+            let status = params["status"].as_str();
             let limit = params["limit"].as_u64().unwrap_or(20) as usize;
             let offset = params["offset"].as_u64().unwrap_or(0) as usize;
             let scope = params["scope"].as_str();
@@ -990,6 +1018,10 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 for e in entries {
                     // Apply category filter when source is also specified.
                     if source.is_some() && category.is_some_and(|c| e.category != c) {
+                        continue;
+                    }
+                    // Apply status filter (e.g. proposed = open plan items).
+                    if status.is_some_and(|st| e.status != st) {
                         continue;
                     }
                     let kws = db::get_keywords(conn, e.id).unwrap_or_default();

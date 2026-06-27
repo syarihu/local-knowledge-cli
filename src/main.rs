@@ -41,6 +41,9 @@ enum Commands {
         /// Category (e.g., "features", "architecture")
         #[arg(long)]
         category: Option<String>,
+        /// Initial status ("active", "deprecated", "proposed", "accepted", or "superseded"). Default: "active"
+        #[arg(long)]
+        status: Option<String>,
         /// Skip duplicate check and force add
         #[arg(long)]
         force: bool,
@@ -67,6 +70,9 @@ enum Commands {
         /// Filter by source ("local" or "shared")
         #[arg(long)]
         source: Option<String>,
+        /// Filter by status (e.g., "accepted", "proposed", "superseded")
+        #[arg(long)]
+        status: Option<String>,
         /// Only return entries updated since this date (ISO 8601, e.g., 2026-01-01 or 2026-01-01T09:00:00)
         #[arg(long)]
         since: Option<String>,
@@ -348,6 +354,7 @@ fn main() {
             keywords,
             content,
             category,
+            status,
             force,
             allow_secrets,
             scope,
@@ -357,6 +364,7 @@ fn main() {
             keywords.as_deref(),
             content.as_deref(),
             category.as_deref(),
+            status.as_deref(),
             force,
             allow_secrets,
             &scope,
@@ -367,6 +375,7 @@ fn main() {
             keyword_only,
             category,
             source,
+            status,
             since,
             limit,
             full,
@@ -377,6 +386,7 @@ fn main() {
             keyword_only,
             category.as_deref(),
             source.as_deref(),
+            status.as_deref(),
             since.as_deref(),
             limit,
             full,

@@ -356,6 +356,10 @@ const EMBEDDED_COMMANDS: &[(&str, &str)] = &[
         "lk-knowledge-agent-brief.md",
         include_str!("../../commands/lk-knowledge-agent-brief.md"),
     ),
+    (
+        "lk-knowledge-plan.md",
+        include_str!("../../commands/lk-knowledge-plan.md"),
+    ),
 ];
 
 fn detect_target() -> Result<String, Box<dyn std::error::Error>> {

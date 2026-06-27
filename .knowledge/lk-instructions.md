@@ -28,4 +28,4 @@ After investigating unfamiliar code, save non-trivial, reusable findings (skip m
 When launching Explore/general-purpose agents to investigate unfamiliar code, tell them to **`lk search` first** and to return a **`## Knowledge to Save`** section; then save what they return. Full prepend text + capture procedure: `/lk-knowledge-agent-brief`. Skip for mechanical tasks.
 
 ### More
-Workflows: `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-search`. Full CLI reference: `lk --help` (or `lk <cmd> --help`).
+Workflows: `/lk-knowledge-discover` `/lk-knowledge-refresh` `/lk-knowledge-from-branch` `/lk-knowledge-export` `/lk-knowledge-sync` `/lk-knowledge-write-md` `/lk-knowledge-search` `/lk-knowledge-plan` (save/resume "do it later" plans via `category: plan` + `status`). Full CLI reference: `lk --help` (or `lk <cmd> --help`).
