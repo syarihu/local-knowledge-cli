@@ -3,7 +3,9 @@ description: Save plans to tackle later and resume them from a working list
 allowed-tools: Bash(lk *)
 ---
 
-Manage "do it later" plans as first-class knowledge entries: save a plan now, list open plans, resume one, and close it when done. Plans use `category: plan` with `status` as the lifecycle: `proposed` = open (not started), `accepted` = done, `deprecated` = dropped.
+Manage plans as first-class knowledge entries: save a plan, list open plans, resume one, and close it when done. Plans use `category: plan` with `status` as the lifecycle: `proposed` = open (not started), `accepted` = done, `deprecated` = dropped.
+
+**Proactive auto-save**: this isn't only a manual command. After you design *any* plan — a plan-mode plan after `ExitPlanMode`, or an approach worked out in plain conversation — save it here **proactively, without asking first** (the same instinct as `/lk-knowledge-save-context`). Save **every** plan you design, not just deferred ones: it persists across compaction and session crashes, so the work is instantly recoverable from lk later even if the session is lost. Do the save once the plan is settled and tools are available again (i.e. after leaving plan mode).
 
 ## Arguments
 $ARGUMENTS selects the mode:
