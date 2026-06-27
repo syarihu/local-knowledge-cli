@@ -1164,7 +1164,13 @@ fn sanitize_fts_query(query: &str) -> String {
     if words.is_empty() {
         "\"\"".to_string()
     } else {
-        words.join(" ")
+        // Join with OR, not the FTS5 default (implicit AND). A raw multi-word query
+        // (e.g. a whole user question pasted in) would otherwise require *every* term
+        // to be present and match almost nothing, dropping the ranked FTS results and
+        // leaving only the unranked keyword/LIKE fallbacks. With OR, any term matching
+        // surfaces the entry and bm25 still ranks entries that hit more/rarer terms
+        // highest, so common stopwords are naturally down-weighted.
+        words.join(" OR ")
     }
 }
 
@@ -1332,6 +1338,112 @@ mod tests {
         let results = search_entries(&conn, "OAuth", false, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "OAuth Login");
+    }
+
+    #[test]
+    fn test_fts_multiword_query_is_or_not_and() {
+        // A raw multi-word query (like a pasted user question) must not require ALL
+        // terms via FTS5's implicit AND. With OR semantics, an entry matching some of
+        // the terms still surfaces, and bm25 ranks the best match first.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "Token refresh flow",
+            "How the auth middleware refreshes the access token",
+            &["auth".to_string(), "token".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "Logging config",
+            "Structured logging and log levels",
+            &["logging".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // No single entry contains every word, but the first entry matches several.
+        // Under the old AND semantics this returned 0 ranked FTS hits.
+        let results = search_entries(
+            &conn,
+            "how does the auth middleware refresh a token",
+            false,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .unwrap();
+        assert!(
+            !results.is_empty(),
+            "OR query should match an entry sharing some terms"
+        );
+        assert_eq!(
+            results[0].title, "Token refresh flow",
+            "the entry matching more/rarer terms should rank first"
+        );
+    }
+
+    #[test]
+    fn test_fts_japanese_space_separated_keywords_or_matched() {
+        // Japanese has no word boundaries, so OR only helps once the query is split
+        // into *space-separated* keywords (which the instructions tell the model to
+        // do). Each 3+ char keyword is trigram-matched; OR surfaces entries hitting
+        // any of them. A raw no-space phrase would stay a single strict-phrase token.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "トークン更新フロー",
+            "認証トークンの更新フローの説明",
+            &["auth".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "スキーマ定義",
+            "データベースのスキーマ定義",
+            &["schema".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Space-separated keywords spanning both entries: OR matches both. Under the
+        // old AND semantics, no single entry contains both terms → 0 ranked hits.
+        let results = search_entries(
+            &conn,
+            "トークン スキーマ",
+            false,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .unwrap();
+        let titles: Vec<&str> = results.iter().map(|e| e.title.as_str()).collect();
+        assert!(
+            titles.contains(&"トークン更新フロー"),
+            "OR should surface the トークン entry: {titles:?}"
+        );
+        assert!(
+            titles.contains(&"スキーマ定義"),
+            "OR should surface the スキーマ entry: {titles:?}"
+        );
     }
 
     #[test]
@@ -1674,17 +1786,17 @@ mod tests {
 
     #[test]
     fn test_sanitize_fts_query_splits_hyphens() {
-        assert_eq!(sanitize_fts_query("auth-API"), "\"auth\" \"API\"");
+        assert_eq!(sanitize_fts_query("auth-API"), "\"auth\" OR \"API\"");
     }
 
     #[test]
     fn test_sanitize_fts_query_splits_underscores() {
-        assert_eq!(sanitize_fts_query("auth_flow"), "\"auth\" \"flow\"");
+        assert_eq!(sanitize_fts_query("auth_flow"), "\"auth\" OR \"flow\"");
     }
 
     #[test]
     fn test_sanitize_fts_query_splits_camel_case() {
-        assert_eq!(sanitize_fts_query("AuthAPI"), "\"Auth\" \"API\"");
+        assert_eq!(sanitize_fts_query("AuthAPI"), "\"Auth\" OR \"API\"");
     }
 
     #[test]

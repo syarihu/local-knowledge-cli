@@ -7,10 +7,10 @@ If the `lk-knowledge` MCP server is available, **prefer its tools** (`search_kno
 - **Local knowledge** (DB only, git-ignored): investigation cache; if stale, re-investigate rather than patch.
 
 ### Search BEFORE investigating
-Before exploring unfamiliar code or architecture, search first (`search_knowledge` / `lk search "<kw>" --json`).
-- Keywords: **1–3 short words**, space-separated; try **both English and Japanese**; broaden if no hits.
+Search first **only when you're about to investigate unfamiliar code/architecture in this repo to answer the request** — not reflexively on every prompt (`search_knowledge` / `lk search "<kw>" --json`).
+- Keywords: **1–3 short content words**, space-separated. **Don't paste the user's raw sentence/question** — extract the key nouns and drop stopwords/particles (は/が/を/the/how/…). Try **both English and Japanese**; broaden if no hits.
 - `"stale": true` → verify vs current code, then update (if outdated) or touch (if still correct). `"superseded"`/`"deprecated"` → use the superseding entry.
-- **Skip** when: exact file/line given, mechanical task (format/rename/version/git), or you already have context.
+- **Skip** when: exact file/line given; mechanical task (format/rename/version/git); conversational or trivial prompt; writing new code from a clear spec; the request isn't about this codebase's internals; or you already have the context.
 
 ### Search past context
 When the user signals continuation ("last time", "we looked into this", "where did we leave off"), or a topic likely has prior discussion, search `category: context` / `conversation-log` first (`search_knowledge(query, category: "context")`).

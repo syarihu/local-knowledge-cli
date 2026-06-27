@@ -7,6 +7,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Project-local knowledge base stored in `.knowledge/knowledge.db`
 - Full-text search with trigram tokenizer (supports Japanese/CJK), keyword search, and LIKE fallback
 - Smart query splitting — hyphens, underscores, and CamelCase are automatically split into separate tokens (e.g., `auth-API` → `auth` + `API`)
+- OR-matched, relevance-ranked queries — multi-word queries match entries containing *any* term (not all), with bm25 ranking entries that hit more/rarer terms highest, so even a loosely-worded query still surfaces the most relevant entries
 - Duplicate detection when adding entries (skip with `--force`)
 - Sync knowledge from `.knowledge/` markdown files (shareable via Git)
 - Auto-sync on command execution — no manual `lk sync` needed after `git pull`
