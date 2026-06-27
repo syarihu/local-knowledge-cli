@@ -2,7 +2,20 @@ use regex::Regex;
 
 pub struct SecretMatch {
     pub pattern_name: &'static str,
+    /// A REDACTED preview of the match (a short prefix + `***`), safe to print or emit
+    /// in JSON. Never holds the raw secret — the warning must not leak what it detects.
     pub matched: String,
+}
+
+/// Redact a detected secret to a short, non-reconstructable preview: a recognizable
+/// prefix (e.g. `AKIA`, `ghp_`) plus `***`, with a fixed trailing marker so the length
+/// isn't revealed. The prefix is capped to at most `len - 1` characters so the full
+/// value is never shown — even for very short matches (`"abc"` → `"ab***"`, `"a"` → `"***"`).
+fn redact(raw: &str) -> String {
+    let len = raw.chars().count();
+    let show = len.saturating_sub(1).min(4);
+    let prefix: String = raw.chars().take(show).collect();
+    format!("{prefix}***")
 }
 
 /// Check text for potential secrets. Returns a list of matches.
@@ -32,16 +45,12 @@ pub fn check_for_secrets(text: &str) -> Vec<SecretMatch> {
     for (name, pattern) in patterns {
         if let Ok(re) = Regex::new(pattern) {
             for m in re.find_iter(text) {
-                let matched = m.as_str().to_string();
-                // Truncate long matches for display
-                let display = if matched.len() > 40 {
-                    format!("{}...", &matched[..40])
-                } else {
-                    matched
-                };
                 matches.push(SecretMatch {
                     pattern_name: name,
-                    matched: display,
+                    // Store a REDACTED preview, never the raw match: this value is printed
+                    // to stderr / emitted in JSON, so showing the real secret would leak it
+                    // into terminal/CI logs even though we block the operation.
+                    matched: redact(m.as_str()),
                 });
             }
         }
@@ -82,6 +91,37 @@ mod tests {
         let matches = check_for_secrets("aws key is AKIAIOSFODNN7EXAMPLE");
         assert!(!matches.is_empty());
         assert_eq!(matches[0].pattern_name, "AWS Access Key ID");
+    }
+
+    #[test]
+    fn test_match_is_redacted_not_leaked() {
+        let secret = "AKIAIOSFODNN7EXAMPLE";
+        let matches = check_for_secrets(&format!("aws key is {secret}"));
+        assert!(!matches.is_empty());
+        // The stored/printed value must not contain the full secret.
+        assert!(
+            !matches[0].matched.contains(secret),
+            "redacted value must not leak the raw secret: {:?}",
+            matches[0].matched
+        );
+        assert!(matches[0].matched.ends_with("***"));
+        // The warning text built from matches is likewise safe.
+        assert!(!format_warning(&matches).contains(secret));
+    }
+
+    #[test]
+    fn test_redact_never_returns_full_input() {
+        // Even short inputs must not be shown whole (at least one char hidden).
+        for raw in ["a", "ab", "abc", "abcd", "abcdefghij"] {
+            let r = redact(raw);
+            assert!(r.ends_with("***"));
+            let shown = r.trim_end_matches("***");
+            assert!(
+                shown.len() < raw.len(),
+                "redact({raw:?}) = {r:?} revealed the whole input"
+            );
+        }
+        assert_eq!(redact("a"), "***");
     }
 
     #[test]

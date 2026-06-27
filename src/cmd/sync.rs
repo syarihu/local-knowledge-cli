@@ -11,14 +11,50 @@ pub struct SyncStats {
     pub unchanged: usize,
 }
 
-pub fn cmd_sync(json_output: bool, write_uids: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_sync(
+    json_output: bool,
+    write_uids: bool,
+    scope: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = super::parse_scope(scope)?;
     super::log_command(
         "sync",
-        &[("write_uids", if write_uids { "true" } else { "false" })],
+        &[
+            ("write_uids", if write_uids { "true" } else { "false" }),
+            ("scope", scope.label()),
+        ],
     );
-    let conn = open_db_with_migrate()?;
-    let root = get_project_root();
-    let knowledge_dir = get_knowledge_dir();
+
+    // Resolve (connection, markdown dir, root for rel-path) per scope. User scope
+    // reads the configured `user_knowledge_dir` into the global ~/.config/lk DB,
+    // creating that DB on first run so a fresh machine can bootstrap from markdown alone.
+    let (conn, knowledge_dir, root) = match scope {
+        super::Scope::Project => (
+            open_db_with_migrate()?,
+            get_knowledge_dir(),
+            get_project_root(),
+        ),
+        super::Scope::User => {
+            // Always scaffold the global config on first touch (so `user_knowledge_dir`
+            // is discoverable even via a "hand-write md, then sync" flow); only the
+            // human-facing note is suppressed in --json mode.
+            let scaffolded = crate::util::ensure_global_config_scaffold();
+            if !json_output && let Some(path) = scaffolded {
+                println!(
+                    "Created {} (edit to customize user_knowledge_dir).",
+                    path.display()
+                );
+            }
+            // sync is a write op: create the user DB on first run so a fresh machine with
+            // only the markdown store (e.g. freshly cloned dotfiles) can bootstrap
+            // ~/.config/lk/knowledge.db directly with `lk sync --scope user`.
+            let conn = crate::util::open_or_create_user_db()?;
+            let knowledge_dir = crate::util::get_user_knowledge_dir();
+            let root = crate::util::user_md_root(&knowledge_dir);
+            (conn, knowledge_dir, root)
+        }
+    };
+
     let stats = sync_knowledge_dir(&conn, &knowledge_dir, &root)?;
 
     let mut uids_written = 0;
@@ -62,6 +98,10 @@ fn write_uids_to_md(
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let mut total_written = 0;
     let uid_re = regex::Regex::new(r"(?m)^uid:\s*.+$").unwrap();
+
+    // Match the canonical rel-path root used by sync_knowledge_dir (see note there).
+    let canonical_root = crate::util::canonicalize_or(root);
+    let root = canonical_root.as_path();
 
     for filepath in walkdir_md(knowledge_dir) {
         let fname = filepath.file_name().and_then(|n| n.to_str());
@@ -155,6 +195,19 @@ pub fn sync_knowledge_dir(
         });
     }
 
+    // Canonicalize the rel-path root: walkdir returns canonicalized file paths, so the
+    // root they're stripped against must be canonical too — otherwise (e.g. a symlinked
+    // project/knowledge path) strip_prefix fails and source_file is stored as an unstable
+    // absolute path, causing churn / wrong add-remove decisions across runs.
+    let canonical_root = crate::util::canonicalize_or(root);
+    let root = canonical_root.as_path();
+
+    // Pre-flight: a uid appearing in more than one markdown file is an identity
+    // conflict. Fail with a clear, actionable message *before* mutating anything —
+    // silently skipping the duplicate insert could later delete the entry when one
+    // of the files is removed while the other (unchanged) file still holds the uid.
+    check_no_duplicate_uids(knowledge_dir)?;
+
     let mut stats = SyncStats {
         added: 0,
         updated: 0,
@@ -215,6 +268,95 @@ pub fn sync_knowledge_dir(
     Ok(stats)
 }
 
+/// Fail if any uid appears in more than one markdown file under `knowledge_dir`.
+/// Such a duplicate is an identity conflict (e.g. a stale/renamed copy left behind,
+/// or a hand-copied entry) that the user must resolve — proceeding would either abort
+/// mid-import or, worse, silently drop the entry on a later sync.
+fn check_no_duplicate_uids(
+    knowledge_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut locations: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    // walkdir_md yields canonicalized paths, so strip against a canonical base to keep
+    // the displayed filenames relative/readable (e.g. through a symlinked knowledge dir).
+    let base = crate::util::canonicalize_or(knowledge_dir);
+    for filepath in walkdir_md(knowledge_dir) {
+        let fname = filepath.file_name().and_then(|n| n.to_str());
+        if fname == Some("README.md") || fname == Some("lk-instructions.md") {
+            continue;
+        }
+        let display = filepath
+            .strip_prefix(&base)
+            .unwrap_or(&filepath)
+            .to_string_lossy()
+            .to_string();
+        let text = std::fs::read_to_string(&filepath)?;
+        for entry in markdown::parse_md_entries(&text) {
+            if let Some(uid) = entry.uid.as_deref().filter(|u| !u.trim().is_empty()) {
+                locations
+                    .entry(uid.to_string())
+                    .or_default()
+                    .push(display.clone());
+            }
+        }
+    }
+
+    // A uid is a conflict if it occurs more than once total — whether across files or
+    // twice within one file. Render per-file occurrence counts so the message is accurate
+    // in both cases (a single file shown as `file (x2)` rather than listed twice).
+    let mut dups: Vec<(&String, &Vec<String>)> = locations
+        .iter()
+        .filter(|(_, occurrences)| occurrences.len() > 1)
+        .collect();
+    if dups.is_empty() {
+        return Ok(());
+    }
+    dups.sort_by_key(|(uid, _)| uid.as_str());
+    let detail = dups
+        .iter()
+        .map(|(uid, occurrences)| {
+            let mut counts: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for f in occurrences.iter() {
+                *counts.entry(f.as_str()).or_default() += 1;
+            }
+            let files = counts
+                .iter()
+                .map(|(f, n)| {
+                    if *n > 1 {
+                        format!("{f} (x{n})")
+                    } else {
+                        f.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("  uid {uid}: {files}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "duplicate uid(s) found in markdown entries — each uid must appear in exactly \
+         one entry. Remove the stale/duplicate copy and retry:\n{detail}"
+    )
+    .into())
+}
+
+/// True if `e` is a SQLite UNIQUE-constraint violation on `entries.uid`.
+///
+/// Matches the structured `rusqlite` error (constraint-violation code) rather than the
+/// human-readable "UNIQUE constraint failed:" prose, which can vary across SQLite/rusqlite
+/// versions. `entries.uid` is the schema identifier SQLite echoes for the offending
+/// constraint, so it stays stable and scopes the match to the uid column.
+fn is_duplicate_uid_error(e: &(dyn std::error::Error + 'static)) -> bool {
+    matches!(
+        e.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(info, Some(msg)))
+            if info.code == rusqlite::ErrorCode::ConstraintViolation
+                && msg.contains("entries.uid")
+    )
+}
+
 pub fn import_md_file(
     conn: &rusqlite::Connection,
     filepath: &std::path::Path,
@@ -223,8 +365,11 @@ pub fn import_md_file(
     let filepath = std::fs::canonicalize(filepath).unwrap_or_else(|_| filepath.to_path_buf());
     let text = std::fs::read_to_string(&filepath)?;
     let fhash = markdown::file_hash(&filepath)?;
+    // Strip against a canonical root so source_file stays relative/stable even when the
+    // root is reached via a symlink (the file path above is already canonicalized).
+    let root = crate::util::canonicalize_or(root);
     let rel_path = filepath
-        .strip_prefix(root)
+        .strip_prefix(&root)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| filepath.to_string_lossy().to_string());
 
@@ -236,7 +381,7 @@ pub fn import_md_file(
         } else {
             Some(entry.supersedes.join(","))
         };
-        db::add_entry_full(
+        let result = db::add_entry_full(
             conn,
             &entry.title,
             &entry.content,
@@ -252,8 +397,26 @@ pub fn import_md_file(
                 .filter(|s| crate::db::is_valid_status(s)),
             entry.superseded_by.as_deref(),
             supersedes.as_deref(),
-        )?;
-        count += 1;
+        );
+        match result {
+            Ok(_) => count += 1,
+            // Cross-file md duplicates are caught up front by `check_no_duplicate_uids`,
+            // so a UNIQUE(uid) failure here means the md uid collides with an existing
+            // entry already in the DB (e.g. a `local` entry of the same uid). Fail with a
+            // clear, actionable message rather than the opaque SQLite error; the caller's
+            // transaction rolls back, leaving the DB untouched.
+            Err(e) if is_duplicate_uid_error(e.as_ref()) => {
+                return Err(format!(
+                    "duplicate uid {} for '{}' in {} — it collides with an existing entry \
+                     (e.g. a local entry of the same uid). Resolve the conflict and retry.",
+                    entry.uid.as_deref().unwrap_or("?"),
+                    entry.title,
+                    rel_path,
+                )
+                .into());
+            }
+            Err(e) => return Err(e),
+        }
     }
     Ok(count)
 }

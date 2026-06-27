@@ -183,7 +183,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Sync .knowledge/ files with DB
+    /// Sync markdown files with DB (project .knowledge/, or user-scope dir with --scope user)
     Sync {
         /// Output as JSON
         #[arg(long)]
@@ -191,10 +191,13 @@ enum Commands {
         /// Write UIDs back to markdown files that don't have them
         #[arg(long)]
         write_uids: bool,
+        /// Scope to sync: "project" (default) or "user" (~/.config/lk/knowledge or configured dir)
+        #[arg(long, default_value = "project")]
+        scope: String,
     },
-    /// Export local entries to markdown
+    /// Export local entries to markdown (project .knowledge/, or user-scope dir with --scope user)
     Export {
-        /// Output directory (default: .knowledge/)
+        /// Output directory (default: project .knowledge/, or user-scope dir for --scope user)
         #[arg(long)]
         dir: Option<PathBuf>,
         /// Export only specific entry IDs (comma-separated, e.g., "1,2,3")
@@ -206,6 +209,9 @@ enum Commands {
         /// Allow content that contains potential secrets
         #[arg(long)]
         allow_secrets: bool,
+        /// Scope to export: "project" (default) or "user" (global ~/.config/lk store)
+        #[arg(long, default_value = "project")]
+        scope: String,
     },
     /// Import a markdown file
     Import {
@@ -320,7 +326,8 @@ fn main() {
         Commands::Add { scope, .. }
         | Commands::Search { scope, .. }
         | Commands::List { scope, .. }
-        | Commands::Stats { scope, .. } => scope == "user",
+        | Commands::Stats { scope, .. }
+        | Commands::Export { scope, .. } => scope == "user",
         Commands::Get { scope, .. }
         | Commands::Edit { scope, .. }
         | Commands::Delete { scope, .. }
@@ -434,13 +441,18 @@ fn main() {
             Some(&scope),
             json,
         ),
-        Commands::Sync { json, write_uids } => cmd::cmd_sync(json, write_uids),
+        Commands::Sync {
+            json,
+            write_uids,
+            scope,
+        } => cmd::cmd_sync(json, write_uids, &scope),
         Commands::Export {
             dir,
             ids,
             query,
             allow_secrets,
-        } => cmd::cmd_export(dir, ids.as_deref(), query.as_deref(), allow_secrets),
+            scope,
+        } => cmd::cmd_export(dir, ids.as_deref(), query.as_deref(), allow_secrets, &scope),
         Commands::Import { path } => cmd::cmd_import(&path),
         Commands::Keywords { json } => cmd::cmd_keywords(json),
         Commands::Stats {
