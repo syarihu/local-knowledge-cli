@@ -14,6 +14,12 @@ pub fn is_valid_status(s: &str) -> bool {
     VALID_STATUSES.contains(&s)
 }
 
+/// Search over-fetch margin: each query reads `limit + this` candidate rows so that
+/// progressive id/title dedup can still fill `limit` after dropping duplicates, while
+/// a bounded SQL `LIMIT` preserves SQLite's top-N optimization (no full sort of the
+/// whole match set). Only pathological duplication beyond the margin could under-fill.
+const SEARCH_DEDUP_MARGIN: usize = 64;
+
 pub struct Entry {
     pub id: i64,
     pub title: String,
@@ -555,6 +561,23 @@ pub fn search_entries(
     since: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
+    // Each scope must return at most `limit` rows (callers merge then truncate), so a
+    // zero limit short-circuits before any query.
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    // An all-separator/whitespace query tokenizes to zero content words; the keyword and
+    // LIKE paths would then build invalid SQL (`WHERE ()`), so return early rather than
+    // error.
+    if split_query_words(query).is_empty() {
+        return Ok(Vec::new());
+    }
+    // Read a bounded over-fetch so dedup can still fill `limit` after dropping dupes,
+    // while keeping SQLite's top-N optimization (a fixed LIMIT, not a full sort).
+    // saturating_add + checked i64 conversion guard a pathologically large `limit`
+    // against overflow / wrapping into a negative SQL LIMIT.
+    let fetch_limit: i64 =
+        i64::try_from(limit.saturating_add(SEARCH_DEDUP_MARGIN)).unwrap_or(i64::MAX);
     let mut results = Vec::new();
 
     // Helper to append optional filters and return next param index
@@ -607,14 +630,23 @@ pub fn search_entries(
 
         append_filters(&mut sql, &mut param_values, category, source, status, since);
         sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-        param_values.push(Box::new(limit as i64));
+        param_values.push(Box::new(fetch_limit));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
+        // Dedup by title and stop at `limit` (SELECT DISTINCT already removes id-dupes),
+        // so duplicate titles don't crowd out unique candidates within fetch_limit.
+        let mut seen_titles: std::collections::HashSet<String> = std::collections::HashSet::new();
         for row in rows {
-            results.push(row?);
+            let entry = row?;
+            if seen_titles.insert(entry.title.to_lowercase()) {
+                results.push(entry);
+                if results.len() >= limit {
+                    break;
+                }
+            }
         }
     } else {
         // FTS search — sanitize query to prevent FTS5 syntax injection
@@ -635,17 +667,36 @@ pub fn search_entries(
             status,
             since,
         );
+        // Bounded over-fetch: `fetch_limit` keeps SQLite's top-N optimization, and the
+        // Rust-side dedup + early break below collects `limit` UNIQUE (id+title) rows,
+        // so title-duplicates among the top matches don't crowd out unique candidates.
         fts_sql.push_str(" ORDER BY rank, e.updated_at DESC LIMIT ?");
-        param_values.push(Box::new(limit as i64));
+        param_values.push(Box::new(fetch_limit));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
+
+        // Dedup by id AND title as rows arrive across all three paths (FTS, keyword,
+        // LIKE), so a title-duplicate never consumes a result slot. Doing this up front
+        // (instead of a final retain after truncation) keeps the supplement gates below
+        // honest — otherwise an OR-FTS pass that fills `limit` with a title-dup would
+        // leave the final list short with no top-up.
+        let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut seen_titles: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         match conn.prepare(&fts_sql) {
             Ok(mut stmt) => match stmt.query_map(params_ref.as_slice(), row_to_entry_with_rank) {
                 Ok(rows) => {
                     for entry in rows.flatten() {
-                        results.push(entry);
+                        if !seen_ids.contains(&entry.id)
+                            && seen_titles.insert(entry.title.to_lowercase())
+                        {
+                            seen_ids.insert(entry.id);
+                            results.push(entry);
+                            if results.len() >= limit {
+                                break;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -659,9 +710,6 @@ pub fn search_entries(
 
         // Supplement with keyword search if needed
         if results.len() < limit {
-            let seen_ids: std::collections::HashSet<i64> = results.iter().map(|r| r.id).collect();
-            let remaining = limit - results.len();
-
             let words = split_query_words(query);
             let mut kw_sql = format!(
                 "SELECT DISTINCT {ENTRY_COLS_E} \
@@ -680,8 +728,9 @@ pub fn search_entries(
             kw_sql.push(')');
 
             append_filters(&mut kw_sql, &mut kw_params, category, source, status, since);
+            // Bounded over-fetch; the loop below dedups and breaks at `limit`.
             kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-            kw_params.push(Box::new(remaining as i64));
+            kw_params.push(Box::new(fetch_limit));
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 kw_params.iter().map(|b| b.as_ref()).collect();
@@ -689,17 +738,18 @@ pub fn search_entries(
             let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
             for row in rows {
                 let entry = row?;
-                if !seen_ids.contains(&entry.id) {
+                if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
+                    seen_ids.insert(entry.id);
                     results.push(entry);
+                    if results.len() >= limit {
+                        break;
+                    }
                 }
             }
         }
 
         // LIKE fallback for short queries (e.g. 2-char CJK words) that trigram FTS cannot match
         if results.len() < limit {
-            let seen_ids: std::collections::HashSet<i64> = results.iter().map(|r| r.id).collect();
-            let remaining = limit - results.len();
-
             let words = split_query_words(query);
             let mut like_sql = format!("SELECT {ENTRY_COLS} FROM entries e WHERE (");
             let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -726,8 +776,9 @@ pub fn search_entries(
                 status,
                 since,
             );
+            // Bounded over-fetch; the loop below dedups and breaks at `limit`.
             like_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-            like_params.push(Box::new(remaining as i64));
+            like_params.push(Box::new(fetch_limit));
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 like_params.iter().map(|b| b.as_ref()).collect();
@@ -735,17 +786,19 @@ pub fn search_entries(
             let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
             for row in rows {
                 let entry = row?;
-                if !seen_ids.contains(&entry.id) {
+                if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
+                    seen_ids.insert(entry.id);
                     results.push(entry);
+                    if results.len() >= limit {
+                        break;
+                    }
                 }
             }
         }
     }
 
-    // Deduplicate by title, keeping the newest (first) entry
-    let mut seen_titles = std::collections::HashSet::new();
-    results.retain(|e| seen_titles.insert(e.title.to_lowercase()));
-
+    // Both branches dedup by title as rows arrive and stop at `limit`, so `results` is
+    // already title-unique and within the limit — no final pass needed.
     Ok(results)
 }
 
@@ -1164,7 +1217,13 @@ fn sanitize_fts_query(query: &str) -> String {
     if words.is_empty() {
         "\"\"".to_string()
     } else {
-        words.join(" ")
+        // Join with OR, not the FTS5 default (implicit AND). A raw multi-word query
+        // (e.g. a whole user question pasted in) would otherwise require *every* term
+        // to be present and match almost nothing, dropping the ranked FTS results and
+        // leaving only the unranked keyword/LIKE fallbacks. With OR, any term matching
+        // surfaces the entry and bm25 still ranks entries that hit more/rarer terms
+        // highest, so common stopwords are naturally down-weighted.
+        words.join(" OR ")
     }
 }
 
@@ -1332,6 +1391,238 @@ mod tests {
         let results = search_entries(&conn, "OAuth", false, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "OAuth Login");
+    }
+
+    #[test]
+    fn test_fts_multiword_query_is_or_not_and() {
+        // A raw multi-word query (like a pasted user question) must not require ALL
+        // terms via FTS5's implicit AND. With OR semantics, an entry matching some of
+        // the terms still surfaces, and bm25 ranks the best match first.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "Token refresh flow",
+            "How the auth middleware refreshes the access token",
+            &["auth".to_string(), "token".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "Logging config",
+            "Structured logging and log levels",
+            &["logging".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // No single entry contains every word, but the first entry matches several.
+        // Under the old AND semantics this returned 0 ranked FTS hits.
+        let results = search_entries(
+            &conn,
+            "how does the auth middleware refresh a token",
+            false,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .unwrap();
+        assert!(
+            !results.is_empty(),
+            "OR query should match an entry sharing some terms"
+        );
+        assert_eq!(
+            results[0].title, "Token refresh flow",
+            "the entry matching more/rarer terms should rank first"
+        );
+        // rank=Some proves this came from the ranked FTS (OR) path, not an unranked
+        // keyword/LIKE fallback — i.e. it's a genuine OR-semantics regression guard.
+        assert!(
+            results[0].rank.is_some(),
+            "top hit must come from the FTS path (ranked), not a fallback"
+        );
+    }
+
+    #[test]
+    fn test_fts_japanese_space_separated_keywords_or_matched() {
+        // Japanese has no word boundaries, so OR only helps once the query is split
+        // into *space-separated* keywords (which the instructions tell the model to
+        // do). Each 3+ char keyword is trigram-matched; OR surfaces entries hitting
+        // any of them. A raw no-space phrase would stay a single strict-phrase token.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "トークン更新フロー",
+            "認証トークンの更新フローの説明",
+            &["auth".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "スキーマ定義",
+            "データベースのスキーマ定義",
+            &["schema".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Space-separated keywords spanning both entries: OR matches both. Under the
+        // old AND semantics, no single entry contains both terms → 0 ranked hits.
+        let results = search_entries(
+            &conn,
+            "トークン スキーマ",
+            false,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .unwrap();
+        let titles: Vec<&str> = results.iter().map(|e| e.title.as_str()).collect();
+        assert!(
+            titles.contains(&"トークン更新フロー"),
+            "OR should surface the トークン entry: {titles:?}"
+        );
+        assert!(
+            titles.contains(&"スキーマ定義"),
+            "OR should surface the スキーマ entry: {titles:?}"
+        );
+        // Both 3+ char keywords match via the ranked FTS (OR) path, not the LIKE
+        // fallback — guards against the test silently passing through a fallback.
+        assert!(
+            results.iter().all(|e| e.rank.is_some()),
+            "Japanese keyword matches should come from the FTS path"
+        );
+    }
+
+    #[test]
+    fn test_search_dedups_titles_and_fills_limit() {
+        // Several entries share a title; two have unique titles. All match the query.
+        // A duplicate title must not consume a result slot and crowd out unique
+        // candidates: the bounded over-fetch (limit + margin) plus progressive id/title
+        // dedup must still fill `limit` with distinct titles. (Regression: a tight SQL
+        // LIMIT applied before dedup could return fewer than `limit` rows.)
+        let (conn, _tmp) = setup_test_db();
+        // Identical content → equal bm25 rank, so ordering falls to updated_at DESC.
+        for _ in 0..3 {
+            add_entry(&conn, "Dup", "needle term", &[], "", "local", None, None).unwrap();
+        }
+        add_entry(
+            &conn,
+            "Unique A",
+            "needle term",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "Unique B",
+            "needle term",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        // Force the duplicate-title rows to sort first. A pre-fix tight `LIMIT 3` would
+        // then fetch three "Dup" rows and collapse to one; the fix reads past them and
+        // fills the limit with distinct titles.
+        conn.execute(
+            "UPDATE entries SET updated_at = '2099-01-09T00:00:00' WHERE title = 'Dup'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE entries SET updated_at = '2099-01-08T00:00:00' WHERE title = 'Unique A'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE entries SET updated_at = '2099-01-07T00:00:00' WHERE title = 'Unique B'",
+            [],
+        )
+        .unwrap();
+
+        let results = search_entries(&conn, "needle", false, None, None, None, None, 3).unwrap();
+        assert_eq!(
+            results.len(),
+            3,
+            "should fill the limit with distinct-title entries, not stop short on dups"
+        );
+        let titles: std::collections::HashSet<String> =
+            results.iter().map(|e| e.title.to_lowercase()).collect();
+        assert_eq!(titles.len(), 3, "titles must be unique: {titles:?}");
+    }
+
+    #[test]
+    fn test_search_limit_zero_returns_empty() {
+        // A scope must never return more than `limit` rows; limit=0 → no rows.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "Anything",
+            "needle term",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            search_entries(&conn, "needle", false, None, None, None, None, 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_search_separator_only_query_is_empty_not_error() {
+        // An all-separator query tokenizes to zero words; it must return empty rather
+        // than build invalid SQL (`WHERE ()`) — on both the FTS and keyword_only paths.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "Anything",
+            "needle term",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            search_entries(&conn, "  --  __ ", false, None, None, None, None, 5)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            search_entries(&conn, "  --  __ ", true, None, None, None, None, 5)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1674,17 +1965,57 @@ mod tests {
 
     #[test]
     fn test_sanitize_fts_query_splits_hyphens() {
-        assert_eq!(sanitize_fts_query("auth-API"), "\"auth\" \"API\"");
+        assert_eq!(sanitize_fts_query("auth-API"), "\"auth\" OR \"API\"");
     }
 
     #[test]
     fn test_sanitize_fts_query_splits_underscores() {
-        assert_eq!(sanitize_fts_query("auth_flow"), "\"auth\" \"flow\"");
+        assert_eq!(sanitize_fts_query("auth_flow"), "\"auth\" OR \"flow\"");
     }
 
     #[test]
     fn test_sanitize_fts_query_splits_camel_case() {
-        assert_eq!(sanitize_fts_query("AuthAPI"), "\"Auth\" \"API\"");
+        assert_eq!(sanitize_fts_query("AuthAPI"), "\"Auth\" OR \"API\"");
+    }
+
+    #[test]
+    fn test_sanitize_fts_query_escapes_quotes_and_operators() {
+        // Embedded double quotes are doubled inside the quoted token.
+        assert_eq!(sanitize_fts_query("a\"b"), "\"a\"\"b\"");
+        // FTS5 operator words are quoted, so they're treated as literal search terms
+        // (not OR/NEAR/NOT operators) — only our own join inserts a real OR.
+        assert_eq!(sanitize_fts_query("OR NEAR"), "\"OR\" OR \"NEAR\"");
+        assert_eq!(sanitize_fts_query("a*"), "\"a*\"");
+    }
+
+    #[test]
+    fn test_search_query_with_fts_operators_does_not_error() {
+        // A query full of FTS5 metacharacters must not raise a syntax error; the
+        // terms are quoted literals, so it simply finds nothing here.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "Plain",
+            "plain content",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        let results = search_entries(
+            &conn,
+            "OR AND NOT * ( ) \"",
+            false,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .unwrap();
+        assert!(results.is_empty());
     }
 
     #[test]

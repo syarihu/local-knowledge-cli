@@ -318,7 +318,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query. Use 1-3 short keywords separated by spaces (not full sentences, not hyphenated phrases). Try both English and Japanese, since knowledge may be stored in either. If no hits, broaden by using fewer keywords."
+                    "description": "Search query. Use 1-3 short content keywords separated by spaces. Do NOT paste the user's raw sentence/question — extract the key nouns and drop stopwords/particles. (Terms are OR-matched and ranked, so extra words mostly add noise.) Try both English and Japanese, since knowledge may be stored in either. If no hits, broaden by using fewer keywords."
                 },
                 "keyword_only": {
                     "type": "boolean",
