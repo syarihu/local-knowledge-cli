@@ -329,6 +329,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
+                    "enum": ["active", "deprecated", "proposed", "accepted", "superseded"],
                     "description": "Filter by status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Use 'proposed' to find open plan items."
                 },
                 "limit": {
@@ -376,6 +377,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
+                    "enum": ["active", "deprecated", "proposed", "accepted", "superseded"],
                     "description": "Initial status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Default: 'active'. Use 'proposed' for design decisions awaiting review."
                 },
                 "force": {
@@ -414,6 +416,7 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
+                    "enum": ["active", "deprecated", "proposed", "accepted", "superseded"],
                     "description": "Filter by status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Use 'proposed' to list open plan items."
                 },
                 "limit": {
@@ -488,6 +491,7 @@ fn tool_def_update(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
+                    "enum": ["active", "deprecated", "proposed", "accepted", "superseded"],
                     "description": "Set status ('active', 'deprecated', 'proposed', 'accepted', or 'superseded')"
                 },
                 "superseded_by": {
@@ -1003,6 +1007,16 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let limit = params["limit"].as_u64().unwrap_or(20) as usize;
             let offset = params["offset"].as_u64().unwrap_or(0) as usize;
             let scope = params["scope"].as_str();
+
+            // Validate status so a typo errors instead of silently returning [].
+            if let Some(st) = status
+                && !db::is_valid_status(st)
+            {
+                return Err(format!(
+                    "Invalid status: {st}. Must be one of: {}",
+                    db::VALID_STATUSES.join(", ")
+                ));
+            }
 
             log_mcp_command("list", &[], &knowledge_dir);
 

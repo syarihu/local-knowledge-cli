@@ -175,7 +175,16 @@ pub fn cmd_add(
                 .flatten()
                 .map(|e| e.uid)
                 .unwrap_or_default();
-            print_success(entry_id, &uid, title, &kws, scope, fell_back, json_output);
+            print_success(
+                entry_id,
+                &uid,
+                title,
+                &kws,
+                status.unwrap_or("active"),
+                scope,
+                fell_back,
+                json_output,
+            );
             Ok(())
         }
         Err(e) if e.to_string() == "duplicate_found" => {
@@ -189,11 +198,13 @@ pub fn cmd_add(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_success(
     entry_id: i64,
     uid: &str,
     title: &str,
     kws: &[String],
+    status: &str,
     scope: super::Scope,
     fell_back: bool,
     json_output: bool,
@@ -205,6 +216,7 @@ fn print_success(
             "uid": uid,
             "title": title,
             "keywords": kws,
+            "status": status,
             "scope": scope.label(),
         });
         if fell_back {

@@ -14,6 +14,17 @@ pub fn cmd_search(
     scope: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate the status filter so a typo errors loudly instead of silently
+    // returning 0 results (matching `add`/`edit`/MCP behaviour).
+    if let Some(st) = status
+        && !db::is_valid_status(st)
+    {
+        return Err(format!(
+            "Invalid status: {st}. Must be one of: {}",
+            db::VALID_STATUSES.join(", ")
+        )
+        .into());
+    }
     let conns = super::read_connections(scope)?;
     let config = crate::config::Config::load(&get_knowledge_dir());
 

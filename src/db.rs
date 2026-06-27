@@ -1355,6 +1355,77 @@ mod tests {
     }
 
     #[test]
+    fn test_search_status_filter_all_paths() {
+        // The status filter is threaded through append_filters, which is used by the
+        // FTS, keyword-only, and LIKE-fallback query paths. Exercise each so a wrong
+        // placeholder number or a missing filter on any path is caught.
+        let (conn, _tmp) = setup_test_db();
+        // Two entries sharing tokens but with different statuses. Japanese content
+        // gives us a 2-char query that drops to the LIKE fallback.
+        add_entry_full(
+            &conn,
+            "Plan OAuth 認証",
+            "proposed OAuth 認証 work",
+            &["oauth".to_string()],
+            "plan",
+            "local",
+            None,
+            None,
+            None,
+            Some("proposed"),
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry_full(
+            &conn,
+            "Done OAuth 認証",
+            "accepted OAuth 認証 work",
+            &["oauth".to_string()],
+            "plan",
+            "local",
+            None,
+            None,
+            None,
+            Some("accepted"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // FTS path (3+ char English query)
+        let r = search_entries(
+            &conn,
+            "OAuth",
+            false,
+            None,
+            None,
+            Some("proposed"),
+            None,
+            10,
+        )
+        .unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].title, "Plan OAuth 認証");
+
+        // keyword-only path
+        let r =
+            search_entries(&conn, "oauth", true, None, None, Some("accepted"), None, 10).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].title, "Done OAuth 認証");
+
+        // LIKE fallback path (2-char CJK query that trigram FTS cannot match)
+        let r =
+            search_entries(&conn, "認証", false, None, None, Some("proposed"), None, 10).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].title, "Plan OAuth 認証");
+
+        // No status filter returns both
+        let r = search_entries(&conn, "OAuth", false, None, None, None, None, 10).unwrap();
+        assert_eq!(r.len(), 2);
+    }
+
+    #[test]
     fn test_update_entry() {
         let (conn, _tmp) = setup_test_db();
         let id = add_entry(&conn, "Old", "old content", &[], "", "local", None, None).unwrap();
