@@ -641,11 +641,24 @@ pub fn search_entries(
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
 
+        // Dedup by id AND title as rows arrive across all three paths (FTS, keyword,
+        // LIKE), so a title-duplicate never consumes a result slot. Doing this up front
+        // (instead of a final retain after truncation) keeps the supplement gates below
+        // honest — otherwise an OR-FTS pass that fills `limit` with a title-dup would
+        // leave the final list short with no top-up.
+        let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut seen_titles: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         match conn.prepare(&fts_sql) {
             Ok(mut stmt) => match stmt.query_map(params_ref.as_slice(), row_to_entry_with_rank) {
                 Ok(rows) => {
                     for entry in rows.flatten() {
-                        results.push(entry);
+                        if !seen_ids.contains(&entry.id)
+                            && seen_titles.insert(entry.title.to_lowercase())
+                        {
+                            seen_ids.insert(entry.id);
+                            results.push(entry);
+                        }
                     }
                 }
                 Err(e) => {
@@ -659,7 +672,6 @@ pub fn search_entries(
 
         // Supplement with keyword search if needed
         if results.len() < limit {
-            let seen_ids: std::collections::HashSet<i64> = results.iter().map(|r| r.id).collect();
             let remaining = limit - results.len();
 
             let words = split_query_words(query);
@@ -689,7 +701,8 @@ pub fn search_entries(
             let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
             for row in rows {
                 let entry = row?;
-                if !seen_ids.contains(&entry.id) {
+                if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
+                    seen_ids.insert(entry.id);
                     results.push(entry);
                 }
             }
@@ -697,7 +710,6 @@ pub fn search_entries(
 
         // LIKE fallback for short queries (e.g. 2-char CJK words) that trigram FTS cannot match
         if results.len() < limit {
-            let seen_ids: std::collections::HashSet<i64> = results.iter().map(|r| r.id).collect();
             let remaining = limit - results.len();
 
             let words = split_query_words(query);
@@ -735,14 +747,16 @@ pub fn search_entries(
             let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
             for row in rows {
                 let entry = row?;
-                if !seen_ids.contains(&entry.id) {
+                if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
+                    seen_ids.insert(entry.id);
                     results.push(entry);
                 }
             }
         }
     }
 
-    // Deduplicate by title, keeping the newest (first) entry
+    // Deduplicate by title, keeping the newest (first) entry. The FTS branch already
+    // dedups progressively; this also covers the keyword_only branch above.
     let mut seen_titles = std::collections::HashSet::new();
     results.retain(|e| seen_titles.insert(e.title.to_lowercase()));
 
@@ -1390,6 +1404,12 @@ mod tests {
             results[0].title, "Token refresh flow",
             "the entry matching more/rarer terms should rank first"
         );
+        // rank=Some proves this came from the ranked FTS (OR) path, not an unranked
+        // keyword/LIKE fallback — i.e. it's a genuine OR-semantics regression guard.
+        assert!(
+            results[0].rank.is_some(),
+            "top hit must come from the FTS path (ranked), not a fallback"
+        );
     }
 
     #[test]
@@ -1443,6 +1463,12 @@ mod tests {
         assert!(
             titles.contains(&"スキーマ定義"),
             "OR should surface the スキーマ entry: {titles:?}"
+        );
+        // Both 3+ char keywords match via the ranked FTS (OR) path, not the LIKE
+        // fallback — guards against the test silently passing through a fallback.
+        assert!(
+            results.iter().all(|e| e.rank.is_some()),
+            "Japanese keyword matches should come from the FTS path"
         );
     }
 
@@ -1797,6 +1823,46 @@ mod tests {
     #[test]
     fn test_sanitize_fts_query_splits_camel_case() {
         assert_eq!(sanitize_fts_query("AuthAPI"), "\"Auth\" OR \"API\"");
+    }
+
+    #[test]
+    fn test_sanitize_fts_query_escapes_quotes_and_operators() {
+        // Embedded double quotes are doubled inside the quoted token.
+        assert_eq!(sanitize_fts_query("a\"b"), "\"a\"\"b\"");
+        // FTS5 operator words are quoted, so they're treated as literal search terms
+        // (not OR/NEAR/NOT operators) — only our own join inserts a real OR.
+        assert_eq!(sanitize_fts_query("OR NEAR"), "\"OR\" OR \"NEAR\"");
+        assert_eq!(sanitize_fts_query("a*"), "\"a*\"");
+    }
+
+    #[test]
+    fn test_search_query_with_fts_operators_does_not_error() {
+        // A query full of FTS5 metacharacters must not raise a syntax error; the
+        // terms are quoted literals, so it simply finds nothing here.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "Plain",
+            "plain content",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        let results = search_entries(
+            &conn,
+            "OR AND NOT * ( ) \"",
+            false,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .unwrap();
+        assert!(results.is_empty());
     }
 
     #[test]
