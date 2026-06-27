@@ -8,11 +8,22 @@ pub fn cmd_add(
     keywords_str: Option<&str>,
     content: Option<&str>,
     category: Option<&str>,
+    status: Option<&str>,
     force: bool,
     allow_secrets: bool,
     scope: &str,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate status up front so a bad value fails before any DB work.
+    if let Some(st) = status
+        && !db::is_valid_status(st)
+    {
+        return Err(format!(
+            "Invalid status: {st}. Must be one of: {}",
+            db::VALID_STATUSES.join(", ")
+        )
+        .into());
+    }
     // "auto" (default) saves to project when initialized, else falls back to user.
     let (scope, fell_back) = super::resolve_write_scope(scope)?;
     super::log_command(
@@ -151,7 +162,9 @@ pub fn cmd_add(
             }
         }
 
-        db::add_entry(&conn, title, content, &kws, category, "local", None, None)
+        db::add_entry_full(
+            &conn, title, content, &kws, category, "local", None, None, None, status, None, None,
+        )
     })();
 
     match result {
@@ -162,7 +175,16 @@ pub fn cmd_add(
                 .flatten()
                 .map(|e| e.uid)
                 .unwrap_or_default();
-            print_success(entry_id, &uid, title, &kws, scope, fell_back, json_output);
+            print_success(
+                entry_id,
+                &uid,
+                title,
+                &kws,
+                status.unwrap_or("active"),
+                scope,
+                fell_back,
+                json_output,
+            );
             Ok(())
         }
         Err(e) if e.to_string() == "duplicate_found" => {
@@ -176,11 +198,13 @@ pub fn cmd_add(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_success(
     entry_id: i64,
     uid: &str,
     title: &str,
     kws: &[String],
+    status: &str,
     scope: super::Scope,
     fell_back: bool,
     json_output: bool,
@@ -192,6 +216,7 @@ fn print_success(
             "uid": uid,
             "title": title,
             "keywords": kws,
+            "status": status,
             "scope": scope.label(),
         });
         if fell_back {

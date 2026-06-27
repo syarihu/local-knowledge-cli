@@ -103,7 +103,7 @@ Commands:
 - `--content "..."` - Entry content (for `add`)
 - `--category <cat>` - Filter by category (for `search`, `list`, `purge`)
 - `--source <src>` - Filter by source: `local` or `shared` (for `search`, `list`, `purge`)
-- `--status <status>` - Filter by status: `active`, `deprecated`, `proposed`, `accepted`, `superseded` (for `list`)
+- `--status <status>` - Status `active`, `deprecated`, `proposed`, `accepted`, `superseded` — set the status (for `add`, `edit`) or filter by it (for `search`, `list`)
 - `--limit <n>` - Max results, default 5 (for `search`)
 - `--since <YYYY-MM-DD>` - Only return entries updated since this date (for `search`)
 - `--full` - Include full content in JSON output, eliminating the need for `lk get` (for `search`)
@@ -242,7 +242,7 @@ lk can be used to manage ADRs by leveraging its status and supersede features. E
 
 ```bash
 # Propose a new decision
-lk add "Use JWT for API auth" --category decisions --content "We propose using JWT tokens for stateless authentication..."
+lk add "Use JWT for API auth" --category decisions --status proposed --content "We propose using JWT tokens for stateless authentication..."
 
 # Accept it (using the entry ID from add)
 lk edit 42 --status accepted
@@ -296,6 +296,31 @@ lk search "auth middleware" --category context --json --full
 ```
 
 This complements Claude Code's built-in memory — Claude memory stores user preferences and project background, while lk context stores technical investigation results and decision rationale.
+
+### Deferred plans ("do it later")
+
+"Let's plan this and tackle it later" is a recurring pattern. lk turns those plans into a resumable working list by combining a `plan` category with the entry status lifecycle — no schema change, since categories are free-form.
+
+- **Save** a plan with `proposed` (= open) status, **list** open plans, **resume** one, then **close** it with `accepted` (= done) or drop it with `deprecated`. Entries are kept as a record rather than deleted.
+- Reads merge the **current project + user scope** by default (not every project's `.knowledge`). For a single work list that follows you across every repo, save plans with `--scope user`.
+- **Auto-save**: after `lk init`, Claude proactively saves every plan it designs (plan-mode plans and approaches worked out in conversation) as a `plan` entry — without asking — so the plan survives a compact or session crash and is instantly recoverable from lk later, the same way `context` entries are saved.
+
+```bash
+# Save a plan to do later (write it dense enough to resume cold)
+lk add "Migrate auth to OAuth 2.0" --category plan --status proposed \
+  --keywords "plan,auth,oauth" --content "Decision + approach + rejected options + concrete identifiers..."
+
+# List open plans (across project + user scope)
+lk list --category plan --status proposed
+
+# Search within plans
+lk search "oauth" --category plan --status proposed
+
+# Close a plan when done (keeps it as a record)
+lk edit 42 --status accepted
+```
+
+The `/lk-knowledge-plan` slash command wraps this flow (save / list-and-resume / done / drop). `lk add` and `lk search` accept `--status` to set the initial status and filter by it; `lk list` already supported `--status`.
 
 ## Claude Code Integration
 
@@ -359,7 +384,7 @@ After `lk init`, Claude Code will automatically:
 
 1. Search the knowledge base before exploring code
 2. Add new discoveries via `/lk-knowledge-add-db`
-3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`, `/lk-knowledge-save-context`, `/lk-knowledge-agent-brief`
+3. Use slash commands: `/lk-knowledge-search`, `/lk-knowledge-add-db`, `/lk-knowledge-export`, `/lk-knowledge-sync`, `/lk-knowledge-write-md`, `/lk-knowledge-discover`, `/lk-knowledge-refresh`, `/lk-knowledge-from-branch`, `/lk-knowledge-save-context`, `/lk-knowledge-agent-brief`, `/lk-knowledge-plan`
 
 ### MCP + Slash Commands
 

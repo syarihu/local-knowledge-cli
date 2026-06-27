@@ -136,6 +136,19 @@ pub fn cmd_edit(
         fields.push("touch");
     }
     super::log_command("edit", &[("id", id), ("fields", &fields.join(","))]);
+
+    // Validate status before resolving the target / opening the DB, so a bad value
+    // errors with the same message as add/search/list/MCP.
+    if let Some(s) = status
+        && !db::is_valid_status(s)
+    {
+        return Err(format!(
+            "Invalid status: {s}. Must be one of: {}",
+            db::VALID_STATUSES.join(", ")
+        )
+        .into());
+    }
+
     let (conn, entry) = super::resolve_target(id, scope)?;
     let local_id = entry.id;
 
@@ -147,13 +160,6 @@ pub fn cmd_edit(
         && !touch
     {
         return Err("Nothing to update. Specify --title, --keywords, --content, --status, --superseded-by, or --touch.".into());
-    }
-
-    // Validate status
-    if let Some(s) = status
-        && !db::is_valid_status(s)
-    {
-        return Err(format!("Status must be one of: {}", db::VALID_STATUSES.join(", ")).into());
     }
 
     // Warn if setting to superseded without --superseded-by

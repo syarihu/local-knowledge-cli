@@ -172,6 +172,339 @@ fn test_search() {
 }
 
 #[test]
+fn test_add_with_status() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Add an entry with an explicit initial status
+    let output = lk_bin()
+        .args([
+            "add",
+            "Deferred plan",
+            "--category",
+            "plan",
+            "--status",
+            "proposed",
+            "--content",
+            "Do this later.",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let id = result["id"].as_i64().unwrap();
+
+    // The stored entry carries the requested status
+    let output = lk_bin()
+        .args(["get", &id.to_string(), "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(entry["status"], "proposed");
+}
+
+#[test]
+fn test_add_rejects_invalid_status() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let output = lk_bin()
+        .args(["add", "Bad status", "--status", "bogus", "--content", "x"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Invalid status"));
+}
+
+#[test]
+fn test_search_status_filter() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Two entries sharing a keyword but with different statuses
+    lk_bin()
+        .args([
+            "add",
+            "Plan to migrate auth",
+            "--category",
+            "plan",
+            "--status",
+            "proposed",
+            "--keywords",
+            "auth,migrate",
+            "--content",
+            "Open plan item.",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    lk_bin()
+        .args([
+            "add",
+            "Auth migration finished",
+            "--category",
+            "plan",
+            "--status",
+            "accepted",
+            "--keywords",
+            "auth,migrate",
+            "--content",
+            "Closed plan item.",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Filtering by status returns only the open plan
+    let output = lk_bin()
+        .args(["search", "auth", "--status", "proposed", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["title"], "Plan to migrate auth");
+    assert_eq!(results[0]["status"], "proposed");
+}
+
+#[test]
+fn test_add_with_status_reports_status_in_json() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // The add --json response echoes the stored status (no follow-up get needed)
+    let output = lk_bin()
+        .args([
+            "add",
+            "Has status",
+            "--status",
+            "proposed",
+            "--content",
+            "x",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "proposed");
+
+    // Default status (no --status) reports "active". Distinct title + --force so it
+    // isn't flagged as a duplicate of the entry above.
+    let output = lk_bin()
+        .args([
+            "add",
+            "Completely different topic",
+            "--content",
+            "unrelated body",
+            "--force",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "active");
+}
+
+#[test]
+fn test_search_status_combined_with_category() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Same status, different categories — the status+category filters must AND together
+    for (title, category) in [("Plan item", "plan"), ("Decision item", "decisions")] {
+        lk_bin()
+            .args([
+                "add",
+                title,
+                "--category",
+                category,
+                "--status",
+                "proposed",
+                "--keywords",
+                "shared,kw",
+                "--content",
+                "shared kw body",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+    }
+
+    let output = lk_bin()
+        .args([
+            "search",
+            "shared",
+            "--category",
+            "plan",
+            "--status",
+            "proposed",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["title"], "Plan item");
+}
+
+#[test]
+fn test_search_rejects_invalid_status() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // A typo'd status must error loudly rather than silently returning 0 results
+    let output = lk_bin()
+        .args(["search", "anything", "--status", "bogus"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Invalid status"));
+}
+
+#[test]
+fn test_list_rejects_invalid_status() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // `lk list --status bogus` must error, not silently return an empty list
+    let output = lk_bin()
+        .args(["list", "--status", "bogus"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Invalid status"));
+}
+
+#[test]
+fn test_edit_invalid_status_validated_before_target() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Status is validated before the target is resolved: even for a nonexistent id,
+    // a bad status reports "Invalid status" (not a "not found" error).
+    let output = lk_bin()
+        .args(["edit", "99999", "--status", "bogus"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid status"),
+        "expected Invalid status, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_search_status_filter_user_scope_merged() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+
+    // One proposed plan in the project scope, one accepted plan in the user scope
+    lk_bin()
+        .args([
+            "add",
+            "Project open plan",
+            "--category",
+            "plan",
+            "--status",
+            "proposed",
+            "--keywords",
+            "merge,plan",
+            "--content",
+            "merge plan body",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    lk_bin()
+        .args([
+            "add",
+            "User done plan",
+            "--scope",
+            "user",
+            "--category",
+            "plan",
+            "--status",
+            "accepted",
+            "--keywords",
+            "merge,plan",
+            "--content",
+            "merge plan body",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+
+    // Default merged read (scope=all) filtered by status returns only the proposed one
+    let output = lk_bin()
+        .args(["search", "merge", "--status", "proposed", "--json"])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["title"], "Project open plan");
+    assert_eq!(results[0]["scope"], "project");
+}
+
+#[test]
 fn test_delete() {
     let dir = setup_temp_project();
     lk_bin()

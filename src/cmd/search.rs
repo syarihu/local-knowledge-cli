@@ -7,12 +7,24 @@ pub fn cmd_search(
     keyword_only: bool,
     category: Option<&str>,
     source: Option<&str>,
+    status: Option<&str>,
     since: Option<&str>,
     limit: usize,
     full: bool,
     scope: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate the status filter so a typo errors loudly instead of silently
+    // returning 0 results (matching `add`/`edit`/MCP behaviour).
+    if let Some(st) = status
+        && !db::is_valid_status(st)
+    {
+        return Err(format!(
+            "Invalid status: {st}. Must be one of: {}",
+            db::VALID_STATUSES.join(", ")
+        )
+        .into());
+    }
     let conns = super::read_connections(scope)?;
     let config = crate::config::Config::load(&get_knowledge_dir());
 
@@ -20,8 +32,16 @@ pub fn cmd_search(
     // entry came from (ids are per-DB), tagging each with its scope label.
     let mut items: Vec<(f64, &'static str, db::Entry, Vec<String>)> = Vec::new();
     for (conn, label) in &conns {
-        let results =
-            db::search_entries(conn, query, keyword_only, category, source, since, limit)?;
+        let results = db::search_entries(
+            conn,
+            query,
+            keyword_only,
+            category,
+            source,
+            status,
+            since,
+            limit,
+        )?;
         for r in results {
             let kws = db::get_keywords(conn, r.id).unwrap_or_default();
             // Entry.rank is 1/(1+|bm25|): smaller value = better match, so we sort

@@ -303,6 +303,12 @@ fn inject_project_prop(schema: &mut Value, registry: &ProjectRegistry) {
     }
 }
 
+/// The status enum for the MCP tool schemas, derived from the single source of
+/// truth (`db::VALID_STATUSES`) so the schema can't drift from runtime validation.
+fn status_enum() -> Value {
+    Value::from(db::VALID_STATUSES)
+}
+
 fn tool_def_search(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "search_knowledge",
@@ -326,6 +332,11 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
                 "source": {
                     "type": "string",
                     "description": "Filter by source ('local' or 'shared')"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": status_enum(),
+                    "description": "Filter by status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Use 'proposed' to find open plan items."
                 },
                 "limit": {
                     "type": "integer",
@@ -372,6 +383,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
+                    "enum": status_enum(),
                     "description": "Initial status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Default: 'active'. Use 'proposed' for design decisions awaiting review."
                 },
                 "force": {
@@ -396,7 +408,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
 fn tool_def_list(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "list_knowledge",
-        "description": "Browse all knowledge entries in the project's knowledge base. Use this to get an overview of what knowledge is available, or to find entries by source ('shared' = team knowledge from .knowledge/ markdown files, 'local' = entries added via CLI or MCP). Supports filtering by category and pagination.",
+        "description": "Browse all knowledge entries in the project's knowledge base. Use this to get an overview of what knowledge is available, or to find entries by source ('shared' = team knowledge from .knowledge/ markdown files, 'local' = entries added via CLI or MCP). Supports filtering by category, status, and pagination.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -407,6 +419,11 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
                 "category": {
                     "type": "string",
                     "description": "Filter by category"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": status_enum(),
+                    "description": "Filter by status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Use 'proposed' to list open plan items."
                 },
                 "limit": {
                     "type": "integer",
@@ -480,6 +497,7 @@ fn tool_def_update(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
+                    "enum": status_enum(),
                     "description": "Set status ('active', 'deprecated', 'proposed', 'accepted', or 'superseded')"
                 },
                 "superseded_by": {
@@ -782,8 +800,19 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let keyword_only = params["keyword_only"].as_bool().unwrap_or(false);
             let category = params["category"].as_str();
             let source = params["source"].as_str();
+            let status = params["status"].as_str();
             let limit = params["limit"].as_u64().unwrap_or(5) as usize;
             let scope = params["scope"].as_str();
+
+            // Validate status if provided
+            if let Some(st) = status
+                && !db::is_valid_status(st)
+            {
+                return Err(format!(
+                    "Invalid status: {st}. Must be one of: {}",
+                    db::VALID_STATUSES.join(", ")
+                ));
+            }
 
             log_mcp_command("search", &[("query", query)], &knowledge_dir);
 
@@ -793,9 +822,17 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let conns = read_scope_conns(scope, &project_root)?;
             let mut items: Vec<(f64, &'static str, db::Entry, Vec<String>)> = Vec::new();
             for (conn, label) in &conns {
-                let entries =
-                    db::search_entries(conn, query, keyword_only, category, source, None, limit)
-                        .map_err(|e| format!("search error: {e}"))?;
+                let entries = db::search_entries(
+                    conn,
+                    query,
+                    keyword_only,
+                    category,
+                    source,
+                    status,
+                    None,
+                    limit,
+                )
+                .map_err(|e| format!("search error: {e}"))?;
                 for e in entries {
                     let kws = db::get_keywords(conn, e.id).unwrap_or_default();
                     let score = e.rank.unwrap_or(f64::MAX);
@@ -972,9 +1009,20 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         "list_knowledge" => {
             let source = params["source"].as_str();
             let category = params["category"].as_str();
+            let status = params["status"].as_str();
             let limit = params["limit"].as_u64().unwrap_or(20) as usize;
             let offset = params["offset"].as_u64().unwrap_or(0) as usize;
             let scope = params["scope"].as_str();
+
+            // Validate status so a typo errors instead of silently returning [].
+            if let Some(st) = status
+                && !db::is_valid_status(st)
+            {
+                return Err(format!(
+                    "Invalid status: {st}. Must be one of: {}",
+                    db::VALID_STATUSES.join(", ")
+                ));
+            }
 
             log_mcp_command("list", &[], &knowledge_dir);
 
@@ -990,6 +1038,10 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 for e in entries {
                     // Apply category filter when source is also specified.
                     if source.is_some() && category.is_some_and(|c| e.category != c) {
+                        continue;
+                    }
+                    // Apply status filter (e.g. proposed = open plan items).
+                    if status.is_some_and(|st| e.status != st) {
                         continue;
                     }
                     let kws = db::get_keywords(conn, e.id).unwrap_or_default();
@@ -1048,6 +1100,20 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
         "update_knowledge" => {
             let arg = id_param(&params["id"])?.ok_or("missing required parameter: id")?;
             let scope = params["scope"].as_str();
+            let status = params["status"].as_str();
+
+            // Validate status before resolving the target / opening the DB, so a bad
+            // value errors consistently with add/search/list/CLI (an `Invalid status`
+            // message) rather than a target/DB error for a nonexistent id.
+            if let Some(st) = status
+                && !db::is_valid_status(st)
+            {
+                return Err(format!(
+                    "Invalid status: {st}. Must be one of: {}",
+                    db::VALID_STATUSES.join(", ")
+                ));
+            }
+
             let (conn, entry, _label) = mcp_resolve_target(&arg, scope, &project_root)?;
             let local_id = entry.id;
 
@@ -1058,7 +1124,6 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             });
-            let status = params["status"].as_str();
             // superseded_by may be an integer id or a uid string; "0" clears it.
             // Resolved within the SAME DB as the edited entry (no cross-scope refs).
             let sb_arg = id_param(&params["superseded_by"])?;
@@ -1076,15 +1141,9 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 }
             };
 
-            // Validate status and resolve superseded_by BEFORE any write, so a bad
-            // value can't leave a partial update. status_update = (status, sb_uid).
+            // Resolve superseded_by BEFORE any write, so a bad value can't leave a
+            // partial update. status is already validated above. status_update = (status, sb_uid).
             let status_update: Option<(String, Option<String>)> = if let Some(st) = status {
-                if !db::is_valid_status(st) {
-                    return Err(format!(
-                        "Invalid status: {st}. Must be one of: {}",
-                        db::VALID_STATUSES.join(", ")
-                    ));
-                }
                 let sb = match sb_arg.as_deref() {
                     Some(s) => resolve_sb(s)?,
                     None => entry.superseded_by.clone(),
