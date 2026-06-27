@@ -303,6 +303,7 @@ This complements Claude Code's built-in memory — Claude memory stores user pre
 
 - **Save** a plan with `proposed` (= open) status, **list** open plans, **resume** one, then **close** it with `accepted` (= done) or drop it with `deprecated`. Entries are kept as a record rather than deleted.
 - Reads merge project + user scope by default, so a single list surfaces plans across every project. Use `--scope user` for a personal, cross-project work list.
+- **Auto-save**: after `lk init`, Claude proactively saves every plan it designs (plan-mode plans and approaches worked out in conversation) as a `plan` entry — without asking — so the plan survives a compact or session crash and is instantly recoverable from lk later, the same way `context` entries are saved.
 
 ```bash
 # Save a plan to do later (write it dense enough to resume cold)
