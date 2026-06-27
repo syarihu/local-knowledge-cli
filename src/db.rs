@@ -635,8 +635,11 @@ pub fn search_entries(
             status,
             since,
         );
-        fts_sql.push_str(" ORDER BY rank, e.updated_at DESC LIMIT ?");
-        param_values.push(Box::new(limit as i64));
+        // No SQL LIMIT here: we read the ranked cursor lazily and stop once `limit`
+        // UNIQUE (id+title) rows are collected (see the break below). A fixed SQL LIMIT
+        // would let title-duplicates among the top matches burn result slots and crowd
+        // out unique candidates that rank just below them.
+        fts_sql.push_str(" ORDER BY rank, e.updated_at DESC");
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
@@ -658,6 +661,9 @@ pub fn search_entries(
                         {
                             seen_ids.insert(entry.id);
                             results.push(entry);
+                            if results.len() >= limit {
+                                break;
+                            }
                         }
                     }
                 }
@@ -672,8 +678,6 @@ pub fn search_entries(
 
         // Supplement with keyword search if needed
         if results.len() < limit {
-            let remaining = limit - results.len();
-
             let words = split_query_words(query);
             let mut kw_sql = format!(
                 "SELECT DISTINCT {ENTRY_COLS_E} \
@@ -692,8 +696,8 @@ pub fn search_entries(
             kw_sql.push(')');
 
             append_filters(&mut kw_sql, &mut kw_params, category, source, status, since);
-            kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-            kw_params.push(Box::new(remaining as i64));
+            // No SQL LIMIT: break once `limit` unique rows are collected (below).
+            kw_sql.push_str(" ORDER BY e.updated_at DESC");
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 kw_params.iter().map(|b| b.as_ref()).collect();
@@ -704,14 +708,15 @@ pub fn search_entries(
                 if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
                     seen_ids.insert(entry.id);
                     results.push(entry);
+                    if results.len() >= limit {
+                        break;
+                    }
                 }
             }
         }
 
         // LIKE fallback for short queries (e.g. 2-char CJK words) that trigram FTS cannot match
         if results.len() < limit {
-            let remaining = limit - results.len();
-
             let words = split_query_words(query);
             let mut like_sql = format!("SELECT {ENTRY_COLS} FROM entries e WHERE (");
             let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -738,8 +743,8 @@ pub fn search_entries(
                 status,
                 since,
             );
-            like_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-            like_params.push(Box::new(remaining as i64));
+            // No SQL LIMIT: break once `limit` unique rows are collected (below).
+            like_sql.push_str(" ORDER BY e.updated_at DESC");
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 like_params.iter().map(|b| b.as_ref()).collect();
@@ -750,6 +755,9 @@ pub fn search_entries(
                 if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
                     seen_ids.insert(entry.id);
                     results.push(entry);
+                    if results.len() >= limit {
+                        break;
+                    }
                 }
             }
         }
@@ -1470,6 +1478,51 @@ mod tests {
             results.iter().all(|e| e.rank.is_some()),
             "Japanese keyword matches should come from the FTS path"
         );
+    }
+
+    #[test]
+    fn test_search_dedups_titles_and_fills_limit() {
+        // Several entries share a title; two have unique titles. All match the query.
+        // A duplicate title must not consume a result slot and crowd out the unique
+        // candidates — even though the SQL has no LIMIT, the cursor is read until
+        // `limit` UNIQUE (id+title) rows are collected. (Regression: a SQL LIMIT applied
+        // before dedup could return fewer than `limit` rows.)
+        let (conn, _tmp) = setup_test_db();
+        add_entry(&conn, "Dup", "needle one", &[], "", "local", None, None).unwrap();
+        add_entry(&conn, "Dup", "needle two", &[], "", "local", None, None).unwrap();
+        add_entry(&conn, "Dup", "needle three", &[], "", "local", None, None).unwrap();
+        add_entry(
+            &conn,
+            "Unique A",
+            "needle four",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        add_entry(
+            &conn,
+            "Unique B",
+            "needle five",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let results = search_entries(&conn, "needle", false, None, None, None, None, 3).unwrap();
+        assert_eq!(
+            results.len(),
+            3,
+            "should fill the limit with distinct-title entries, not stop short on dups"
+        );
+        let titles: std::collections::HashSet<String> =
+            results.iter().map(|e| e.title.to_lowercase()).collect();
+        assert_eq!(titles.len(), 3, "titles must be unique: {titles:?}");
     }
 
     #[test]
