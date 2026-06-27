@@ -14,6 +14,12 @@ pub fn is_valid_status(s: &str) -> bool {
     VALID_STATUSES.contains(&s)
 }
 
+/// Search over-fetch margin: each query reads `limit + this` candidate rows so that
+/// progressive id/title dedup can still fill `limit` after dropping duplicates, while
+/// a bounded SQL `LIMIT` preserves SQLite's top-N optimization (no full sort of the
+/// whole match set). Only pathological duplication beyond the margin could under-fill.
+const SEARCH_DEDUP_MARGIN: usize = 64;
+
 pub struct Entry {
     pub id: i64,
     pub title: String,
@@ -555,6 +561,14 @@ pub fn search_entries(
     since: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
+    // Each scope must return at most `limit` rows (callers merge then truncate), so a
+    // zero limit short-circuits before any query.
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    // Read a bounded over-fetch so dedup can still fill `limit` after dropping dupes,
+    // while keeping SQLite's top-N optimization (a fixed LIMIT, not a full sort).
+    let fetch_limit = limit + SEARCH_DEDUP_MARGIN;
     let mut results = Vec::new();
 
     // Helper to append optional filters and return next param index
@@ -607,14 +621,23 @@ pub fn search_entries(
 
         append_filters(&mut sql, &mut param_values, category, source, status, since);
         sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-        param_values.push(Box::new(limit as i64));
+        param_values.push(Box::new(fetch_limit as i64));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
+        // Dedup by title and stop at `limit` (SELECT DISTINCT already removes id-dupes),
+        // so duplicate titles don't crowd out unique candidates within fetch_limit.
+        let mut seen_titles: std::collections::HashSet<String> = std::collections::HashSet::new();
         for row in rows {
-            results.push(row?);
+            let entry = row?;
+            if seen_titles.insert(entry.title.to_lowercase()) {
+                results.push(entry);
+                if results.len() >= limit {
+                    break;
+                }
+            }
         }
     } else {
         // FTS search — sanitize query to prevent FTS5 syntax injection
@@ -635,11 +658,11 @@ pub fn search_entries(
             status,
             since,
         );
-        // No SQL LIMIT here: we read the ranked cursor lazily and stop once `limit`
-        // UNIQUE (id+title) rows are collected (see the break below). A fixed SQL LIMIT
-        // would let title-duplicates among the top matches burn result slots and crowd
-        // out unique candidates that rank just below them.
-        fts_sql.push_str(" ORDER BY rank, e.updated_at DESC");
+        // Bounded over-fetch: `fetch_limit` keeps SQLite's top-N optimization, and the
+        // Rust-side dedup + early break below collects `limit` UNIQUE (id+title) rows,
+        // so title-duplicates among the top matches don't crowd out unique candidates.
+        fts_sql.push_str(" ORDER BY rank, e.updated_at DESC LIMIT ?");
+        param_values.push(Box::new(fetch_limit as i64));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
@@ -696,8 +719,9 @@ pub fn search_entries(
             kw_sql.push(')');
 
             append_filters(&mut kw_sql, &mut kw_params, category, source, status, since);
-            // No SQL LIMIT: break once `limit` unique rows are collected (below).
-            kw_sql.push_str(" ORDER BY e.updated_at DESC");
+            // Bounded over-fetch; the loop below dedups and breaks at `limit`.
+            kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
+            kw_params.push(Box::new(fetch_limit as i64));
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 kw_params.iter().map(|b| b.as_ref()).collect();
@@ -743,8 +767,9 @@ pub fn search_entries(
                 status,
                 since,
             );
-            // No SQL LIMIT: break once `limit` unique rows are collected (below).
-            like_sql.push_str(" ORDER BY e.updated_at DESC");
+            // Bounded over-fetch; the loop below dedups and breaks at `limit`.
+            like_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
+            like_params.push(Box::new(fetch_limit as i64));
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 like_params.iter().map(|b| b.as_ref()).collect();
@@ -763,11 +788,8 @@ pub fn search_entries(
         }
     }
 
-    // Deduplicate by title, keeping the newest (first) entry. The FTS branch already
-    // dedups progressively; this also covers the keyword_only branch above.
-    let mut seen_titles = std::collections::HashSet::new();
-    results.retain(|e| seen_titles.insert(e.title.to_lowercase()));
-
+    // Both branches dedup by title as rows arrive and stop at `limit`, so `results` is
+    // already title-unique and within the limit — no final pass needed.
     Ok(results)
 }
 
@@ -1483,18 +1505,19 @@ mod tests {
     #[test]
     fn test_search_dedups_titles_and_fills_limit() {
         // Several entries share a title; two have unique titles. All match the query.
-        // A duplicate title must not consume a result slot and crowd out the unique
-        // candidates — even though the SQL has no LIMIT, the cursor is read until
-        // `limit` UNIQUE (id+title) rows are collected. (Regression: a SQL LIMIT applied
-        // before dedup could return fewer than `limit` rows.)
+        // A duplicate title must not consume a result slot and crowd out unique
+        // candidates: the bounded over-fetch (limit + margin) plus progressive id/title
+        // dedup must still fill `limit` with distinct titles. (Regression: a tight SQL
+        // LIMIT applied before dedup could return fewer than `limit` rows.)
         let (conn, _tmp) = setup_test_db();
-        add_entry(&conn, "Dup", "needle one", &[], "", "local", None, None).unwrap();
-        add_entry(&conn, "Dup", "needle two", &[], "", "local", None, None).unwrap();
-        add_entry(&conn, "Dup", "needle three", &[], "", "local", None, None).unwrap();
+        // Identical content → equal bm25 rank, so ordering falls to updated_at DESC.
+        for _ in 0..3 {
+            add_entry(&conn, "Dup", "needle term", &[], "", "local", None, None).unwrap();
+        }
         add_entry(
             &conn,
             "Unique A",
-            "needle four",
+            "needle term",
             &[],
             "",
             "local",
@@ -1505,12 +1528,30 @@ mod tests {
         add_entry(
             &conn,
             "Unique B",
-            "needle five",
+            "needle term",
             &[],
             "",
             "local",
             None,
             None,
+        )
+        .unwrap();
+        // Force the duplicate-title rows to sort first. A pre-fix tight `LIMIT 3` would
+        // then fetch three "Dup" rows and collapse to one; the fix reads past them and
+        // fills the limit with distinct titles.
+        conn.execute(
+            "UPDATE entries SET updated_at = '2099-01-09T00:00:00' WHERE title = 'Dup'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE entries SET updated_at = '2099-01-08T00:00:00' WHERE title = 'Unique A'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE entries SET updated_at = '2099-01-07T00:00:00' WHERE title = 'Unique B'",
+            [],
         )
         .unwrap();
 
@@ -1523,6 +1564,28 @@ mod tests {
         let titles: std::collections::HashSet<String> =
             results.iter().map(|e| e.title.to_lowercase()).collect();
         assert_eq!(titles.len(), 3, "titles must be unique: {titles:?}");
+    }
+
+    #[test]
+    fn test_search_limit_zero_returns_empty() {
+        // A scope must never return more than `limit` rows; limit=0 → no rows.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "Anything",
+            "needle term",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            search_entries(&conn, "needle", false, None, None, None, None, 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
