@@ -7,19 +7,29 @@ Manage "do it later" plans as first-class knowledge entries: save a plan now, li
 
 ## Arguments
 $ARGUMENTS selects the mode:
-- empty → **list** open plans and let the user pick one to resume
-- `save [hint]` → **save** the current conversation/decision as a new plan
+- empty → **auto-route** (see below): save the plan we just designed, or list open plans to resume
+- `save [hint]` → **force save** the current conversation/decision as a new plan
+- `list` → **force list** open plans (skip auto-save even mid-design)
 - `done <id-or-uid>` → **close** a plan (mark it done)
 - `drop <id-or-uid>` → **abandon** a plan
 
 ## Procedure
 
-### List (no arguments)
+### No arguments — auto-route
+Decide between Save and List based on the **current conversation state**:
+
+- **If we were just designing a plan that hasn't been saved yet** — i.e. this conversation has produced a concrete, unsaved plan (a plan-mode plan, an approach just worked out, a "here's how we'd do it" that the user is deferring rather than executing now) — then **run the Save procedure automatically** (no confirmation; proactive, like `/lk-knowledge-save-context`). Briefly report the id/uid afterward.
+- **Otherwise** (no fresh unsaved plan in context — e.g. a cold session, or you already saved this plan earlier in the conversation) — **run the List procedure**.
+
+Guard against double-saving: if you already saved this plan earlier this session, treat it as "no fresh plan" and List instead. `lk add`'s duplicate detection is a backstop, but don't rely on it — check the conversation first. When genuinely ambiguous, prefer Save (deferring work is the reason the command was invoked mid-design) and say which branch you took.
+
+### List
 1. Run `lk list --category plan --status proposed --json` (reads merge project + user, so plans from any scope show up).
 2. Present the open plans as a numbered list (title + id/uid + scope).
 3. When the user picks one, run `lk get <id-or-uid> --json` and read the full content to resume the work. If the content references a plan file path (e.g. `~/.claude/plans/<name>.md`), read that too — but the entry itself should be self-contained.
 
-### Save (`save [hint]`)
+### Save
+Invoked by `save [hint]`, or automatically by the no-argument auto-route when a fresh plan is in context.
 1. Review the conversation for the plan worth deferring: the decision reached, the approach, concrete identifiers (files/functions), rejected alternatives, and any dead-ends. Write it **dense** — enough to resume cold weeks later without the conversation.
 2. Choose the scope: personal/cross-project work lists → `--scope user`; plans tied to this repo → default (`auto`).
 3. Run:
