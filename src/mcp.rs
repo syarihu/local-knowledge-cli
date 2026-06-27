@@ -303,6 +303,12 @@ fn inject_project_prop(schema: &mut Value, registry: &ProjectRegistry) {
     }
 }
 
+/// The status enum for the MCP tool schemas, derived from the single source of
+/// truth (`db::VALID_STATUSES`) so the schema can't drift from runtime validation.
+fn status_enum() -> Value {
+    Value::from(db::VALID_STATUSES)
+}
+
 fn tool_def_search(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "search_knowledge",
@@ -329,7 +335,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["active", "deprecated", "proposed", "accepted", "superseded"],
+                    "enum": status_enum(),
                     "description": "Filter by status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Use 'proposed' to find open plan items."
                 },
                 "limit": {
@@ -377,7 +383,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["active", "deprecated", "proposed", "accepted", "superseded"],
+                    "enum": status_enum(),
                     "description": "Initial status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Default: 'active'. Use 'proposed' for design decisions awaiting review."
                 },
                 "force": {
@@ -416,7 +422,7 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["active", "deprecated", "proposed", "accepted", "superseded"],
+                    "enum": status_enum(),
                     "description": "Filter by status ('active', 'proposed', 'accepted', 'deprecated', 'superseded'). Use 'proposed' to list open plan items."
                 },
                 "limit": {
@@ -491,7 +497,7 @@ fn tool_def_update(registry: &ProjectRegistry) -> Value {
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["active", "deprecated", "proposed", "accepted", "superseded"],
+                    "enum": status_enum(),
                     "description": "Set status ('active', 'deprecated', 'proposed', 'accepted', or 'superseded')"
                 },
                 "superseded_by": {
