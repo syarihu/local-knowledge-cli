@@ -566,9 +566,18 @@ pub fn search_entries(
     if limit == 0 {
         return Ok(Vec::new());
     }
+    // An all-separator/whitespace query tokenizes to zero content words; the keyword and
+    // LIKE paths would then build invalid SQL (`WHERE ()`), so return early rather than
+    // error.
+    if split_query_words(query).is_empty() {
+        return Ok(Vec::new());
+    }
     // Read a bounded over-fetch so dedup can still fill `limit` after dropping dupes,
     // while keeping SQLite's top-N optimization (a fixed LIMIT, not a full sort).
-    let fetch_limit = limit + SEARCH_DEDUP_MARGIN;
+    // saturating_add + checked i64 conversion guard a pathologically large `limit`
+    // against overflow / wrapping into a negative SQL LIMIT.
+    let fetch_limit: i64 =
+        i64::try_from(limit.saturating_add(SEARCH_DEDUP_MARGIN)).unwrap_or(i64::MAX);
     let mut results = Vec::new();
 
     // Helper to append optional filters and return next param index
@@ -621,7 +630,7 @@ pub fn search_entries(
 
         append_filters(&mut sql, &mut param_values, category, source, status, since);
         sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-        param_values.push(Box::new(fetch_limit as i64));
+        param_values.push(Box::new(fetch_limit));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
@@ -662,7 +671,7 @@ pub fn search_entries(
         // Rust-side dedup + early break below collects `limit` UNIQUE (id+title) rows,
         // so title-duplicates among the top matches don't crowd out unique candidates.
         fts_sql.push_str(" ORDER BY rank, e.updated_at DESC LIMIT ?");
-        param_values.push(Box::new(fetch_limit as i64));
+        param_values.push(Box::new(fetch_limit));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
@@ -721,7 +730,7 @@ pub fn search_entries(
             append_filters(&mut kw_sql, &mut kw_params, category, source, status, since);
             // Bounded over-fetch; the loop below dedups and breaks at `limit`.
             kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-            kw_params.push(Box::new(fetch_limit as i64));
+            kw_params.push(Box::new(fetch_limit));
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 kw_params.iter().map(|b| b.as_ref()).collect();
@@ -769,7 +778,7 @@ pub fn search_entries(
             );
             // Bounded over-fetch; the loop below dedups and breaks at `limit`.
             like_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
-            like_params.push(Box::new(fetch_limit as i64));
+            like_params.push(Box::new(fetch_limit));
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 like_params.iter().map(|b| b.as_ref()).collect();
@@ -1583,6 +1592,34 @@ mod tests {
         .unwrap();
         assert!(
             search_entries(&conn, "needle", false, None, None, None, None, 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_search_separator_only_query_is_empty_not_error() {
+        // An all-separator query tokenizes to zero words; it must return empty rather
+        // than build invalid SQL (`WHERE ()`) — on both the FTS and keyword_only paths.
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "Anything",
+            "needle term",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            search_entries(&conn, "  --  __ ", false, None, None, None, None, 5)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            search_entries(&conn, "  --  __ ", true, None, None, None, None, 5)
                 .unwrap()
                 .is_empty()
         );
