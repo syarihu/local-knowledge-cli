@@ -32,7 +32,7 @@ enum Commands {
     Add {
         /// Entry title
         title: String,
-        /// Comma-separated keywords
+        /// Comma-separated keywords (authoritative when given; auto-extracted from title/content otherwise)
         #[arg(short, long)]
         keywords: Option<String>,
         /// Entry content
@@ -224,8 +224,23 @@ enum Commands {
         /// Path to markdown file
         path: PathBuf,
     },
-    /// List all unique keywords
+    /// List all unique keywords, or regenerate noisy per-entry keywords with --regen
     Keywords {
+        /// Regenerate auto keywords for noisy local entries (keyword count > threshold)
+        #[arg(long)]
+        regen: bool,
+        /// With --regen: regenerate every local entry, not just noisy ones
+        #[arg(long, requires = "regen")]
+        all: bool,
+        /// With --regen: entries with more keywords than this are considered noisy
+        #[arg(long, default_value = "15", requires = "regen")]
+        threshold: usize,
+        /// With --regen: show what would change without writing
+        #[arg(long, requires = "regen")]
+        dry_run: bool,
+        /// With --regen: scope to regenerate ("project", "user", or "all")
+        #[arg(long, default_value = "project")]
+        scope: String,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -364,7 +379,8 @@ fn main() {
         | Commands::Search { scope, .. }
         | Commands::List { scope, .. }
         | Commands::Stats { scope, .. }
-        | Commands::Export { scope, .. } => scope == "user",
+        | Commands::Export { scope, .. }
+        | Commands::Keywords { scope, .. } => scope == "user",
         Commands::Get { scope, .. }
         | Commands::Edit { scope, .. }
         | Commands::Delete { scope, .. }
@@ -495,7 +511,20 @@ fn main() {
             scope,
         } => cmd::cmd_export(dir, ids.as_deref(), query.as_deref(), allow_secrets, &scope),
         Commands::Import { path } => cmd::cmd_import(&path),
-        Commands::Keywords { json } => cmd::cmd_keywords(json),
+        Commands::Keywords {
+            regen,
+            all,
+            threshold,
+            dry_run,
+            scope,
+            json,
+        } => {
+            if regen {
+                cmd::cmd_keywords_regen(all, threshold, dry_run, Some(&scope), json)
+            } else {
+                cmd::cmd_keywords(json)
+            }
+        }
         Commands::Stats {
             json,
             verbose,

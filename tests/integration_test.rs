@@ -1886,3 +1886,199 @@ fn test_project_export_dir_outside_knowledge_is_dump_only() {
         "entry must survive sync (no data loss)"
     );
 }
+
+#[test]
+fn test_add_manual_keywords_are_authoritative() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Content is full of extractable words, but the manual keywords must win.
+    let output = lk_bin()
+        .args([
+            "add",
+            "SessionManager token refresh",
+            "--keywords",
+            "session,token-refresh",
+            "--content",
+            "The SessionManager component refreshes access tokens through the gateway before expiry.",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let add_result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let kws: Vec<String> = add_result["keywords"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        kws,
+        vec!["session".to_string(), "token-refresh".to_string()],
+        "auto-extracted keywords must not be merged into a curated set"
+    );
+}
+
+#[test]
+fn test_auto_keywords_are_capped() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // 30 distinct candidate words, no manual keywords
+    let content: String = (0..30)
+        .map(|i| format!("uniqueword{i:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let output = lk_bin()
+        .args(["add", "Capped entry", "--content", &content, "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let add_result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let count = add_result["keywords"].as_array().unwrap().len();
+    assert!(
+        count <= 15,
+        "auto-extracted keywords must be capped at 15, got {count}"
+    );
+}
+
+#[test]
+fn test_keywords_regen() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // A noisy entry: 20 keywords (> default threshold of 15)
+    let noisy_kws: String = (0..20)
+        .map(|i| format!("noisykeyword{i:02}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let output = lk_bin()
+        .args([
+            "add",
+            "Webhook retry design",
+            "--keywords",
+            &noisy_kws,
+            "--content",
+            "Webhook delivery retries use exponential backoff with a dead letter queue.",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let noisy: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let noisy_id = noisy["id"].as_i64().unwrap();
+
+    // A curated entry: few keywords, must be left alone
+    let output = lk_bin()
+        .args([
+            "add",
+            "Cache invalidation strategy",
+            "--keywords",
+            "cache,invalidation,ttl",
+            "--content",
+            "Entries expire via TTL; explicit invalidation happens on write.",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let curated: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let curated_id = curated["id"].as_i64().unwrap();
+
+    // Dry run first: reports the noisy entry but does not write
+    let output = lk_bin()
+        .args(["keywords", "--regen", "--dry-run", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let dry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(dry["dry_run"], true);
+    assert_eq!(dry["regenerated"], 1);
+
+    let output = lk_bin()
+        .args(["get", &noisy_id.to_string(), "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        entry["keywords"].as_array().unwrap().len(),
+        20,
+        "dry run must not modify keywords"
+    );
+    let updated_at_before = entry["updated_at"].as_str().unwrap().to_string();
+
+    // Real run: noisy entry is regenerated, curated entry untouched
+    let output = lk_bin()
+        .args(["keywords", "--regen", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let regen: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(regen["regenerated"], 1);
+
+    let output = lk_bin()
+        .args(["get", &noisy_id.to_string(), "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let kws: Vec<String> = entry["keywords"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap().to_string())
+        .collect();
+    assert!(kws.len() <= 15, "regenerated keywords must be capped");
+    assert!(
+        kws.contains(&"webhook".to_string()),
+        "regenerated keywords should reflect the entry text"
+    );
+    assert!(!kws.contains(&"noisykeyword00".to_string()));
+    assert_eq!(
+        entry["updated_at"].as_str().unwrap(),
+        updated_at_before,
+        "regen must not bump updated_at"
+    );
+
+    let output = lk_bin()
+        .args(["get", &curated_id.to_string(), "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let kws: Vec<String> = entry["keywords"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        kws,
+        vec![
+            "cache".to_string(),
+            "invalidation".to_string(),
+            "ttl".to_string()
+        ],
+        "curated entries at or below the threshold must be left alone"
+    );
+}

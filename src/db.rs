@@ -895,6 +895,39 @@ pub fn update_entry(
     Ok(())
 }
 
+/// Replace an entry's keyword set WITHOUT touching updated_at. This is for
+/// metadata-only maintenance (`lk keywords --regen`) — bumping updated_at there
+/// would falsely mark entries as freshly reviewed for staleness checks.
+pub fn replace_keywords(
+    conn: &Connection,
+    entry_id: i64,
+    kws: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute_batch("SAVEPOINT replace_keywords")?;
+    match (|| -> Result<(), Box<dyn std::error::Error>> {
+        conn.execute(
+            "DELETE FROM keywords WHERE entry_id = ?1",
+            params![entry_id],
+        )?;
+        for kw in kws {
+            conn.execute(
+                "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
+                params![entry_id, kw.to_lowercase()],
+            )?;
+        }
+        Ok(())
+    })() {
+        Ok(()) => {
+            conn.execute_batch("RELEASE replace_keywords")?;
+            Ok(())
+        }
+        Err(e) => {
+            conn.execute_batch("ROLLBACK TO replace_keywords").ok();
+            Err(e)
+        }
+    }
+}
+
 pub fn update_entry_status(
     conn: &Connection,
     id: i64,

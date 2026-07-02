@@ -17,7 +17,7 @@ pub use init::cmd_init;
 pub use install_mcp::{cmd_install_mcp, cmd_uninstall_mcp};
 pub use list::cmd_list;
 pub use search::{cmd_command_log, cmd_search};
-pub use stats::{cmd_keywords, cmd_stats};
+pub use stats::{cmd_keywords, cmd_keywords_regen, cmd_stats};
 pub use sync::cmd_sync;
 pub use uninstall::cmd_uninstall;
 pub use update::{cmd_install_commands, cmd_update};

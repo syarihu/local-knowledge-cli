@@ -19,6 +19,93 @@ pub fn cmd_keywords(json_output: bool) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+/// Regenerate per-entry keywords with the ranked/capped extractor.
+///
+/// Only `local` entries are touched: `shared` entries' keywords are owned by
+/// their markdown source files, so rewriting them in the DB would silently
+/// diverge from the files (fix the markdown and re-sync instead). By default
+/// only "noisy" entries (more keywords than `threshold`) are regenerated, so
+/// curated keyword sets are left alone; `--all` regenerates every local entry.
+pub fn cmd_keywords_regen(
+    all: bool,
+    threshold: usize,
+    dry_run: bool,
+    scope: Option<&str>,
+    json_output: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conns = super::read_connections(scope)?;
+    super::log_command("keywords-regen", &[("dry_run", &dry_run.to_string())]);
+
+    let mut changed: Vec<serde_json::Value> = Vec::new();
+    let mut skipped_shared = 0usize;
+
+    for (conn, label) in &conns {
+        for entry in db::list_entries(conn, None)? {
+            let current = db::get_keywords(conn, entry.id)?;
+            let noisy = current.len() > threshold;
+            if entry.source != "local" {
+                if noisy {
+                    skipped_shared += 1;
+                }
+                continue;
+            }
+            if !all && !noisy {
+                continue;
+            }
+            let new_kws = crate::keywords::extract_keywords(&entry.title, &entry.content);
+            if new_kws == current {
+                continue;
+            }
+            if !dry_run {
+                db::replace_keywords(conn, entry.id, &new_kws)?;
+            }
+            changed.push(serde_json::json!({
+                "id": entry.id,
+                "uid": entry.uid,
+                "scope": label,
+                "title": entry.title,
+                "old_count": current.len(),
+                "new_count": new_kws.len(),
+                "keywords": new_kws,
+            }));
+        }
+    }
+
+    if json_output {
+        let out = serde_json::json!({
+            "dry_run": dry_run,
+            "regenerated": changed.len(),
+            "skipped_shared_noisy": skipped_shared,
+            "entries": changed,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        let verb = if dry_run {
+            "Would regenerate"
+        } else {
+            "Regenerated"
+        };
+        println!("{verb} keywords for {} entries:", changed.len());
+        for c in &changed {
+            println!(
+                "  [{}] {} ({} -> {} keywords, {} scope)",
+                c["id"], c["title"], c["old_count"], c["new_count"], c["scope"]
+            );
+        }
+        if skipped_shared > 0 {
+            println!(
+                "Note: {skipped_shared} shared entries have more than {threshold} keywords. \
+                 Their keywords come from .knowledge/*.md — add curated keywords to the \
+                 markdown frontmatter and run `lk sync` instead."
+            );
+        }
+        if dry_run && !changed.is_empty() {
+            println!("(dry run — nothing written; rerun without --dry-run to apply)");
+        }
+    }
+    Ok(())
+}
+
 pub fn cmd_stats(
     json_output: bool,
     verbose: bool,
