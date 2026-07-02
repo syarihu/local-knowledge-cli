@@ -374,7 +374,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 "keywords": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Keywords for the entry (auto-extracted if not provided)"
+                    "description": "Curated keywords for the entry — ALWAYS provide 5-10 focused terms that best represent it (main components, concepts, proper nouns; lowercase-hyphenated; include both English and Japanese terms where useful). If omitted, keywords are auto-extracted by frequency as a fallback, which is noisier than a curated set."
                 },
                 "category": {
                     "type": "string",
@@ -493,7 +493,7 @@ fn tool_def_update(registry: &ProjectRegistry) -> Value {
                 "keywords": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "New keywords"
+                    "description": "New keywords (replaces the existing set — pass the full curated list, 5-10 focused terms)"
                 },
                 "status": {
                     "type": "string",

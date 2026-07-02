@@ -13,7 +13,7 @@ $ARGUMENTS contains a description of what knowledge to save, or is empty to auto
 2. For each piece of knowledge:
    - Formulate a concise title (e.g., "Login OAuth flow", "Payment retry logic")
    - Write 2-5 sentences of factual content
-   - Identify relevant keywords
+   - Identify 5-10 curated keywords (key components, concepts, proper nouns — not every word in the content)
 3. Show the proposed entries to the user for confirmation
 4. For each confirmed entry, run:
    `lk add "<title>" --keywords "<kw1>,<kw2>" --content "<content>"`
@@ -38,5 +38,5 @@ When the knowledge is a design decision (technology choice, architecture change,
   - GOOD: "DB uses FTS5 for full-text search; schema is defined in `init_db()`" — stays true
 - Reference function/struct names instead of line numbers
 - Include **why** (design decisions, rationale) alongside **what** when possible
-- Keywords should include both English and Japanese terms if applicable
+- Always pass 5-10 curated keywords; include both English and Japanese terms if applicable (omitting keywords falls back to noisier frequency-based auto-extraction)
 - When adding knowledge that replaces an older approach, check `lk add` output for `similar_entries` and mark old entries as deprecated with `lk edit <id> --status deprecated --superseded-by <new_id>`

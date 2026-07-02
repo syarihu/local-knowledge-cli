@@ -17,7 +17,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - User-scope (global) knowledge at `~/.config/lk/knowledge.db` — carry personal notes and cross-project context (e.g. session handoff logs) across all projects with `--scope user`; reads merge project + user by default. In projects without `lk init`, `lk add` automatically falls back to this global store, so it works anywhere
 - User-scope markdown export/sync — `lk export/sync --scope user` mirrors user knowledge to `~/.config/lk/knowledge/*.md` so personal notes can be versioned and synced across machines (e.g. via a dotfiles repo)
 - Bulk delete with `purge` by category or source
-- Auto-extract keywords from entries
+- Auto-extract keywords from entries — frequency-ranked and capped (top 15; title/file-path terms weighted higher), used only as a fallback when no keywords are given; `lk keywords --regen` cleans up noisy keyword sets from older versions
 - Self-update from GitHub Releases
 - Git worktree support — all worktrees share the main worktree's DB, so knowledge is available across worktrees
 - MCP (Model Context Protocol) server — Claude Code / Claude Desktop can autonomously search, add, and manage knowledge
@@ -86,7 +86,7 @@ Commands:
   sync              Sync .knowledge/ files with DB
   export            Export local entries to markdown
   import <path>     Import a markdown file
-  keywords          List all unique keywords
+  keywords          List all unique keywords (--regen regenerates noisy per-entry keywords)
   stats             Show database statistics
   command-log       Show recent command log entries
   update            Update lk to latest version
@@ -100,7 +100,7 @@ Commands:
 ### Common Options
 
 - `--json` - Output as JSON (available on most commands)
-- `--keywords "kw1,kw2"` - Comma-separated keywords (for `add`)
+- `--keywords "kw1,kw2"` - Comma-separated keywords (for `add`; authoritative when given — auto-extraction only runs when omitted)
 - `--content "..."` - Entry content (for `add`)
 - `--category <cat>` - Filter by category (for `search`, `list`, `purge`)
 - `--source <src>` - Filter by source: `local` or `shared` (for `search`, `list`, `purge`)
@@ -111,6 +111,22 @@ Commands:
 - `--force` - Skip duplicate check when adding (for `add`)
 - `--allow-secrets` - Allow content that contains potential secrets (for `add`, `export`)
 - `--scope <scope>` - Knowledge store to use. `add`: `auto` (default — project if initialized, else user), `project`, or `user`. Targets (`get`/`edit`/`delete`/`supersede`): `project` or `user` (omit to auto-resolve). Reads (`search`/`list`/`stats`): `project`, `user`, or `all` (default, merged)
+
+### Keywords
+
+Keywords are the terms that best represent an entry — they power keyword search (fallback), duplicate detection, and human scanning. Full-text search already covers the whole title/content, so keywords don't need to (and shouldn't) mirror every word.
+
+- When `--keywords` is given, it is used as-is (curated keywords are authoritative).
+- When omitted, keywords are auto-extracted as a fallback: candidate terms (ASCII words, CamelCase/snake_case parts, file-path segments, katakana) are ranked by frequency — title and file-path terms weighted higher — and capped at 15.
+- Entries created by older versions may carry large, noisy auto-extracted keyword sets. Clean them up with:
+
+```bash
+lk keywords --regen --dry-run   # preview which entries would change
+lk keywords --regen             # regenerate local entries with > 15 keywords
+lk keywords --regen --all       # regenerate every local entry
+```
+
+`--regen` only touches `local` entries — `shared` entries' keywords are owned by their `.knowledge/*.md` frontmatter, so fix the markdown and run `lk sync` instead. It also leaves `updated_at` untouched, so staleness tracking is unaffected.
 
 ## How It Works
 
