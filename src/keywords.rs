@@ -1,5 +1,6 @@
 use regex::Regex;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 const STOP_WORDS: &[&str] = &[
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
@@ -46,42 +47,52 @@ pub fn extract_keywords(title: &str, content: &str) -> Vec<String> {
     result
 }
 
-fn score_text(text: &str, weight: u32, scores: &mut HashMap<String, u32>) {
-    // File path segments
-    let path_re = Regex::new(r"[\w./\\-]+\.[\w]+").unwrap();
-    for mat in path_re.find_iter(text) {
-        for part in mat.as_str().split(&['/', '\\', '.'][..]) {
-            add_score(scores, &part.to_lowercase(), weight * PATH_WEIGHT);
-        }
-    }
+static PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\w./\\-]+\.[\w]+").unwrap());
+static WORD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]*").unwrap());
+static KATAKANA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u30A0-\u30FF]{4,}").unwrap());
+static CAMEL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([a-z])([A-Z])").unwrap());
 
-    // ASCII words
-    let word_re = Regex::new(r"[A-Za-z_][A-Za-z0-9_]*").unwrap();
-    for mat in word_re.find_iter(text) {
-        let word = mat.as_str();
-        // CamelCase / snake_case parts
-        let mut parts = Vec::new();
-        for camel_part in split_camel_case(word) {
-            for sub in camel_part.split('_') {
-                if !sub.is_empty() {
-                    parts.push(sub.to_lowercase());
-                }
-            }
+fn score_text(text: &str, weight: u32, scores: &mut HashMap<String, u32>) {
+    // File path segments. Path ranges are masked out of the word scan below so
+    // path-derived tokens are scored exactly once, at PATH_WEIGHT.
+    let mut masked = text.as_bytes().to_vec();
+    for mat in PATH_RE.find_iter(text) {
+        for part in mat.as_str().split(&['/', '\\', '.'][..]) {
+            score_identifier(part, weight * PATH_WEIGHT, scores);
         }
-        for part in &parts {
-            add_score(scores, part, weight);
-        }
-        // Keep the whole compound identifier too (e.g. "sessionmanager") —
-        // compound names are often the most precise search handle.
-        if parts.len() > 1 {
-            add_score(scores, &word.to_lowercase(), weight);
-        }
+        masked[mat.range()].fill(b' ');
+    }
+    // Filling whole match ranges with ASCII spaces keeps the bytes valid UTF-8.
+    let masked = String::from_utf8(masked).expect("space-masking preserves UTF-8");
+
+    // ASCII words (outside file paths)
+    for mat in WORD_RE.find_iter(&masked) {
+        score_identifier(mat.as_str(), weight, scores);
     }
 
     // Katakana words (4+ chars; the regex enforces the length)
-    let katakana_re = Regex::new(r"[\u30A0-\u30FF]{4,}").unwrap();
-    for mat in katakana_re.find_iter(text) {
+    for mat in KATAKANA_RE.find_iter(text) {
         *scores.entry(mat.as_str().to_string()).or_insert(0) += weight;
+    }
+}
+
+/// Score an identifier-like token: its CamelCase / snake_case parts, plus the
+/// whole compound identifier (e.g. "sessionmanager") when it splits — compound
+/// names are often the most precise search handle.
+fn score_identifier(word: &str, weight: u32, scores: &mut HashMap<String, u32>) {
+    let mut parts = Vec::new();
+    for camel_part in split_camel_case(word) {
+        for sub in camel_part.split('_') {
+            if !sub.is_empty() {
+                parts.push(sub.to_lowercase());
+            }
+        }
+    }
+    for part in &parts {
+        add_score(scores, part, weight);
+    }
+    if parts.len() > 1 {
+        add_score(scores, &word.to_lowercase(), weight);
     }
 }
 
@@ -92,8 +103,7 @@ fn add_score(scores: &mut HashMap<String, u32>, word: &str, weight: u32) {
 }
 
 fn split_camel_case(word: &str) -> Vec<String> {
-    let re = Regex::new(r"([a-z])([A-Z])").unwrap();
-    let spaced = re.replace_all(word, "$1 $2");
+    let spaced = CAMEL_RE.replace_all(word, "$1 $2");
     spaced.split_whitespace().map(|s| s.to_string()).collect()
 }
 

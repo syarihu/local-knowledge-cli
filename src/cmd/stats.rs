@@ -36,7 +36,16 @@ pub fn cmd_keywords_regen(
     let conns = super::read_connections(scope)?;
     super::log_command("keywords-regen", &[("dry_run", &dry_run.to_string())]);
 
-    let mut changed: Vec<serde_json::Value> = Vec::new();
+    struct RegenChange {
+        id: i64,
+        uid: String,
+        scope: &'static str,
+        title: String,
+        old_count: usize,
+        new_count: usize,
+        keywords: Vec<String>,
+    }
+    let mut changed: Vec<RegenChange> = Vec::new();
     let mut skipped_shared = 0usize;
 
     for (conn, label) in &conns {
@@ -59,24 +68,38 @@ pub fn cmd_keywords_regen(
             if !dry_run {
                 db::replace_keywords(conn, entry.id, &new_kws)?;
             }
-            changed.push(serde_json::json!({
-                "id": entry.id,
-                "uid": entry.uid,
-                "scope": label,
-                "title": entry.title,
-                "old_count": current.len(),
-                "new_count": new_kws.len(),
-                "keywords": new_kws,
-            }));
+            changed.push(RegenChange {
+                id: entry.id,
+                uid: entry.uid,
+                scope: label,
+                title: entry.title,
+                old_count: current.len(),
+                new_count: new_kws.len(),
+                keywords: new_kws,
+            });
         }
     }
 
     if json_output {
+        let entries: Vec<serde_json::Value> = changed
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "uid": c.uid,
+                    "scope": c.scope,
+                    "title": c.title,
+                    "old_count": c.old_count,
+                    "new_count": c.new_count,
+                    "keywords": c.keywords,
+                })
+            })
+            .collect();
         let out = serde_json::json!({
             "dry_run": dry_run,
             "regenerated": changed.len(),
             "skipped_shared_noisy": skipped_shared,
-            "entries": changed,
+            "entries": entries,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
@@ -89,7 +112,7 @@ pub fn cmd_keywords_regen(
         for c in &changed {
             println!(
                 "  [{}] {} ({} -> {} keywords, {} scope)",
-                c["id"], c["title"], c["old_count"], c["new_count"], c["scope"]
+                c.id, c.title, c.old_count, c.new_count, c.scope
             );
         }
         if skipped_shared > 0 {

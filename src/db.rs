@@ -903,16 +903,24 @@ pub fn replace_keywords(
     entry_id: i64,
     kws: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Dedup after lowercasing — the keywords table has no unique constraint,
+    // so case-variants in the input would otherwise become duplicate rows.
+    let mut seen = std::collections::HashSet::new();
+    let unique_kws: Vec<String> = kws
+        .iter()
+        .map(|k| k.to_lowercase())
+        .filter(|k| seen.insert(k.clone()))
+        .collect();
     conn.execute_batch("SAVEPOINT replace_keywords")?;
     match (|| -> Result<(), Box<dyn std::error::Error>> {
         conn.execute(
             "DELETE FROM keywords WHERE entry_id = ?1",
             params![entry_id],
         )?;
-        for kw in kws {
+        for kw in &unique_kws {
             conn.execute(
                 "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
-                params![entry_id, kw.to_lowercase()],
+                params![entry_id, kw],
             )?;
         }
         Ok(())
@@ -1374,6 +1382,30 @@ mod tests {
         assert_eq!(entry.category, "arch");
         assert_eq!(entry.source, "local");
         assert_eq!(entry.status, "active");
+    }
+
+    #[test]
+    fn test_replace_keywords_dedupes_case_variants() {
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(
+            &conn,
+            "T",
+            "C",
+            &["old".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        replace_keywords(
+            &conn,
+            id,
+            &["Alpha".to_string(), "alpha".to_string(), "beta".to_string()],
+        )
+        .unwrap();
+        let retrieved = get_keywords(&conn, id).unwrap();
+        assert_eq!(retrieved, vec!["alpha".to_string(), "beta".to_string()]);
     }
 
     #[test]

@@ -239,7 +239,7 @@ enum Commands {
         #[arg(long, requires = "regen")]
         dry_run: bool,
         /// With --regen: scope to regenerate ("project", "user", or "all")
-        #[arg(long, default_value = "project")]
+        #[arg(long, default_value = "project", requires = "regen")]
         scope: String,
         /// Output as JSON
         #[arg(long)]
