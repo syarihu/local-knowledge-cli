@@ -17,7 +17,7 @@ When the user signals continuation ("last time", "we looked into this", "where d
 
 ### Save AFTER discovering
 After investigating unfamiliar code, save non-trivial, reusable findings (skip mechanical tasks).
-- Use stable identifiers (function/struct names), not line numbers. Include the "why". Lowercase hyphenated keywords. **Never store secrets.**
+- Use stable identifiers (function/struct names), not line numbers. Include the "why". **Always pass 5–10 curated keywords** (lowercase hyphenated; key components, concepts, proper nouns — English + Japanese where useful) instead of relying on auto-extraction. **Never store secrets.**
 - If a duplicate/similar entry is returned, update it instead of adding (`--force` / `force: true` only when truly new).
 - **Design decisions** → `category: decisions`, ADR format, `status: proposed` → `accepted`. Details: `/lk-knowledge-add-db`.
 - **Session/conversation context** to carry over → **save it proactively, without asking first**, as `category: context` + keyword `conversation-log` when a decision/conclusion is reached, a non-obvious discovery is made, or the conversation has grown long. Briefly note what was saved (id/uid). Manual entry point: `/lk-knowledge-save-context`.

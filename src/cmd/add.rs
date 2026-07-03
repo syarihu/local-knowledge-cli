@@ -86,6 +86,9 @@ pub fn cmd_add(
         }
     }
 
+    // Manually specified keywords are authoritative; auto-extraction (frequency-
+    // ranked, capped) is only the fallback when none are provided. Merging auto
+    // keywords into a curated set would drown it in noise.
     let mut kws: Vec<String> = if let Some(ks) = keywords_str {
         ks.split(',')
             .map(|s| s.trim().to_string())
@@ -94,16 +97,12 @@ pub fn cmd_add(
     } else {
         Vec::new()
     };
-
-    // Auto-extract additional keywords
-    let auto_kws = keywords::extract_keywords(title, content);
-    for kw in auto_kws {
-        let lower = kw.to_lowercase();
-        if !kws.iter().any(|k| k.to_lowercase() == lower) {
-            kws.push(kw);
-        }
+    if kws.is_empty() {
+        kws = keywords::extract_keywords(title, content);
     }
     kws.sort_by_key(|a| a.to_lowercase());
+    let mut seen = std::collections::HashSet::new();
+    kws.retain(|k| seen.insert(k.to_lowercase()));
 
     // Use BEGIN IMMEDIATE to acquire a write lock before duplicate check,
     // preventing race conditions when multiple processes call `lk add` concurrently.

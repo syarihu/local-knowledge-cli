@@ -1,5 +1,6 @@
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
 const STOP_WORDS: &[&str] = &[
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
@@ -13,59 +14,97 @@ const STOP_WORDS: &[&str] = &[
     "true", "false", "null", "none",
 ];
 
-/// Extract keywords from title and content.
-/// Only extracts ASCII words (Japanese keywords should be specified manually).
+/// Maximum number of auto-extracted keywords per entry. Full-text search already
+/// covers the entire title/content, so keywords only need to be the terms that best
+/// represent the entry — an uncapped dump of every word just adds noise to keyword
+/// search and duplicate detection.
+pub const MAX_AUTO_KEYWORDS: usize = 15;
+
+/// A term occurring in the title counts this many times a content occurrence.
+const TITLE_WEIGHT: u32 = 5;
+
+/// Extra multiplier for tokens that come from file paths — path segments are
+/// high-signal identifiers (module/file names) worth keeping over prose words.
+const PATH_WEIGHT: u32 = 3;
+
+/// Extract keywords from title and content, ranked by weighted frequency and
+/// capped at `MAX_AUTO_KEYWORDS`. Title occurrences and file-path segments are
+/// weighted higher than plain content words.
+/// Only ASCII words and katakana are extracted (other Japanese keywords should
+/// be specified manually).
 pub fn extract_keywords(title: &str, content: &str) -> Vec<String> {
-    let text = format!("{title} {content}");
-    let mut keywords = HashSet::new();
+    let mut scores: HashMap<String, u32> = HashMap::new();
+    score_text(title, TITLE_WEIGHT, &mut scores);
+    score_text(content, 1, &mut scores);
 
-    // Extract file path keywords
-    extract_file_path_keywords(&text, &mut keywords);
+    let mut ranked: Vec<(String, u32)> = scores.into_iter().collect();
+    // Highest score first; alphabetical tie-break keeps output deterministic.
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(MAX_AUTO_KEYWORDS);
 
-    // Extract ASCII words
-    let word_re = Regex::new(r"[A-Za-z_][A-Za-z0-9_]*").unwrap();
-    for mat in word_re.find_iter(&text) {
-        let word = mat.as_str();
-        // CamelCase split
-        for part in split_camel_case(word) {
-            // snake_case split
-            for sub in part.split('_') {
-                let lower = sub.to_lowercase();
-                if lower.len() > 3 && !STOP_WORDS.contains(&lower.as_str()) {
-                    keywords.insert(lower);
-                }
-            }
-        }
-    }
-
-    // Extract katakana words (4+ chars)
-    let katakana_re = Regex::new(r"[\u30A0-\u30FF]{4,}").unwrap();
-    for mat in katakana_re.find_iter(&text) {
-        keywords.insert(mat.as_str().to_string());
-    }
-
-    let mut result: Vec<String> = keywords.into_iter().collect();
+    let mut result: Vec<String> = ranked.into_iter().map(|(kw, _)| kw).collect();
     result.sort();
     result
 }
 
-fn split_camel_case(word: &str) -> Vec<String> {
-    let re = Regex::new(r"([a-z])([A-Z])").unwrap();
-    let spaced = re.replace_all(word, "$1 $2");
-    spaced.split_whitespace().map(|s| s.to_string()).collect()
+static PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\w./\\-]+\.[\w]+").unwrap());
+static WORD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]*").unwrap());
+static KATAKANA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u30A0-\u30FF]{4,}").unwrap());
+static CAMEL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([a-z])([A-Z])").unwrap());
+
+fn score_text(text: &str, weight: u32, scores: &mut HashMap<String, u32>) {
+    // File path segments. Path ranges are masked out of the word scan below so
+    // path-derived tokens are scored exactly once, at PATH_WEIGHT.
+    let mut masked = text.as_bytes().to_vec();
+    for mat in PATH_RE.find_iter(text) {
+        for part in mat.as_str().split(&['/', '\\', '.'][..]) {
+            score_identifier(part, weight * PATH_WEIGHT, scores);
+        }
+        masked[mat.range()].fill(b' ');
+    }
+    // Filling whole match ranges with ASCII spaces keeps the bytes valid UTF-8.
+    let masked = String::from_utf8(masked).expect("space-masking preserves UTF-8");
+
+    // ASCII words (outside file paths)
+    for mat in WORD_RE.find_iter(&masked) {
+        score_identifier(mat.as_str(), weight, scores);
+    }
+
+    // Katakana words (4+ chars; the regex enforces the length)
+    for mat in KATAKANA_RE.find_iter(text) {
+        *scores.entry(mat.as_str().to_string()).or_insert(0) += weight;
+    }
 }
 
-fn extract_file_path_keywords(text: &str, keywords: &mut HashSet<String>) {
-    let path_re = Regex::new(r"[\w./\\-]+\.[\w]+").unwrap();
-    for mat in path_re.find_iter(text) {
-        let path = mat.as_str();
-        for part in path.split(&['/', '\\', '.'][..]) {
-            let lower = part.to_lowercase();
-            if lower.len() > 3 && !STOP_WORDS.contains(&lower.as_str()) {
-                keywords.insert(lower);
+/// Score an identifier-like token: its CamelCase / snake_case parts, plus the
+/// whole compound identifier (e.g. "sessionmanager") when it splits — compound
+/// names are often the most precise search handle.
+fn score_identifier(word: &str, weight: u32, scores: &mut HashMap<String, u32>) {
+    let mut parts = Vec::new();
+    for camel_part in split_camel_case(word) {
+        for sub in camel_part.split('_') {
+            if !sub.is_empty() {
+                parts.push(sub.to_lowercase());
             }
         }
     }
+    for part in &parts {
+        add_score(scores, part, weight);
+    }
+    if parts.len() > 1 {
+        add_score(scores, &word.to_lowercase(), weight);
+    }
+}
+
+fn add_score(scores: &mut HashMap<String, u32>, word: &str, weight: u32) {
+    if word.len() > 3 && !STOP_WORDS.contains(&word) {
+        *scores.entry(word.to_string()).or_insert(0) += weight;
+    }
+}
+
+fn split_camel_case(word: &str) -> Vec<String> {
+    let spaced = CAMEL_RE.replace_all(word, "$1 $2");
+    spaced.split_whitespace().map(|s| s.to_string()).collect()
 }
 
 #[cfg(test)]
@@ -77,6 +116,8 @@ mod tests {
         let kws = extract_keywords("SessionManager", "");
         assert!(kws.contains(&"session".to_string()));
         assert!(kws.contains(&"manager".to_string()));
+        // The whole compound identifier is kept as well
+        assert!(kws.contains(&"sessionmanager".to_string()));
     }
 
     #[test]
@@ -132,5 +173,46 @@ mod tests {
             v
         };
         assert_eq!(kws, sorted);
+    }
+
+    #[test]
+    fn test_capped_at_max() {
+        // 30 distinct candidate words — output must be capped
+        let content: String = (0..30)
+            .map(|i| format!("uniqueword{i:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let kws = extract_keywords("", &content);
+        assert_eq!(kws.len(), MAX_AUTO_KEYWORDS);
+    }
+
+    #[test]
+    fn test_title_words_survive_cap() {
+        // Title words are weighted higher, so they must survive even when the
+        // content has more candidates than the cap.
+        let content: String = (0..30)
+            .map(|i| format!("fillerterm{i:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let kws = extract_keywords("PaymentGateway retry policy", &content);
+        assert!(kws.contains(&"payment".to_string()));
+        assert!(kws.contains(&"gateway".to_string()));
+        assert!(kws.contains(&"paymentgateway".to_string()));
+        assert!(kws.contains(&"retry".to_string()));
+        assert!(kws.contains(&"policy".to_string()));
+        assert_eq!(kws.len(), MAX_AUTO_KEYWORDS);
+    }
+
+    #[test]
+    fn test_frequent_words_outrank_singletons() {
+        // A word repeated in the content should survive the cap over words that
+        // appear only once.
+        let mut content: String = (0..30)
+            .map(|i| format!("noiseterm{i:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        content.push_str(" webhook webhook webhook");
+        let kws = extract_keywords("", &content);
+        assert!(kws.contains(&"webhook".to_string()));
     }
 }
