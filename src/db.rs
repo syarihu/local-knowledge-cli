@@ -930,7 +930,10 @@ pub fn replace_keywords(
             Ok(())
         }
         Err(e) => {
+            // ROLLBACK TO leaves the savepoint active; release it so repeated
+            // errors don't accumulate nested savepoints on the connection.
             conn.execute_batch("ROLLBACK TO replace_keywords").ok();
+            conn.execute_batch("RELEASE replace_keywords").ok();
             Err(e)
         }
     }
