@@ -271,7 +271,7 @@ lk supersede 42 55  # marks #42 as superseded, links both entries bidirectionall
 
 #### UIDs for portable links
 
-Each entry has a unique 8-character hex UID. The `supersede` command uses UIDs internally so that supersede links remain valid when sharing `.knowledge/` markdown files across team members (whose local DB IDs may differ).
+Each entry has a unique 12-character hex UID. The `supersede` command uses UIDs internally so that supersede links remain valid when sharing `.knowledge/` markdown files across team members (whose local DB IDs may differ).
 
 ```bash
 # Write UIDs back to markdown files
