@@ -1,5 +1,7 @@
 # lk - Local Knowledge CLI
 
+<img alt="local-knowledge-cli-logo" src="docs/images/local-knowledge-cli-logo.png" />
+
 A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Store, search, and share project knowledge using a local SQLite database and markdown files.
 
 ## Features
