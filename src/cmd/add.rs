@@ -1,7 +1,7 @@
 use crate::db;
 use crate::keywords;
 use crate::similarity::Tier;
-use crate::util::{open_db_with_migrate, truncate_str};
+use crate::util::open_db_with_migrate;
 
 /// User-scope ids collide with project ids, so user entries are referenced by
 /// their globally unique (and copy/pasteable) uid instead.
@@ -12,9 +12,9 @@ fn display_id(entry: &db::Entry, scope: super::Scope) -> String {
     }
 }
 
-/// Render similar entries in the shape shared by the block and the warn path, and
-/// by the MCP server. Agents fall back to `lk add --json` when MCP is not wired
-/// up, so the two surfaces must describe a hit identically.
+/// Render similar entries for both the block and the warn path. The per-entry
+/// shape lives in [`crate::util::similar_entry_json`] so the MCP server reports
+/// hits identically.
 fn related_json(
     conn: &rusqlite::Connection,
     similar: &[db::SimilarEntry],
@@ -22,19 +22,7 @@ fn related_json(
 ) -> Vec<serde_json::Value> {
     similar
         .iter()
-        .map(|s| {
-            serde_json::json!({
-                "id": s.entry.id,
-                "uid": s.entry.uid,
-                "scope": scope.label(),
-                "title": s.entry.title,
-                "keywords": db::get_keywords(conn, s.entry.id).unwrap_or_default(),
-                "snippet": truncate_str(&s.entry.content, 300),
-                "match_reason": s.reason.as_str(),
-                "title_similarity": (s.title_sim * 100.0).round() / 100.0,
-                "keyword_similarity": (s.kw_sim * 100.0).round() / 100.0,
-            })
-        })
+        .map(|s| crate::util::similar_entry_json(conn, s, scope.label()))
         .collect()
 }
 

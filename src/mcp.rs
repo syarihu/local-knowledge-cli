@@ -360,7 +360,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
 fn tool_def_add(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "add_knowledge",
-        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Duplicate handling: an entry whose title matches an existing one is rejected (`added: false` with `similar_entries`) — update that entry instead, or pass force=true to add it anyway. Otherwise the add succeeds (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call update_knowledge on those unless one genuinely covers the same topic.",
+        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Duplicate handling: an entry whose title matches an existing one — or is all but identical to it — is rejected (`added: false` with `similar_entries`); update that entry instead, or pass force=true to add it anyway. Nothing else is rejected: the add succeeds (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call update_knowledge on those unless one genuinely covers the same topic.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -389,7 +389,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 },
                 "force": {
                     "type": "boolean",
-                    "description": "Add even if an entry with the same title already exists (default: false). Only same-title collisions are ever rejected, so this is rarely needed — do not set it pre-emptively.",
+                    "description": "Add even if an entry with the same (or an all-but-identical) title already exists (default: false). Nothing else is ever rejected, so this is rarely needed — do not set it pre-emptively.",
                     "default": false
                 },
                 "scope": {
@@ -951,25 +951,20 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 db::find_similar_entries(&conn, title, &keywords, category)
                     .map_err(|e| format!("duplicate check error: {e}"))?
             };
+            // Shared with `lk add --json` so a hit looks identical on both surfaces.
             let describe = |s: &db::SimilarEntry| -> Value {
-                json!({
-                    "id": s.entry.id,
-                    "uid": s.entry.uid,
-                    "scope": effective_scope,
-                    "title": s.entry.title,
-                    "match_reason": s.reason.as_str(),
-                    "title_similarity": (s.title_sim * 100.0).round() / 100.0,
-                    "keyword_similarity": (s.kw_sim * 100.0).round() / 100.0,
-                })
+                util::similar_entry_json(&conn, s, effective_scope)
             };
 
             if similar.iter().any(|s| s.tier == Tier::Block) {
                 let dupes: Vec<Value> = similar.iter().map(describe).collect();
                 let mut out = json!({
                     "added": false,
-                    "reason": "An entry with the same title already exists. Update it with \
-                               update_knowledge if it covers the same topic, or pass force=true \
-                               to add a second entry under that title.",
+                    "reason": "An entry with the same title — or one all but identical to it — \
+                               already exists. Update it with update_knowledge if it covers the \
+                               same topic, or pass force=true to add this one anyway. Check \
+                               `match_reason`: `same-title` is an exact match after \
+                               normalization, `similar-title` differs only marginally.",
                     "scope": effective_scope,
                     "similar_entries": dupes,
                 });

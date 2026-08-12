@@ -362,6 +362,39 @@ pub fn truncate_str(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Render one duplicate-detection hit as JSON.
+///
+/// The single definition of that shape. Both `lk add --json` and the MCP
+/// `add_knowledge` tool report hits — under `similar_entries` when the add was
+/// refused, `possibly_related` when it succeeded — and agents fall back to the
+/// CLI when MCP is not wired up, so the two must agree field for field. They
+/// were previously built from two separate JSON literals and had already drifted
+/// apart (the MCP side omitted `keywords` and `snippet`); sharing the builder is
+/// what keeps them from drifting again.
+pub fn similar_entry_json(
+    conn: &rusqlite::Connection,
+    s: &db::SimilarEntry,
+    scope_label: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": s.entry.id,
+        "uid": s.entry.uid,
+        "scope": scope_label,
+        "title": s.entry.title,
+        "keywords": db::get_keywords(conn, s.entry.id).unwrap_or_default(),
+        "snippet": truncate_str(&s.entry.content, 300),
+        "match_reason": s.reason.as_str(),
+        "title_similarity": round2(s.title_sim),
+        "keyword_similarity": round2(s.kw_sim),
+    })
+}
+
+/// Two decimal places — the scores are advisory, and full float noise in the
+/// output only invites agents to treat them as precise.
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
 pub fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)

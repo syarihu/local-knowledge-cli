@@ -26,9 +26,32 @@
 
 use std::collections::{HashMap, HashSet};
 
-/// Normalized title similarity at or above this means "the same title, modulo
-/// formatting" and blocks the add. Deliberately near-identical: a block is the
-/// only outcome the caller cannot recover from without `--force`.
+/// Title similarity at or above this blocks the add even when the normalized
+/// titles are not exactly equal.
+///
+/// Set this close to 1.0 on purpose: a block is the only outcome the caller
+/// cannot recover from without `--force`.
+///
+/// A single character edit costs roughly three trigrams, so the band above 0.90
+/// widens with title length — a long title may differ by one character, a short
+/// one has to be all but exactly equal. Measured:
+///
+/// | Difference | Score | |
+/// | --- | --- | --- |
+/// | trailing punctuation only | 1.00 | block (exact after `norm`) |
+/// | one character appended to a 29-char title | 0.96 | block |
+/// | one-character typo in a 60-char title | 0.92 | block |
+/// | one character appended to a 10-char title | 0.88 | warn |
+/// | one-character typo in a 33-char title | 0.81 | warn |
+/// | words reordered | 0.78 | warn |
+/// | a real qualifier added ("… (follow-up)") | 0.67 | warn |
+///
+/// Meaningful edits stay below the line and only warn, which is the point.
+///
+/// Callers describing a block must therefore say "the same *or an all but
+/// identical* title", not "the same title". [`reason`] keeps the two
+/// distinguishable: [`Reason::SameTitle`] for exact equality after
+/// normalization, [`Reason::SimilarTitle`] for this band.
 pub const TITLE_BLOCK: f64 = 0.90;
 
 /// Title similarity at or above this is reported as possibly related.
@@ -456,5 +479,48 @@ mod tests {
     fn reason_credits_the_title_whenever_the_title_blocks() {
         assert_eq!(classify(0.92, 1.0, false, ""), Tier::Block);
         assert_eq!(reason(0.92, 1.0, false), Reason::SimilarTitle);
+    }
+
+    /// Pins the block/warn boundary to concrete title pairs, so the table in
+    /// `TITLE_BLOCK`'s docs cannot drift away from what the code does. A single
+    /// character edit costs ~3 trigrams, so tolerance grows with title length:
+    /// only near-exact repeats are refused, and every meaningful edit warns.
+    #[test]
+    fn title_block_band_holds_only_all_but_identical_titles() {
+        let blocks = [
+            ("Release Workflow", "Release Workflow."),
+            (
+                "Duplicate detection threshold",
+                "Duplicate detection thresholds",
+            ),
+            (
+                "ADR: user-scope markdown export and sync for dotfiles workflow",
+                "ADR: user-scope markdown export and sync for dotfiles workflaw",
+            ),
+        ];
+        for (a, b) in blocks {
+            let s = title_sim(a, b);
+            assert!(
+                s >= TITLE_BLOCK,
+                "{a:?} vs {b:?} scored {s:.3}, expected block"
+            );
+        }
+
+        let warns = [
+            ("OAuth Flow", "OAuth Flows"),
+            (
+                "ADR: user-scope markdown export/sync",
+                "ADR: user-scope markdown export/sinc",
+            ),
+            ("Export Workflow Sync", "Sync Export Workflow"),
+            ("export group name bug", "export group name bug (follow-up)"),
+        ];
+        for (a, b) in warns {
+            let s = title_sim(a, b);
+            assert!(
+                (TITLE_WARN..TITLE_BLOCK).contains(&s),
+                "{a:?} vs {b:?} scored {s:.3}, expected warn"
+            );
+        }
     }
 }

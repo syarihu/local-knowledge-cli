@@ -110,7 +110,7 @@ Commands:
 - `--limit <n>` - Max results, default 5 (for `search`)
 - `--since <YYYY-MM-DD>` - Only return entries updated since this date (for `search`)
 - `--full` - Include full content in JSON output, eliminating the need for `lk get` (for `search`)
-- `--force` - Add even if an entry with the same title exists (for `add`). Rarely needed — only same-title collisions are refused
+- `--force` - Add even if an entry with the same (or an all-but-identical) title exists (for `add`). Rarely needed — nothing else is refused
 - `--allow-secrets` - Allow content that contains potential secrets (for `add`, `export`)
 - `--scope <scope>` - Knowledge store to use. `add`: `auto` (default — project if initialized, else user), `project`, or `user`. Targets (`get`/`edit`/`delete`/`supersede`): `project` or `user` (omit to auto-resolve). Reads (`search`/`list`/`stats`): `project`, `user`, or `all` (default, merged)
 
@@ -136,7 +136,7 @@ lk keywords --regen --all       # regenerate every local entry
 
 | Outcome | When | What happens |
 | --- | --- | --- |
-| **Refused** | The title matches an existing one (ignoring case, spacing, punctuation and full-width forms) | Nothing is added. The colliding entries come back as `similar_entries` with `added: false`. Update that entry instead, or re-run with `--force`. |
+| **Refused** | The title matches an existing one — ignoring case, spacing, punctuation and full-width forms — or is all but identical to it | Nothing is added. The colliding entries come back as `similar_entries` with `added: false`, each carrying a `match_reason` (`same-title` for an exact match after normalization, `similar-title` for a marginal difference). Update that entry instead, or re-run with `--force`. |
 | **Added, with a note** | The topic looks close but the title differs | **The entry is saved.** Related entries are listed under `possibly_related` purely for information. |
 
 Anything below both thresholds is added silently.
