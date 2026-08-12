@@ -5,6 +5,7 @@ mod keywords;
 mod markdown;
 mod mcp;
 mod secrets;
+mod similarity;
 mod util;
 
 use clap::{Parser, Subcommand};

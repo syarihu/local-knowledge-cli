@@ -1,6 +1,42 @@
 use crate::db;
 use crate::keywords;
+use crate::similarity::Tier;
 use crate::util::{open_db_with_migrate, truncate_str};
+
+/// User-scope ids collide with project ids, so user entries are referenced by
+/// their globally unique (and copy/pasteable) uid instead.
+fn display_id(entry: &db::Entry, scope: super::Scope) -> String {
+    match scope {
+        super::Scope::User => entry.uid.clone(),
+        super::Scope::Project => entry.id.to_string(),
+    }
+}
+
+/// Render similar entries in the shape shared by the block and the warn path, and
+/// by the MCP server. Agents fall back to `lk add --json` when MCP is not wired
+/// up, so the two surfaces must describe a hit identically.
+fn related_json(
+    conn: &rusqlite::Connection,
+    similar: &[db::SimilarEntry],
+    scope: super::Scope,
+) -> Vec<serde_json::Value> {
+    similar
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.entry.id,
+                "uid": s.entry.uid,
+                "scope": scope.label(),
+                "title": s.entry.title,
+                "keywords": db::get_keywords(conn, s.entry.id).unwrap_or_default(),
+                "snippet": truncate_str(&s.entry.content, 300),
+                "match_reason": s.reason.as_str(),
+                "title_similarity": (s.title_sim * 100.0).round() / 100.0,
+                "keyword_similarity": (s.kw_sim * 100.0).round() / 100.0,
+            })
+        })
+        .collect()
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_add(
@@ -108,72 +144,61 @@ pub fn cmd_add(
     // preventing race conditions when multiple processes call `lk add` concurrently.
     conn.execute_batch("BEGIN IMMEDIATE")?;
 
-    let result = (|| -> Result<i64, Box<dyn std::error::Error>> {
-        // Duplicate check (skip with --force)
-        if !force {
-            let similar = db::find_similar_entries(&conn, title, &kws)?;
-            if !similar.is_empty() {
-                let scope_label = scope.label();
-                if json_output {
-                    let similar_json: Vec<serde_json::Value> = similar
-                        .iter()
-                        .map(|e| {
-                            let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
-                            let snippet = truncate_str(&e.content, 300);
-                            serde_json::json!({
-                                "id": e.id,
-                                "uid": e.uid,
-                                "scope": scope_label,
-                                "title": e.title,
-                                "keywords": ekws,
-                                "snippet": snippet,
-                            })
-                        })
-                        .collect();
-                    let mut out = serde_json::json!({
-                        "added": false,
-                        "scope": scope_label,
-                        "similar_entries": similar_json,
-                    });
-                    if fell_back {
-                        out["fell_back_to_user"] = serde_json::json!(true);
-                    }
-                    println!("{}", serde_json::to_string_pretty(&out)?);
-                } else {
-                    println!("Similar entries found (use --force to add anyway):");
-                    for e in &similar {
-                        let ekws = db::get_keywords(&conn, e.id).unwrap_or_default();
-                        // Show the uid (globally unique, copy/pasteable) for user scope.
-                        let id_disp = if scope == super::Scope::User {
-                            e.uid.clone()
-                        } else {
-                            e.id.to_string()
-                        };
-                        println!(
-                            "  [{}] {} (keywords: {})",
-                            id_disp,
-                            e.title,
-                            ekws.join(", ")
-                        );
-                    }
+    let result = (|| -> Result<(i64, Vec<db::SimilarEntry>), Box<dyn std::error::Error>> {
+        // Duplicate check (skip with --force). Only a Block-tier hit refuses the
+        // add — a near-identical title. Weaker hits are advisory: they are
+        // reported *after* the entry is committed, because refusing on them is
+        // what made duplicate detection reject almost every add.
+        let similar = if force {
+            Vec::new()
+        } else {
+            db::find_similar_entries(&conn, title, &kws, category)?
+        };
+
+        if similar.iter().any(|s| s.tier == Tier::Block) {
+            let entries_json = related_json(&conn, &similar, scope);
+            if json_output {
+                let mut out = serde_json::json!({
+                    "added": false,
+                    "reason": "duplicate",
+                    "scope": scope.label(),
+                    "similar_entries": entries_json,
+                });
+                if fell_back {
+                    out["fell_back_to_user"] = serde_json::json!(true);
                 }
-                return Err("duplicate_found".into());
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("Similar entries found (use --force to add anyway):");
+                for s in &similar {
+                    println!(
+                        "  [{}] {} (keywords: {})",
+                        display_id(&s.entry, scope),
+                        s.entry.title,
+                        db::get_keywords(&conn, s.entry.id)
+                            .unwrap_or_default()
+                            .join(", ")
+                    );
+                }
             }
+            return Err("duplicate_found".into());
         }
 
-        db::add_entry_full(
+        let id = db::add_entry_full(
             &conn, title, content, &kws, category, "local", None, None, None, status, None, None,
-        )
+        )?;
+        Ok((id, similar))
     })();
 
     match result {
-        Ok(entry_id) => {
+        Ok((entry_id, similar)) => {
             conn.execute_batch("COMMIT")?;
             let uid = db::get_entry(&conn, entry_id)
                 .ok()
                 .flatten()
                 .map(|e| e.uid)
                 .unwrap_or_default();
+            let related = related_json(&conn, &similar, scope);
             print_success(
                 entry_id,
                 &uid,
@@ -183,7 +208,24 @@ pub fn cmd_add(
                 scope,
                 fell_back,
                 json_output,
+                &related,
             );
+            if !json_output && !similar.is_empty() {
+                println!(
+                    "\nNote: possibly related entries (this entry WAS added; update one of them \
+                     instead only if it is genuinely the same topic):"
+                );
+                for s in &similar {
+                    println!(
+                        "  [{}] {} ({}, title {:.2}, keywords {:.2})",
+                        display_id(&s.entry, scope),
+                        s.entry.title,
+                        s.reason.as_str(),
+                        s.title_sim,
+                        s.kw_sim
+                    );
+                }
+            }
             Ok(())
         }
         Err(e) if e.to_string() == "duplicate_found" => {
@@ -207,6 +249,7 @@ fn print_success(
     scope: super::Scope,
     fell_back: bool,
     json_output: bool,
+    possibly_related: &[serde_json::Value],
 ) {
     if json_output {
         let mut out = serde_json::json!({
@@ -220,6 +263,17 @@ fn print_success(
         });
         if fell_back {
             out["fell_back_to_user"] = serde_json::json!(true);
+        }
+        // Deliberately a different key from the block path's `similar_entries`:
+        // the presence of that key means "not added", and reusing it here would
+        // invite exactly the wrong conclusion.
+        if !possibly_related.is_empty() {
+            out["possibly_related"] = serde_json::json!(possibly_related);
+            out["possibly_related_note"] = serde_json::json!(
+                "The entry WAS added successfully. These existing entries look related and are \
+                 listed for information only. Update one of them ONLY if it covers genuinely the \
+                 same topic; otherwise ignore this list."
+            );
         }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {

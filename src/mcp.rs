@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::cmd::maybe_auto_sync_for;
 use crate::config::Config;
 use crate::db;
+use crate::similarity::Tier;
 use crate::util;
 
 // ── JSON-RPC 2.0 types ──────────────────────────────────────────────
@@ -359,7 +360,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
 fn tool_def_add(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "add_knowledge",
-        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Automatically checks for duplicates before adding — if similar entries are returned, prefer updating the existing entry (update_knowledge) over forcing a new one.",
+        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Duplicate handling: an entry whose title matches an existing one is rejected (`added: false` with `similar_entries`) — update that entry instead, or pass force=true to add it anyway. Otherwise the add succeeds (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call update_knowledge on those unless one genuinely covers the same topic.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -388,7 +389,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 },
                 "force": {
                     "type": "boolean",
-                    "description": "Skip duplicate check and force add (default: false)",
+                    "description": "Add even if an entry with the same title already exists (default: false). Only same-title collisions are ever rejected, so this is rarely needed — do not set it pre-emptively.",
                     "default": false
                 },
                 "scope": {
@@ -941,30 +942,43 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 content
             };
 
-            // Duplicate check
-            if !force {
-                let similar = db::find_similar_entries(&conn, title, &keywords)
-                    .map_err(|e| format!("duplicate check error: {e}"))?;
-                if !similar.is_empty() {
-                    let dupes: Vec<Value> = similar
-                        .iter()
-                        .map(|e| {
-                            json!({"id": e.id, "uid": e.uid, "scope": effective_scope, "title": e.title})
-                        })
-                        .collect();
-                    let mut out = json!({
-                        "added": false,
-                        "reason": "Similar entries found. Use force=true to add anyway.",
-                        "scope": effective_scope,
-                        "similar_entries": dupes,
-                    });
-                    if fell_back {
-                        out["note"] = json!(
-                            "Project not initialized; checked the user scope. Run `lk init` for project scope."
-                        );
-                    }
-                    return Ok(decorate_result(out, &project_name));
+            // Duplicate check. Only a Block-tier hit (a near-identical title)
+            // refuses the add; weaker hits are reported alongside a successful add
+            // as `possibly_related` further down.
+            let similar = if force {
+                Vec::new()
+            } else {
+                db::find_similar_entries(&conn, title, &keywords, category)
+                    .map_err(|e| format!("duplicate check error: {e}"))?
+            };
+            let describe = |s: &db::SimilarEntry| -> Value {
+                json!({
+                    "id": s.entry.id,
+                    "uid": s.entry.uid,
+                    "scope": effective_scope,
+                    "title": s.entry.title,
+                    "match_reason": s.reason.as_str(),
+                    "title_similarity": (s.title_sim * 100.0).round() / 100.0,
+                    "keyword_similarity": (s.kw_sim * 100.0).round() / 100.0,
+                })
+            };
+
+            if similar.iter().any(|s| s.tier == Tier::Block) {
+                let dupes: Vec<Value> = similar.iter().map(describe).collect();
+                let mut out = json!({
+                    "added": false,
+                    "reason": "An entry with the same title already exists. Update it with \
+                               update_knowledge if it covers the same topic, or pass force=true \
+                               to add a second entry under that title.",
+                    "scope": effective_scope,
+                    "similar_entries": dupes,
+                });
+                if fell_back {
+                    out["note"] = json!(
+                        "Project not initialized; checked the user scope. Run `lk init` for project scope."
+                    );
                 }
+                return Ok(decorate_result(out, &project_name));
             }
 
             let id = db::add_entry_full(
@@ -1001,6 +1015,18 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             if fell_back {
                 out["note"] = json!(
                     "Project not initialized; saved to user scope (global). Run `lk init` for project scope."
+                );
+            }
+            // A different key from the block path's `similar_entries`, which means
+            // "not added". Stating the outcome explicitly stops an agent from
+            // reading a weak hit as a rejection and overwriting an unrelated entry.
+            if !similar.is_empty() {
+                out["possibly_related"] = json!(similar.iter().map(describe).collect::<Vec<_>>());
+                out["possibly_related_note"] = json!(
+                    "The entry WAS added successfully. These existing entries look related and \
+                     are listed for information only. Call update_knowledge on one of them ONLY \
+                     if it covers genuinely the same topic (in which case delete the new entry); \
+                     otherwise ignore this list."
                 );
             }
             Ok(decorate_result(out, &project_name))

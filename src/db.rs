@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::keywords;
+use crate::similarity;
 use crate::util::now_iso;
 
 const ENTRY_COLS: &str = "id, title, content, category, source, source_file, file_hash, status, uid, superseded_by, supersedes, created_at, updated_at";
@@ -1118,94 +1119,157 @@ pub fn get_stats(conn: &Connection) -> Result<DbStats, Box<dyn std::error::Error
     })
 }
 
+/// How many similar entries to report at most.
+const SIMILAR_LIMIT: usize = 3;
+
+/// A candidate duplicate, with the scores and verdict that selected it.
+pub struct SimilarEntry {
+    pub entry: Entry,
+    pub title_sim: f64,
+    pub kw_sim: f64,
+    pub tier: similarity::Tier,
+    pub reason: similarity::Reason,
+}
+
+/// Find entries similar enough to the incoming one to be worth reporting.
+///
+/// Returns at most [`SIMILAR_LIMIT`] hits, strongest first, each tagged with a
+/// [`similarity::Tier`]. Callers must branch on the tier: only
+/// [`similarity::Tier::Block`] means "refuse the add" — a `Warn` hit is advisory
+/// and the add should proceed. An empty result means no similarity at all.
+///
+/// # Why this does not use the FTS index
+///
+/// It used to `MATCH` the raw title against `entries_fts`, which was wrong three
+/// times over: the index is built with the `trigram` tokenizer over *both* title
+/// and content, so any title whose fragments appeared anywhere in another
+/// entry's body scored as a match; `rank` (bm25) over trigrams is not comparable
+/// across documents, so no portable threshold could be drawn from it; and the
+/// raw title was interpolated as an FTS query expression, so a title containing
+/// `"` or `:` raised a syntax error that was silently swallowed. Scoring titles
+/// directly in Rust removes all three, and leaves `search_entries`' use of the
+/// same index untouched.
+///
+/// Candidates are scanned as `(id, title, source)` only — never `content` — and
+/// full rows are loaded for the few survivors, so the cost is one small scan per
+/// add rather than one full-table read.
 pub fn find_similar_entries(
     conn: &Connection,
     title: &str,
     kws: &[String],
-) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
-    let mut results = Vec::new();
-    let mut seen_ids = std::collections::HashSet::new();
+    category: &str,
+) -> Result<Vec<SimilarEntry>, Box<dyn std::error::Error>> {
+    let mut scored = score_candidates(conn, title, kws, category)?;
+    scored.retain(|c| c.tier != similarity::Tier::None);
 
-    // 1. Title exact match (case-insensitive)
-    {
-        let sql =
-            format!("SELECT {ENTRY_COLS} FROM entries WHERE LOWER(title) = LOWER(?1) LIMIT 3");
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![title], row_to_entry)?;
-        for entry in rows.flatten() {
-            seen_ids.insert(entry.id);
-            results.push(entry);
+    // Blocking hits first so they can never be truncated away, then by the
+    // stronger of the two signals, then by id to keep the order deterministic.
+    scored.sort_by(|a, b| {
+        b.tier
+            .cmp(&a.tier)
+            .then(
+                b.title_sim
+                    .max(b.kw_sim)
+                    .partial_cmp(&a.title_sim.max(a.kw_sim))
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.id.cmp(&b.id))
+    });
+    scored.truncate(SIMILAR_LIMIT);
+
+    let mut results = Vec::with_capacity(scored.len());
+    for c in scored {
+        if let Some(entry) = get_entry(conn, c.id)? {
+            results.push(SimilarEntry {
+                entry,
+                title_sim: c.title_sim,
+                kw_sim: c.kw_sim,
+                tier: c.tier,
+                reason: c.reason,
+            });
         }
     }
-
-    if results.len() >= 3 {
-        results.truncate(3);
-        return Ok(results);
-    }
-
-    // 2. FTS MATCH on title
-    {
-        let fts_query = title.to_string();
-        let sql = format!(
-            "SELECT {ENTRY_COLS_E} \
-             FROM entries_fts fts JOIN entries e ON fts.rowid = e.id WHERE entries_fts MATCH ?1 ORDER BY rank LIMIT 3"
-        );
-        if let Ok(mut stmt) = conn.prepare(&sql)
-            && let Ok(rows) = stmt.query_map(params![fts_query], row_to_entry)
-        {
-            for row in rows {
-                if let Ok(entry) = row
-                    && !seen_ids.contains(&entry.id)
-                {
-                    seen_ids.insert(entry.id);
-                    results.push(entry);
-                }
-            }
-        }
-    }
-
-    if results.len() >= 3 {
-        results.truncate(3);
-        return Ok(results);
-    }
-
-    // 3. Keyword overlap
-    if !kws.is_empty() {
-        let remaining = 3 - results.len();
-        let placeholders: Vec<String> = kws
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect();
-        let sql = format!(
-            "SELECT DISTINCT {ENTRY_COLS_E} \
-             FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE k.keyword IN ({}) \
-             ORDER BY e.updated_at DESC LIMIT ?{}",
-            placeholders.join(", "),
-            kws.len() + 1
-        );
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = kws
-            .iter()
-            .map(|k| Box::new(k.to_lowercase()) as Box<dyn rusqlite::types::ToSql>)
-            .collect();
-        param_values.push(Box::new(remaining as i64));
-
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|b| b.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
-        for row in rows {
-            if let Ok(entry) = row
-                && !seen_ids.contains(&entry.id)
-            {
-                seen_ids.insert(entry.id);
-                results.push(entry);
-            }
-        }
-    }
-
-    results.truncate(3);
     Ok(results)
+}
+
+/// One scored candidate, before tier filtering. Kept separate from
+/// [`SimilarEntry`] so scoring never has to load entry bodies, and so the replay
+/// harness can see sub-threshold scores (how much headroom the thresholds have)
+/// without a second implementation of the scoring rules.
+struct ScoredCandidate {
+    id: i64,
+    title_sim: f64,
+    kw_sim: f64,
+    tier: similarity::Tier,
+    reason: similarity::Reason,
+}
+
+/// Score every entry in the base against the incoming one.
+fn score_candidates(
+    conn: &Connection,
+    title: &str,
+    kws: &[String],
+    category: &str,
+) -> Result<Vec<ScoredCandidate>, Box<dyn std::error::Error>> {
+    let n: usize =
+        conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get::<_, i64>(0))? as usize;
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Document frequency per keyword, grouped on LOWER so the keywords table's
+    // stored casing never matters.
+    let mut df: HashMap<String, usize> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT LOWER(keyword), COUNT(DISTINCT entry_id) FROM keywords GROUP BY LOWER(keyword)",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
+        })?;
+        for (kw, count) in rows.flatten() {
+            df.insert(kw, count);
+        }
+    }
+
+    let mut cand_kws: HashMap<i64, Vec<String>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT entry_id, LOWER(keyword) FROM keywords")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for (id, kw) in rows.flatten() {
+            cand_kws.entry(id).or_default().push(kw);
+        }
+    }
+
+    let normalized_new = similarity::norm(title);
+    let no_kws: Vec<String> = Vec::new();
+    let mut scored = Vec::new();
+    let mut stmt = conn.prepare("SELECT id, title, source FROM entries")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    for (id, cand_title, source) in rows.flatten() {
+        let title_sim = similarity::title_sim(title, &cand_title);
+        let exact = normalized_new == similarity::norm(&cand_title);
+        let mut kw_sim = similarity::kw_sim(kws, cand_kws.get(&id).unwrap_or(&no_kws), &df, n);
+        // Markdown-imported entries share one keyword set per source file, so
+        // their keyword agreement is structural rather than topical.
+        if source == "shared" {
+            kw_sim *= similarity::SHARED_KW_DAMPING;
+        }
+        scored.push(ScoredCandidate {
+            id,
+            title_sim,
+            kw_sim,
+            tier: similarity::classify(title_sim, kw_sim, exact, category),
+            reason: similarity::reason(title_sim, kw_sim, exact),
+        });
+    }
+    Ok(scored)
 }
 
 /// Sanitize a user query for FTS5 MATCH.
@@ -1862,6 +1926,28 @@ mod tests {
         assert!(!results.is_empty(), "should match multi-char Japanese");
     }
 
+    fn kws(ks: &[&str]) -> Vec<String> {
+        ks.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Add `count` filler entries so document frequencies are realistic: with a
+    /// handful of entries almost every keyword is "rare" and nothing is generic.
+    fn add_filler(conn: &Connection, count: usize) {
+        for i in 0..count {
+            add_entry(
+                conn,
+                &format!("Filler topic {i}"),
+                "filler body",
+                &kws(&["generic", &format!("filler_only_{i}")]),
+                "",
+                "local",
+                None,
+                None,
+            )
+            .unwrap();
+        }
+    }
+
     #[test]
     fn test_find_similar_entries() {
         let (conn, _tmp) = setup_test_db();
@@ -1869,7 +1955,7 @@ mod tests {
             &conn,
             "OAuth Flow",
             "OAuth details",
-            &["oauth".to_string()],
+            &kws(&["oauth"]),
             "",
             "local",
             None,
@@ -1877,8 +1963,167 @@ mod tests {
         )
         .unwrap();
 
-        let similar = find_similar_entries(&conn, "OAuth Flow", &["oauth".to_string()]).unwrap();
+        let similar = find_similar_entries(&conn, "OAuth Flow", &kws(&["oauth"]), "").unwrap();
         assert!(!similar.is_empty());
+        assert_eq!(similar[0].tier, similarity::Tier::Block);
+        assert_eq!(similar[0].reason, similarity::Reason::SameTitle);
+    }
+
+    /// The regression this whole change exists for: an entry on a brand-new topic
+    /// that happens to share only high-frequency keywords must not be reported at
+    /// all. Under the old "keyword IN (...)" rule this returned hits, and the add
+    /// was refused.
+    #[test]
+    fn test_find_similar_entries_ignores_generic_keyword_overlap() {
+        let (conn, _tmp) = setup_test_db();
+        add_filler(&conn, 20);
+
+        let similar = find_similar_entries(
+            &conn,
+            "Homebrew formula release automation",
+            &kws(&["generic", "homebrew", "formula", "tap", "bottle"]),
+            "",
+        )
+        .unwrap();
+
+        assert!(
+            similar.is_empty(),
+            "sharing only a near-universal keyword must not flag anything, got {}",
+            similar
+                .iter()
+                .map(|s| format!("{} ({:?}, k={:.2})", s.entry.title, s.tier, s.kw_sim))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
+
+    #[test]
+    fn test_find_similar_entries_blocks_formatting_only_title_differences() {
+        let (conn, _tmp) = setup_test_db();
+        add_filler(&conn, 20);
+        add_entry(
+            &conn,
+            "OAuth Flow",
+            "body",
+            &kws(&["oauth"]),
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        for variant in [
+            "oauth flow",
+            "OAuth  Flow",
+            "OAuth-Flow",
+            "ＯＡｕｔｈ　Ｆｌｏｗ",
+        ] {
+            let similar = find_similar_entries(&conn, variant, &kws(&["oauth"]), "").unwrap();
+            assert_eq!(
+                similar.first().map(|s| s.tier),
+                Some(similarity::Tier::Block),
+                "{variant:?} is the same title modulo formatting and must block"
+            );
+        }
+    }
+
+    /// `context` entries are append-only session logs: repeated titles and the
+    /// shared `conversation-log` tag are the convention, not a mistake.
+    #[test]
+    fn test_find_similar_entries_never_blocks_context_entries() {
+        let (conn, _tmp) = setup_test_db();
+        add_filler(&conn, 20);
+        add_entry(
+            &conn,
+            "作業ログ",
+            "body",
+            &kws(&["conversation-log", "dedupe"]),
+            "context",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let similar = find_similar_entries(
+            &conn,
+            "作業ログ",
+            &kws(&["conversation-log", "dedupe"]),
+            "context",
+        )
+        .unwrap();
+
+        assert!(
+            similar.iter().all(|s| s.tier != similarity::Tier::Block),
+            "an identical-title context entry must warn, never block"
+        );
+        assert_eq!(
+            similar.first().map(|s| s.tier),
+            Some(similarity::Tier::Warn)
+        );
+    }
+
+    /// Entries imported from one markdown file all carry that file's keyword set,
+    /// so identical keywords across unrelated `shared` entries prove nothing.
+    #[test]
+    fn test_find_similar_entries_damps_shared_source_keyword_overlap() {
+        let (conn, _tmp) = setup_test_db();
+        add_filler(&conn, 20);
+        let file_kws = kws(&["alpha", "beta", "gamma", "delta"]);
+        add_entry(
+            &conn,
+            "Embedded Commands への新コマンド追加方法",
+            "body",
+            &file_kws,
+            "exported",
+            "shared",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Same file-level keywords, entirely unrelated title.
+        let similar =
+            find_similar_entries(&conn, "Search Logging 機能", &file_kws, "exported").unwrap();
+
+        assert!(
+            similar.iter().all(|s| s.tier != similarity::Tier::Block),
+            "file-level keyword collision must never block"
+        );
+    }
+
+    /// The old implementation interpolated the raw title into an FTS `MATCH`
+    /// expression, so these titles raised a syntax error that was swallowed by an
+    /// `if let Ok(..)`, silently skipping a whole detection stage.
+    #[test]
+    fn test_find_similar_entries_handles_fts_metacharacters_in_title() {
+        let (conn, _tmp) = setup_test_db();
+        for title in [
+            r#"ADR: "user-scope" store"#,
+            "add: dedupe (NEAR/2) -* OR AND",
+            r#"quote " and colon : together"#,
+        ] {
+            add_entry(
+                &conn,
+                title,
+                "body",
+                &kws(&["adr", "scope"]),
+                "decisions",
+                "local",
+                None,
+                None,
+            )
+            .unwrap();
+
+            let similar =
+                find_similar_entries(&conn, title, &kws(&["adr", "scope"]), "decisions").unwrap();
+            assert_eq!(
+                similar.first().map(|s| s.tier),
+                Some(similarity::Tier::Block),
+                "{title:?} must still be recognized as the same title"
+            );
+        }
     }
 
     #[test]
@@ -2106,5 +2351,170 @@ mod tests {
         let results = search_entries(&conn, "auth-API", false, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty(), "hyphenated query should find entry");
         assert!(results[0].title.contains("Auth"));
+    }
+}
+
+/// Leave-one-out replay harness for calibrating duplicate detection.
+///
+/// Not a test of correctness — a measurement tool. It re-adds every entry of a
+/// real knowledge base against the other N-1 and reports what duplicate
+/// detection would have said, which is the only way to see the false-positive
+/// rate on real vocabulary. Ignored by default because it needs a populated DB:
+///
+/// ```text
+/// LK_REPLAY_DB=.knowledge/knowledge.db \
+///   cargo test --bin lk replay_leave_one_out -- --ignored --nocapture
+/// ```
+///
+/// The DB is copied to a temp file first and each entry is removed inside a
+/// savepoint that is always rolled back, so the source file is never written to.
+/// Without that removal every entry would match itself on the exact title.
+#[cfg(test)]
+mod replay {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires LK_REPLAY_DB pointing at a populated knowledge base"]
+    fn replay_leave_one_out() {
+        let Ok(src) = std::env::var("LK_REPLAY_DB") else {
+            panic!("set LK_REPLAY_DB to a knowledge.db path");
+        };
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::copy(&src, tmp.path()).unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+
+        let mut rows = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT id, title, category FROM entries ORDER BY id")
+                .unwrap();
+            let it = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .unwrap();
+            for row in it.flatten() {
+                rows.push(row);
+            }
+        }
+
+        let total = rows.len();
+        let mut blocked = 0usize;
+        let mut warned = 0usize;
+        let mut detail = Vec::new();
+
+        for (id, title, category) in &rows {
+            let kws = get_keywords(&conn, *id).unwrap_or_default();
+
+            conn.execute_batch("SAVEPOINT replay").unwrap();
+            conn.execute("DELETE FROM keywords WHERE entry_id = ?1", params![id])
+                .unwrap();
+            conn.execute("DELETE FROM entries WHERE id = ?1", params![id])
+                .unwrap();
+
+            let hits = find_similar_entries(&conn, title, &kws, category).unwrap();
+
+            conn.execute_batch("ROLLBACK TO replay; RELEASE replay")
+                .unwrap();
+
+            let worst = hits
+                .iter()
+                .map(|h| h.tier)
+                .max()
+                .unwrap_or(similarity::Tier::None);
+            match worst {
+                similarity::Tier::Block => blocked += 1,
+                similarity::Tier::Warn => warned += 1,
+                similarity::Tier::None => {}
+            }
+            if worst != similarity::Tier::None {
+                let names: Vec<String> = hits
+                    .iter()
+                    .map(|h| {
+                        format!(
+                            "#{} {:?} t={:.2} k={:.2} {}",
+                            h.entry.id,
+                            h.tier,
+                            h.title_sim,
+                            h.kw_sim,
+                            h.reason.as_str()
+                        )
+                    })
+                    .collect();
+                detail.push(format!(
+                    "  {worst:?} #{id} [{category}] {title}\n    -> {}",
+                    names.join("\n    -> ")
+                ));
+            }
+        }
+
+        let pct = |v: usize| 100.0 * v as f64 / total.max(1) as f64;
+        println!("\n=== leave-one-out replay ===");
+        println!("entries: {total}");
+        println!("BLOCK (add refused): {blocked}  ({:.0}%)", pct(blocked));
+        println!("WARN  (add succeeds): {warned}  ({:.0}%)", pct(warned));
+        println!(
+            "clean (no report):    {}  ({:.0}%)",
+            total - blocked - warned,
+            pct(total - blocked - warned)
+        );
+        println!();
+        for line in &detail {
+            println!("{line}");
+        }
+
+        // Threshold headroom: the best score each entry achieves against the rest,
+        // including sub-threshold ones. Shows whether the constants sit on a cliff
+        // or in a gap — a grid search over thresholds reads straight off these.
+        let mut best_title: Vec<f64> = Vec::new();
+        let mut best_kw: Vec<f64> = Vec::new();
+        for (id, title, category) in &rows {
+            let kws = get_keywords(&conn, *id).unwrap_or_default();
+            conn.execute_batch("SAVEPOINT hr").unwrap();
+            conn.execute("DELETE FROM keywords WHERE entry_id = ?1", params![id])
+                .unwrap();
+            conn.execute("DELETE FROM entries WHERE id = ?1", params![id])
+                .unwrap();
+            let scored = score_candidates(&conn, title, &kws, category).unwrap();
+            conn.execute_batch("ROLLBACK TO hr; RELEASE hr").unwrap();
+
+            best_title.push(scored.iter().map(|c| c.title_sim).fold(0.0, f64::max));
+            best_kw.push(scored.iter().map(|c| c.kw_sim).fold(0.0, f64::max));
+        }
+        best_title.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        best_kw.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+        let count_at = |v: &[f64], t: f64| v.iter().filter(|x| **x >= t).count();
+        println!("\n=== threshold headroom (best score per entry, descending) ===");
+        println!(
+            "title_sim: {}",
+            best_title
+                .iter()
+                .take(8)
+                .map(|v| format!("{v:.2}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        println!(
+            "kw_sim:    {}",
+            best_kw
+                .iter()
+                .take(8)
+                .map(|v| format!("{v:.2}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        println!("\nentries that would be flagged at each threshold:");
+        for t in [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9] {
+            println!(
+                "  {t:.1}  title_sim: {:>3}   kw_sim: {:>3}",
+                count_at(&best_title, t),
+                count_at(&best_kw, t)
+            );
+        }
     }
 }

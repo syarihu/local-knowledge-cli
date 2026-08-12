@@ -39,4 +39,4 @@ When the knowledge is a design decision (technology choice, architecture change,
 - Reference function/struct names instead of line numbers
 - Include **why** (design decisions, rationale) alongside **what** when possible
 - Always pass 5-10 curated keywords; include both English and Japanese terms if applicable (omitting keywords falls back to noisier frequency-based auto-extraction)
-- When adding knowledge that replaces an older approach, check `lk add` output for `similar_entries` and mark old entries as deprecated with `lk edit <id> --status deprecated --superseded-by <new_id>`
+- When adding knowledge that replaces an older approach, check `lk add` output for `similar_entries` (same title — the add was refused) or `possibly_related` (added anyway, listed for information) and mark genuinely superseded entries as deprecated with `lk edit <id> --status deprecated --superseded-by <new_id>`
