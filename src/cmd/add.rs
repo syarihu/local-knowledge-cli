@@ -144,13 +144,15 @@ pub fn cmd_add(
         };
 
         if similar.iter().any(|s| s.tier == Tier::Block) {
-            let entries_json = related_json(&conn, &similar, scope);
             if json_output {
+                // Built inside the branch: `related_json` reads keywords and
+                // snippets per hit, and the human-readable arm below needs only
+                // the keywords, which it reads itself.
                 let mut out = serde_json::json!({
                     "added": false,
                     "reason": "duplicate",
                     "scope": scope.label(),
-                    "similar_entries": entries_json,
+                    "similar_entries": related_json(&conn, &similar, scope),
                 });
                 if fell_back {
                     out["fell_back_to_user"] = serde_json::json!(true);
@@ -186,7 +188,13 @@ pub fn cmd_add(
                 .flatten()
                 .map(|e| e.uid)
                 .unwrap_or_default();
-            let related = related_json(&conn, &similar, scope);
+            // Only the JSON arm of `print_success` reads this, and building it
+            // costs a keywords query plus a snippet per hit.
+            let related = if json_output {
+                related_json(&conn, &similar, scope)
+            } else {
+                Vec::new()
+            };
             print_success(
                 entry_id,
                 &uid,
@@ -227,6 +235,9 @@ pub fn cmd_add(
     }
 }
 
+/// `possibly_related` is only read when `json_output` is set; callers may pass an
+/// empty slice otherwise rather than paying to build it. The human-readable
+/// listing of related entries is printed by the caller, which has the scores.
 #[allow(clippy::too_many_arguments)]
 fn print_success(
     entry_id: i64,
