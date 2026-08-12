@@ -312,7 +312,7 @@ fn test_add_with_status_reports_status_in_json() {
     assert_eq!(result["status"], "proposed");
 
     // Default status (no --status) reports "active". An unrelated title needs no
-    // --force: duplicate detection only refuses same-title adds.
+    // --force: nothing short of a same or all-but-identical title is refused.
     let output = lk_bin()
         .args([
             "add",
@@ -663,8 +663,10 @@ fn test_add_does_not_flag_unrelated_entries() {
     }
 }
 
-/// Only a same-title collision refuses the add, and it says so under
-/// `similar_entries` with `added: false`.
+/// A same-title collision refuses the add and says so under `similar_entries`
+/// with `added: false`. Covers the exact-match-after-normalization case only;
+/// the near-identical band is pinned by
+/// `similarity::tests::title_block_band_holds_only_all_but_identical_titles`.
 #[test]
 fn test_add_blocks_same_title() {
     let dir = setup_temp_project();
