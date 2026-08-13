@@ -15,13 +15,13 @@ fn display_id(entry: &db::Entry, scope: super::Scope) -> String {
 /// Render similar entries for both the block and the warn path. The per-entry
 /// shape lives in [`crate::util::similar_entry_json`] so the MCP server reports
 /// hits identically.
-fn related_json(
+fn related_json<'a>(
     conn: &rusqlite::Connection,
-    similar: &[db::SimilarEntry],
+    similar: impl IntoIterator<Item = &'a db::SimilarEntry>,
     scope: super::Scope,
 ) -> Vec<serde_json::Value> {
     similar
-        .iter()
+        .into_iter()
         .map(|s| crate::util::similar_entry_json(conn, s, scope.label()))
         .collect()
 }
@@ -143,7 +143,13 @@ pub fn cmd_add(
             db::find_similar_entries(&conn, title, &kws, category)?
         };
 
-        if similar.iter().any(|s| s.tier == Tier::Block) {
+        // Report only what actually refused the add. `similar` can also carry
+        // Warn hits, and a keyword-only hit may have nothing to do with this
+        // entry's subject — listing one next to "update it instead" is an
+        // invitation to overwrite an unrelated entry.
+        let blocking: Vec<&db::SimilarEntry> =
+            similar.iter().filter(|s| s.tier == Tier::Block).collect();
+        if !blocking.is_empty() {
             if json_output {
                 // Built inside the branch: `related_json` reads keywords and
                 // snippets per hit, and the human-readable arm below needs only
@@ -152,7 +158,7 @@ pub fn cmd_add(
                     "added": false,
                     "reason": "duplicate",
                     "scope": scope.label(),
-                    "similar_entries": related_json(&conn, &similar, scope),
+                    "similar_entries": related_json(&conn, blocking, scope),
                 });
                 if fell_back {
                     out["fell_back_to_user"] = serde_json::json!(true);
@@ -160,7 +166,7 @@ pub fn cmd_add(
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
                 println!("Similar entries found (use --force to add anyway):");
-                for s in &similar {
+                for s in blocking {
                     println!(
                         "  [{}] {} (keywords: {})",
                         display_id(&s.entry, scope),

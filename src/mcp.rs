@@ -956,8 +956,17 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 util::similar_entry_json(&conn, s, effective_scope)
             };
 
-            if similar.iter().any(|s| s.tier == Tier::Block) {
-                let dupes: Vec<Value> = similar.iter().map(describe).collect();
+            // Only what actually refused the add. `similar` can also carry Warn
+            // hits, and a keyword-only hit may be about something else entirely —
+            // listing one beside "update it instead" invites an agent to
+            // overwrite an unrelated entry, the exact failure this tiering exists
+            // to prevent.
+            let dupes: Vec<Value> = similar
+                .iter()
+                .filter(|s| s.tier == Tier::Block)
+                .map(describe)
+                .collect();
+            if !dupes.is_empty() {
                 let mut out = json!({
                     "added": false,
                     "reason": "An entry with the same title — or one all but identical to it — \
