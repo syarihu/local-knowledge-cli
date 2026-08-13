@@ -262,7 +262,7 @@ fn tool_definitions(registry: &ProjectRegistry) -> Value {
         tool_def_add(registry),
         tool_def_list(registry),
         tool_def_get(registry),
-        tool_def_update(registry),
+        tool_def_edit(registry),
         tool_def_supersede(registry),
         tool_def_stats(registry),
     ];
@@ -360,7 +360,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
 fn tool_def_add(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "add_knowledge",
-        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Duplicate handling: an entry whose title matches an existing one — or is all but identical to it — is rejected (`added: false` with `similar_entries`); update that entry instead, or pass force=true to add it anyway. Nothing else is rejected: the add succeeds (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call update_knowledge on those unless one genuinely covers the same topic.",
+        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Duplicate handling: an entry whose title matches an existing one — or is all but identical to it — is rejected (`added: false` with `similar_entries`); edit that entry instead with edit_knowledge, or pass force=true to add it anyway. Nothing else is rejected: the add succeeds (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call edit_knowledge on those unless one genuinely covers the same topic.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -472,10 +472,10 @@ fn tool_def_get(registry: &ProjectRegistry) -> Value {
     def
 }
 
-fn tool_def_update(registry: &ProjectRegistry) -> Value {
+fn tool_def_edit(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
-        "name": "update_knowledge",
-        "description": "Update an existing knowledge entry by ID. Use this to correct outdated information, add details to existing entries, or mark entries as deprecated when they are no longer relevant. Only provided fields are updated.",
+        "name": "edit_knowledge",
+        "description": "Edit an existing knowledge entry, identified by either its integer id (project scope) or its uid string (resolves project then user) — user-scope entries have no project id, so address those by uid. CLI equivalent: `lk edit <id-or-uid>`. Use this to correct outdated information, add details to existing entries, or mark entries as deprecated when they are no longer relevant. Only provided fields are updated.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -958,7 +958,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
 
             // Only what actually refused the add. `similar` can also carry Warn
             // hits, and a keyword-only hit may be about something else entirely —
-            // listing one beside "update it instead" invites an agent to
+            // listing one beside "edit it instead" invites an agent to
             // overwrite an unrelated entry, the exact failure this tiering exists
             // to prevent.
             let dupes: Vec<Value> = similar
@@ -970,7 +970,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 let mut out = json!({
                     "added": false,
                     "reason": "An entry with the same title — or one all but identical to it — \
-                               already exists. Update it with update_knowledge if it covers the \
+                               already exists. Edit it with edit_knowledge if it covers the \
                                same topic, or pass force=true to add this one anyway. Check \
                                `match_reason`: `same-title` is an exact match after \
                                normalization, `similar-title` differs only marginally.",
@@ -1028,7 +1028,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 out["possibly_related"] = json!(similar.iter().map(describe).collect::<Vec<_>>());
                 out["possibly_related_note"] = json!(
                     "The entry WAS added successfully. These existing entries look related and \
-                     are listed for information only. Call update_knowledge on one of them ONLY \
+                     are listed for information only. Call edit_knowledge on one of them ONLY \
                      if it covers genuinely the same topic (in which case delete the new entry); \
                      otherwise ignore this list."
                 );
@@ -1127,7 +1127,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             Ok(decorate_result(obj, &project_name))
         }
 
-        "update_knowledge" => {
+        "edit_knowledge" => {
             let arg = id_param(&params["id"])?.ok_or("missing required parameter: id")?;
             let scope = params["scope"].as_str();
             let status = params["status"].as_str();
@@ -1144,6 +1144,24 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 ));
             }
 
+            // Refuse a call that would edit nothing. `db::update_entry` is a no-op
+            // when every field is absent, so without this the tool answers with
+            // `updated: true` for an edit that never happened — and the caller
+            // moves on believing the entry changed. The CLI already errors here
+            // ("Nothing to edit"); the two surfaces have to agree. Checked before
+            // resolving the target so it costs no DB work.
+            if params["title"].is_null()
+                && params["content"].is_null()
+                && params["keywords"].is_null()
+                && params["status"].is_null()
+                && params["superseded_by"].is_null()
+            {
+                return Err(
+                    "Nothing to edit. Specify at least one of: title, content, keywords, status, superseded_by."
+                        .to_string(),
+                );
+            }
+
             let (conn, entry, _label) = mcp_resolve_target(&arg, scope, &project_root)?;
             let local_id = entry.id;
 
@@ -1158,7 +1176,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             // Resolved within the SAME DB as the edited entry (no cross-scope refs).
             let sb_arg = id_param(&params["superseded_by"])?;
 
-            log_mcp_command("update", &[("id", &arg)], &knowledge_dir);
+            log_mcp_command("edit", &[("id", &arg)], &knowledge_dir);
 
             let resolve_sb = |s: &str| -> Result<Option<String>, String> {
                 if s == "0" {

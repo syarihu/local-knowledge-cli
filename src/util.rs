@@ -212,11 +212,57 @@ pub fn paths_equivalent(a: &Path, b: &Path) -> bool {
     canonicalize_or(a) == canonicalize_or(b)
 }
 
-/// POSIX single-quote a string so it's a safe, copy/pastable shell argument for ANY
-/// path — spaces, `$`, `"`, and embedded `'` (escaped as `'\''`) are all handled.
-#[cfg(unix)]
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// Single-quote a string so it is a safe, copy/pastable shell argument.
+///
+/// Single quotes because they suppress every expansion — in POSIX shells and in
+/// PowerShell alike. An argument may contain `$`, a backtick or `"`, and handing
+/// those back inside double quotes would produce a command that substitutes or
+/// executes when pasted.
+///
+/// The escape for an embedded `'` is picked by target OS, not by the shell that
+/// will receive the text, since the shell is not knowable here. So a value
+/// containing an apostrophe comes out POSIX-escaped on Unix even if the caller is
+/// running PowerShell Core there, and PowerShell-escaped on Windows even under
+/// Git Bash. Everything else is quoted identically for both, so only that one
+/// character is affected.
+///
+/// Arguments made only of characters no shell treats specially are returned bare,
+/// so a suggested command stays readable (`lk edit 42`, not `lk edit '42'`).
+///
+/// The two shell families differ only in how an embedded `'` is escaped, which
+/// [`escape_single_quotes`] handles per platform. `cmd.exe` is not covered — it
+/// does not treat `'` as quoting at all — so a suggestion containing a space is
+/// only pasteable there after manual quoting.
+pub fn shell_quote(s: &str) -> String {
+    // Only characters that are inert in *both* shell families. Notably absent:
+    // `,` splits a PowerShell array, so a bare keyword list (`kw1,kw2`) would
+    // arrive as two arguments; a leading `@` is PowerShell splatting; `+` is an
+    // operator. All three are ordinary text to a POSIX shell, which is exactly
+    // why the set has to be the intersection rather than either side's.
+    const ALSO_SAFE: &str = "-_./=:";
+    let safe = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ALSO_SAFE.contains(c));
+    if safe {
+        s.to_string()
+    } else {
+        format!("'{}'", escape_single_quotes(s))
+    }
+}
+
+/// POSIX shells have no escape inside single quotes, so the quote is closed, a
+/// literal `'` is emitted, and quoting reopens: `'\''`.
+#[cfg(not(windows))]
+fn escape_single_quotes(s: &str) -> String {
+    s.replace('\'', "'\\''")
+}
+
+/// PowerShell escapes a single quote inside a literal string by doubling it.
+/// Without this, a suggestion containing an apostrophe would be unpasteable on
+/// the platform the release workflow builds for.
+#[cfg(windows)]
+fn escape_single_quotes(s: &str) -> String {
+    s.replace('\'', "''")
 }
 
 /// On Unix, warn if an existing directory is group/world-accessible. Even when the
@@ -447,10 +493,54 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_shell_quote_escapes_single_quotes_and_spaces() {
+    fn test_shell_quote_wraps_anything_special() {
         assert_eq!(shell_quote("/a/b c"), "'/a/b c'");
-        // An embedded single quote is closed, escaped, and reopened.
+    }
+
+    /// POSIX has no escape inside single quotes, so quoting is closed and reopened.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_shell_quote_escapes_single_quotes_posix() {
         assert_eq!(shell_quote("/a/o'brien"), "'/a/o'\\''brien'");
+    }
+
+    /// PowerShell doubles the quote instead. Not exercised by CI — the test matrix
+    /// is ubuntu and macos — so it only runs for someone building on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn test_shell_quote_doubles_single_quotes_powershell() {
+        assert_eq!(shell_quote("/a/o'brien"), "'/a/o''brien'");
+    }
+
+    /// Single quotes, not double: these must not expand when pasted.
+    #[test]
+    fn test_shell_quote_neutralizes_expansion() {
+        assert_eq!(shell_quote("costs $HOME"), "'costs $HOME'");
+        assert_eq!(shell_quote("run `date`"), "'run `date`'");
+        assert_eq!(shell_quote("a\"b"), "'a\"b'");
+    }
+
+    /// Plain arguments stay bare so a suggested command reads naturally, while a
+    /// path with nothing special in it is still safe to hand to a shell.
+    #[test]
+    fn test_shell_quote_leaves_plain_arguments_bare() {
+        assert_eq!(shell_quote("42"), "42");
+        assert_eq!(shell_quote("--content"), "--content");
+        assert_eq!(shell_quote("--status=accepted"), "--status=accepted");
+        assert_eq!(shell_quote("/usr/local/bin/lk"), "/usr/local/bin/lk");
+        assert_eq!(shell_quote("7918518402e5"), "7918518402e5");
+        // Empty stays quoted — bare would vanish from the command line.
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    /// Inert to a POSIX shell but not to PowerShell, so they cannot be left bare:
+    /// `,` would split a keyword list into two arguments, a leading `@` splats, and
+    /// `+` is an operator.
+    #[test]
+    fn test_shell_quote_wraps_powershell_metacharacters() {
+        assert_eq!(shell_quote("kw1,kw2"), "'kw1,kw2'");
+        assert_eq!(shell_quote("@mention"), "'@mention'");
+        assert_eq!(shell_quote("a+b"), "'a+b'");
     }
 
     /// A symlinked path and its real target must compare equal, so `--dir` matching the

@@ -25,7 +25,7 @@ $ARGUMENTS contains a description of what knowledge to save, or is empty to auto
 When the knowledge is a design decision (technology choice, architecture change, pattern adoption), record it as an ADR entry instead of a plain note:
 - `lk add "<title>" --keywords "adr,<kw>" --category decisions --status proposed --content "<content>"` (MCP: `add_knowledge(..., category: "decisions", status: "proposed")`)
 - Content follows ADR format: **Context / Decision / Alternatives Considered / Consequences**
-- Status flow: `proposed` → `accepted` (or `superseded` if replaced). After approval: `lk edit <id> --status accepted`
+- Status flow: `proposed` → `accepted` (or `superseded` if replaced). After approval: `lk edit <id-or-uid> --status accepted`
 - Both `lk add` and the `add_knowledge` MCP tool accept `--status`/`status` directly, so a decision can be created at `proposed` in one step.
 - To replace a previous decision: `lk supersede <old_id> <new_id>` (MCP: `supersede_knowledge`) — bidirectional link
 
@@ -39,4 +39,4 @@ When the knowledge is a design decision (technology choice, architecture change,
 - Reference function/struct names instead of line numbers
 - Include **why** (design decisions, rationale) alongside **what** when possible
 - Always pass 5-10 curated keywords; include both English and Japanese terms if applicable (omitting keywords falls back to noisier frequency-based auto-extraction)
-- When adding knowledge that replaces an older approach, check `lk add` output for `similar_entries` (same or all-but-identical title — the add was refused) or `possibly_related` (added anyway, listed for information) and mark genuinely superseded entries as deprecated with `lk edit <id> --status deprecated --superseded-by <new_id>`
+- When adding knowledge that replaces an older approach, check `lk add` output for `similar_entries` (same or all-but-identical title — the add was refused) or `possibly_related` (added anyway, listed for information) and mark genuinely superseded entries as deprecated with `lk edit <id-or-uid> --status deprecated --superseded-by <new-id-or-uid>`

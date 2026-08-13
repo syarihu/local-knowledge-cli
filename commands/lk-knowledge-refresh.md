@@ -29,7 +29,7 @@ For each entry, check if it references:
 - **Duplicate with CLAUDE.md/AGENTS.md** — entries whose content substantially overlaps with instructions already in CLAUDE.md or AGENTS.md (read these files and compare); flag for deletion to avoid drift
 - **Category mismatch** — entries from `.knowledge/` files where the frontmatter `category` doesn't match the directory name (e.g., file in `features/` but category says `architecture`); propose fixing the category or moving the file
 - **Volatile details** — entries that rely on line numbers, exact counts, or specific file paths that drift with code changes; replace with function/struct names and stable facts
-- **Superseded entries** — entries that describe old approaches when a newer entry covers the replacement (e.g., old auth flow replaced by new OAuth flow); mark as deprecated with `lk edit <id> --status deprecated --superseded-by <new_id>`
+- **Superseded entries** — entries that describe old approaches when a newer entry covers the replacement (e.g., old auth flow replaced by new OAuth flow); mark as deprecated with `lk edit <id-or-uid> --status deprecated --superseded-by <new-id-or-uid>`
 
 Present a summary table to the user:
 | ID | Title | Status | Issue |
