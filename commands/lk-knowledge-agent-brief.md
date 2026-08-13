@@ -31,4 +31,4 @@ Process its `## Knowledge to Save` section:
 2. For each entry, save it with the CLI (this command allows `Bash(lk *)`):
    `lk add "<title>" --keywords "<kw1,kw2>" --category "<category>" --content "<content>" --json`
    (Outside this slash command, the main agent may instead use the `add_knowledge` MCP tool when available.)
-3. If add returns similar/duplicate entries, use `lk edit <id>` (or the `update_knowledge` MCP tool) to merge instead of forcing a new entry.
+3. If add reports `added: false` with `similar_entries`, an entry with that title (or an all-but-identical one) already exists — use `lk edit <id>` (or the `update_knowledge` MCP tool) to merge into it instead of forcing a new entry. A successful add that also lists `possibly_related` needs no action: the entry is saved, and those are only shown for context.

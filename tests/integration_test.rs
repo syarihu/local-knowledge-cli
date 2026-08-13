@@ -311,15 +311,14 @@ fn test_add_with_status_reports_status_in_json() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["status"], "proposed");
 
-    // Default status (no --status) reports "active". Distinct title + --force so it
-    // isn't flagged as a duplicate of the entry above.
+    // Default status (no --status) reports "active". An unrelated title needs no
+    // --force: nothing short of a same or all-but-identical title is refused.
     let output = lk_bin()
         .args([
             "add",
             "Completely different topic",
             "--content",
             "unrelated body",
-            "--force",
             "--json",
         ])
         .current_dir(dir.path())
@@ -628,6 +627,242 @@ fn test_export() {
     assert!(!exported_files.is_empty());
 }
 
+/// Adding two unrelated entries back to back must just work. Duplicate detection
+/// used to fire on shared auto-extracted keywords, so this was the common case
+/// that got refused.
+#[test]
+fn test_add_does_not_flag_unrelated_entries() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    for (title, content) in [
+        (
+            "Homebrew formula release flow",
+            "Bump the tap and update the bottle.",
+        ),
+        (
+            "Screenshot test baseline update",
+            "Regenerate baselines and review the diff.",
+        ),
+    ] {
+        let output = lk_bin()
+            .args(["add", title, "--content", content, "--json"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["added"], true, "{title} should be added: {result}");
+        assert!(
+            result.get("possibly_related").is_none(),
+            "{title} is unrelated to anything already stored: {result}"
+        );
+    }
+}
+
+/// A same-title collision refuses the add and says so under `similar_entries`
+/// with `added: false`. Covers the exact-match-after-normalization case only;
+/// the near-identical band is pinned by
+/// `similarity::tests::title_block_band_holds_only_all_but_identical_titles`.
+#[test]
+fn test_add_blocks_same_title() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    lk_bin()
+        .args(["add", "Export group naming", "--content", "body", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Same title, differing only in case and spacing.
+    let output = lk_bin()
+        .args([
+            "add",
+            "export  group naming",
+            "--content",
+            "other",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["added"], false, "got {result}");
+    assert_eq!(result["reason"], "duplicate");
+    assert_eq!(result["similar_entries"][0]["match_reason"], "same-title");
+
+    // --force still overrides it.
+    let forced = lk_bin()
+        .args([
+            "add",
+            "export  group naming",
+            "--content",
+            "other",
+            "--force",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let forced: serde_json::Value = serde_json::from_slice(&forced.stdout).unwrap();
+    assert_eq!(forced["added"], true, "got {forced}");
+}
+
+/// A refusal must name only the entries that caused it.
+///
+/// `find_similar_entries` returns blocking and non-blocking hits together, so a
+/// keyword-only match can ride along with the title collision. Reporting it under
+/// `similar_entries` — next to "update that entry instead" — points the caller at
+/// an entry that has nothing to do with the subject, which is how an unrelated
+/// entry gets overwritten.
+#[test]
+fn test_add_block_reports_only_the_blocking_entries() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    // Filler so document frequencies are realistic; below ~4 entries the df cap
+    // zeroes every keyword and no keyword-only hit can occur at all.
+    for i in 0..6 {
+        lk_bin()
+            .args([
+                "add",
+                &format!("Filler topic {i}"),
+                "--keywords",
+                &format!("fill{i},pad{i}"),
+                "--content",
+                "x",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+    }
+    // The entry that will block, on title alone.
+    lk_bin()
+        .args([
+            "add",
+            "Alpha beta gamma delta",
+            "--keywords",
+            "unrelatedone,unrelatedtwo",
+            "--content",
+            "the blocking one",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    // An unrelated entry that will match on keywords only.
+    lk_bin()
+        .args([
+            "add",
+            "Completely different subject here",
+            "--keywords",
+            "rareone,raretwo,rarethree",
+            "--content",
+            "shares only keywords",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let output = lk_bin()
+        .args([
+            "add",
+            "Alpha beta gamma delta",
+            "--keywords",
+            "rareone,raretwo,rarethree",
+            "--content",
+            "dupe",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(result["added"], false, "got {result}");
+    let entries = result["similar_entries"].as_array().unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "only the title collision blocked: {result}"
+    );
+    assert_eq!(entries[0]["title"], "Alpha beta gamma delta");
+    assert_eq!(entries[0]["match_reason"], "same-title");
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e["match_reason"] == "similar-keywords"),
+        "a keyword-only hit did not cause the refusal and must not be listed: {result}"
+    );
+}
+
+/// A follow-up on the same topic is reported but still added — the behavior change
+/// that keeps a weak match from being mistaken for a rejection.
+#[test]
+fn test_add_reports_possibly_related_but_still_adds() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    lk_bin()
+        .args([
+            "add",
+            "Export group name bug",
+            "--keywords",
+            "export,grouping,keywords",
+            "--content",
+            "The first user keyword is not used as the group name.",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let output = lk_bin()
+        .args([
+            "add",
+            "Export group name bug follow-up",
+            "--keywords",
+            "export,grouping,keywords",
+            "--content",
+            "Remaining work after the first fix.",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(result["added"], true, "a follow-up must be added: {result}");
+    assert!(
+        result.get("similar_entries").is_none(),
+        "`similar_entries` means 'not added' and must not appear here: {result}"
+    );
+    let related = result["possibly_related"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected possibly_related in {result}"));
+    assert_eq!(related.len(), 1);
+    assert_eq!(related[0]["title"], "Export group name bug");
+    assert!(
+        result["possibly_related_note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("WAS added"),
+        "the note must state the add succeeded: {result}"
+    );
+}
+
 #[test]
 fn test_export_by_ids() {
     let dir = setup_temp_project();
@@ -663,7 +898,6 @@ fn test_export_by_ids() {
             "--content",
             "SQLite schema versioning.",
             "--json",
-            "--force",
         ])
         .current_dir(dir.path())
         .output()
@@ -879,14 +1113,7 @@ fn test_supersede() {
 
     // Add two entries
     let out1 = lk_bin()
-        .args([
-            "add",
-            "Old Decision",
-            "--content",
-            "Use REST",
-            "--force",
-            "--json",
-        ])
+        .args(["add", "Old Decision", "--content", "Use REST", "--json"])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -896,14 +1123,7 @@ fn test_supersede() {
         .unwrap();
 
     let out2 = lk_bin()
-        .args([
-            "add",
-            "New Decision",
-            "--content",
-            "Use gRPC",
-            "--force",
-            "--json",
-        ])
+        .args(["add", "New Decision", "--content", "Use gRPC", "--json"])
         .current_dir(dir.path())
         .output()
         .unwrap();
