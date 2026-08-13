@@ -1227,7 +1227,12 @@ fn score_candidates(
         let rows = stmt.query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
         })?;
-        for (kw, count) in rows.flatten() {
+        // Propagate row errors rather than skipping the row. Every column read
+        // here is NOT NULL, so a failure means the DB itself is unwell — and a
+        // dropped row is invisible yet changes the verdict: a missing document
+        // frequency reads as df = 0, i.e. the rarest possible keyword.
+        for row in rows {
+            let (kw, count) = row?;
             df.insert(kw, count);
         }
     }
@@ -1236,7 +1241,8 @@ fn score_candidates(
     {
         let mut stmt = conn.prepare("SELECT entry_id, LOWER(keyword) FROM keywords")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
-        for (id, kw) in rows.flatten() {
+        for row in rows {
+            let (id, kw) = row?;
             cand_kws.entry(id).or_default().push(kw);
         }
     }
@@ -1252,7 +1258,10 @@ fn score_candidates(
             r.get::<_, String>(2)?,
         ))
     })?;
-    for (id, cand_title, source) in rows.flatten() {
+    // Likewise: a skipped candidate is a duplicate that silently never gets
+    // compared, so the add would be accepted as new.
+    for row in rows {
+        let (id, cand_title, source) = row?;
         let title_sim = similarity::title_sim(title, &cand_title);
         let exact = normalized_new == similarity::norm(&cand_title);
         let mut kw_sim = similarity::kw_sim(kws, cand_kws.get(&id).unwrap_or(&no_kws), &df, n);
@@ -2397,8 +2406,10 @@ mod replay {
                     ))
                 })
                 .unwrap();
-            for row in it.flatten() {
-                rows.push(row);
+            // Not `flatten()`: a silently skipped entry would quietly shrink the
+            // denominator and misreport the false-positive rate.
+            for row in it {
+                rows.push(row.unwrap());
             }
         }
 
