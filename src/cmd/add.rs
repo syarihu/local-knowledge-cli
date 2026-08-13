@@ -145,7 +145,7 @@ pub fn cmd_add(
 
         // Report only what actually refused the add. `similar` can also carry
         // Warn hits, and a keyword-only hit may have nothing to do with this
-        // entry's subject — listing one next to "update it instead" is an
+        // entry's subject — listing one next to "edit it instead" is an
         // invitation to overwrite an unrelated entry.
         let blocking: Vec<&db::SimilarEntry> =
             similar.iter().filter(|s| s.tier == Tier::Block).collect();
@@ -214,7 +214,7 @@ pub fn cmd_add(
             );
             if !json_output && !similar.is_empty() {
                 println!(
-                    "\nNote: possibly related entries (this entry WAS added; update one of them \
+                    "\nNote: possibly related entries (this entry WAS added; edit one of them \
                      instead only if it is genuinely the same topic):"
                 );
                 for s in &similar {
@@ -276,7 +276,7 @@ fn print_success(
             out["possibly_related"] = serde_json::json!(possibly_related);
             out["possibly_related_note"] = serde_json::json!(
                 "The entry WAS added successfully. These existing entries look related and are \
-                 listed for information only. Update one of them ONLY if it covers genuinely the \
+                 listed for information only. Edit one of them ONLY if it covers genuinely the \
                  same topic; otherwise ignore this list."
             );
         }

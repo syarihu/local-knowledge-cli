@@ -159,7 +159,7 @@ pub fn cmd_edit(
         && superseded_by.is_none()
         && !touch
     {
-        return Err("Nothing to update. Specify --title, --keywords, --content, --status, --superseded-by, or --touch.".into());
+        return Err("Nothing to edit. Specify --title, --keywords, --content, --status, --superseded-by, or --touch.".into());
     }
 
     // Warn if setting to superseded without --superseded-by

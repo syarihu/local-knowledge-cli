@@ -265,11 +265,18 @@ enum Commands {
         #[arg(short, long, default_value = "20")]
         lines: usize,
     },
-    /// Update lk to the latest version
+    /// Update lk to the latest version (to edit an entry, use `lk edit`)
+    #[command(long_about = "Update the lk binary itself to the latest release.\n\n\
+                      This does NOT edit a knowledge entry. The CLI equivalent of the \
+                      `edit_knowledge` MCP tool is `lk edit <id-or-uid>`.")]
     Update {
         /// Skip checksum verification (not recommended)
         #[arg(long)]
         skip_verify: bool,
+        /// Swallows `lk update <id> ...` so the error can name `lk edit` instead of
+        /// clap's bare "unexpected argument", which sends the caller off to --help.
+        #[arg(hide = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        entry_args: Vec<String>,
     },
     /// Install Claude Code slash commands and refresh existing lk-instructions.md (project + global)
     InstallCommands,
@@ -332,6 +339,110 @@ impl Commands {
             _ => None,
         }
     }
+}
+
+/// Turn a mistaken `lk update <id> …` into a pointer at `lk edit`.
+///
+/// The MCP tool that edits an entry is called `edit_knowledge`, so an agent
+/// that has learned that vocabulary and then falls back to the CLI reaches for
+/// `lk update` — which upgrades the binary instead. Clap answers that with
+/// "unexpected argument '<id>'" and a pointer to `--help`, and finding `lk edit`
+/// from there costs two more invocations (`lk update --help`, then `lk --help`).
+/// Naming the right command immediately, with the caller's own arguments already
+/// in place, ends it in one.
+///
+/// Flags `lk edit` accepts. A leading flag from this set means the caller wanted
+/// to edit an entry; anything else is a bad option for the updater itself and has
+/// to be reported as one, not answered with advice about a different command.
+///
+/// Used only to read that leading argument's intent. Once an id is present the
+/// intent is settled, and the remaining arguments are echoed through untouched
+/// even if one of them is wrong — validating them here would mean duplicating
+/// `lk edit`'s option set, which then silently rejects any flag added to `edit`
+/// later. A bad flag in the suggestion surfaces from `lk edit` itself, which is
+/// where the answer belongs.
+const EDIT_FLAGS: &[&str] = &[
+    "-t",
+    "--title",
+    "-k",
+    "--keywords",
+    "-c",
+    "--content",
+    "--status",
+    "--superseded-by",
+    "--touch",
+    "--scope",
+    "--json",
+];
+
+/// Whether an argument names a flag `lk edit` takes.
+///
+/// Matching the whole argument is not enough: clap also accepts a long flag with
+/// its value attached (`--content=x`) and a short one with the value run together
+/// (`-cx`), and both of those are things a caller reaching for `lk edit` may well
+/// type. Missing them would answer a genuine edit attempt with "bad option".
+fn names_an_edit_flag(arg: &str) -> bool {
+    if EDIT_FLAGS.contains(&arg.split('=').next().unwrap_or(arg)) {
+        return true;
+    }
+    // Short flags only — a long typo like `--skip-verfiy` must not match on its
+    // first two characters. Sliced by chars so non-ASCII input cannot panic.
+    if !arg.starts_with("--") {
+        let short: String = arg.chars().take(2).collect();
+        return arg.chars().count() > 2 && EDIT_FLAGS.contains(&short.as_str());
+    }
+    false
+}
+
+/// Returns `None` when nothing was passed, which is the legitimate self-update.
+fn misused_as_edit(entry_args: &[String]) -> Option<String> {
+    let (first, rest) = entry_args.split_first()?;
+    let preamble = "`lk update` upgrades the lk binary itself — it does not edit an entry.\n\
+                    `lk edit` is the CLI equivalent of the `edit_knowledge` MCP tool.";
+
+    if first.starts_with('-') {
+        // A flag `lk edit` does not take is a mistyped or unknown option for the
+        // updater. Answer it the way clap would, rather than sending the caller
+        // off to an unrelated command.
+        if !names_an_edit_flag(first) {
+            return Some(format!(
+                "unexpected argument '{first}' found\n\nUsage: lk update [--skip-verify]\n\nFor more information, try 'lk update --help'."
+            ));
+        }
+        // An edit flag but no id, so there is no entry to name.
+        return Some(format!(
+            "{preamble}\n\nTo edit an entry:\n    lk edit <id-or-uid> [-t \"<title>\"] [-k \"kw1,kw2\"] [-c \"<body>\"] [--status S]"
+        ));
+    }
+
+    // A value beginning with `-` cannot be passed as a separate word: the shell
+    // strips the quotes, and clap then reads it as a flag (`--content -x` fails
+    // with "unexpected argument '-x'"). Quoting cannot fix that — attaching the
+    // value to its flag with `=` can. A following argument counts as a value when
+    // it is not itself a flag `lk edit` takes.
+    let mut args = String::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = &rest[i];
+        let next_is_dashed_value = rest
+            .get(i + 1)
+            .is_some_and(|n| n.starts_with('-') && !names_an_edit_flag(n));
+        if arg.starts_with('-') && next_is_dashed_value {
+            args.push(' ');
+            args.push_str(&util::shell_quote(&format!("{arg}={}", rest[i + 1])));
+            i += 2;
+        } else {
+            args.push(' ');
+            args.push_str(&util::shell_quote(arg));
+            i += 1;
+        }
+    }
+
+    Some(format!(
+        "{preamble}\n\nTo edit entry {}:\n    lk edit {}{args}",
+        first,
+        util::shell_quote(first)
+    ))
 }
 
 fn main() {
@@ -532,7 +643,13 @@ fn main() {
             scope,
         } => cmd::cmd_stats(json, verbose, Some(&scope)),
         Commands::CommandLog { lines } => cmd::cmd_command_log(lines),
-        Commands::Update { skip_verify } => cmd::cmd_update(skip_verify),
+        Commands::Update {
+            skip_verify,
+            entry_args,
+        } => match misused_as_edit(&entry_args) {
+            Some(hint) => Err(hint.into()),
+            None => cmd::cmd_update(skip_verify),
+        },
         Commands::InstallCommands => cmd::cmd_install_commands(),
         Commands::Uninstall { yes } => cmd::cmd_uninstall(yes),
         Commands::Mcp { project } => mcp::run_server(project),
@@ -552,5 +669,145 @@ fn main() {
             eprintln!("Error: {e}");
         }
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::misused_as_edit;
+
+    #[test]
+    fn bare_update_is_the_real_self_update() {
+        assert!(
+            misused_as_edit(&[]).is_none(),
+            "no arguments means the caller wants to upgrade the binary"
+        );
+    }
+
+    fn hint_for(args: &[&str]) -> String {
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        misused_as_edit(&owned).expect("arguments were passed, so something must be said")
+    }
+
+    #[test]
+    fn update_with_an_id_suggests_edit_with_the_same_arguments() {
+        let hint = hint_for(&["42", "--content", "new body", "--status", "accepted"]);
+        assert!(
+            hint.contains(r#"lk edit 42 --content 'new body' --status accepted"#),
+            "the suggestion must be pasteable, with spaces quoted: {hint}"
+        );
+    }
+
+    /// The suggestion is advertised as pasteable, so it must survive a shell.
+    /// Entry bodies routinely contain `$` and a title can contain a backtick;
+    /// echoing those back inside double quotes would hand over a command that
+    /// substitutes or executes when pasted.
+    #[test]
+    fn suggestion_is_safe_to_paste_into_a_shell() {
+        let hint = hint_for(&["42", "--content", "costs $HOME and `date`"]);
+        assert!(
+            hint.contains(r#"--content 'costs $HOME and `date`'"#),
+            "expansion-triggering characters must be single-quoted: {hint}"
+        );
+        assert!(
+            !hint.contains(r#""costs $HOME"#),
+            "double quotes would still expand $HOME: {hint}"
+        );
+
+        // An embedded single quote is escaped per platform; either way the value
+        // stays inside single quotes, so nothing expands.
+        let hint = hint_for(&["42", "--title", "it's here"]);
+        assert!(
+            hint.contains("--title 'it"),
+            "the value must stay single-quoted: {hint}"
+        );
+        #[cfg(not(windows))]
+        assert!(
+            hint.contains(r"--title 'it'\''s here'"),
+            "POSIX closes, escapes and reopens: {hint}"
+        );
+        #[cfg(windows)]
+        assert!(
+            hint.contains("--title 'it''s here'"),
+            "PowerShell doubles the quote: {hint}"
+        );
+    }
+
+    #[test]
+    fn update_with_an_edit_flag_but_no_id_falls_back_to_the_generic_form() {
+        let hint = hint_for(&["--content", "x"]);
+        assert!(
+            hint.contains("lk edit <id-or-uid>"),
+            "with no id to echo back, name the shape instead: {hint}"
+        );
+        assert!(
+            !hint.contains("edit --content"),
+            "must not present the flag as if it were an id: {hint}"
+        );
+    }
+
+    /// A flag `lk edit` does not take means the caller wanted the updater and
+    /// mistyped. Advice about a different command would be actively misleading.
+    #[test]
+    fn update_with_an_unknown_flag_is_reported_as_a_bad_option() {
+        let hint = hint_for(&["--skip-verfiy"]);
+        assert!(
+            hint.contains("unexpected argument '--skip-verfiy'"),
+            "a typo'd updater option must be reported as one: {hint}"
+        );
+        assert!(
+            !hint.contains("lk edit"),
+            "must not send a would-be self-updater to the edit command: {hint}"
+        );
+    }
+
+    /// Clap accepts a value attached to the flag, and someone reaching for
+    /// `lk edit` may well write it that way. Recognising only the bare spelling
+    /// would answer a genuine edit attempt with "bad option".
+    #[test]
+    fn edit_flags_are_recognized_with_attached_values() {
+        for arg in ["--content=x", "--status=accepted", "-cx", "-tSome title"] {
+            let hint = hint_for(&[arg]);
+            assert!(
+                hint.contains("lk edit"),
+                "{arg:?} is an edit flag and must reach the edit hint: {hint}"
+            );
+        }
+        // A long typo must not match on its first two characters.
+        for arg in ["--skip-verfiy", "--ttl=3", "--cache"] {
+            let hint = hint_for(&[arg]);
+            assert!(
+                hint.contains("unexpected argument"),
+                "{arg:?} is not an edit flag: {hint}"
+            );
+        }
+    }
+
+    /// Sliced by chars, so a non-ASCII argument cannot panic on a byte boundary.
+    #[test]
+    fn non_ascii_flag_like_argument_is_handled() {
+        let hint = hint_for(&["-あい"]);
+        assert!(hint.contains("unexpected argument"), "got {hint}");
+    }
+
+    /// A value starting with `-` survives quoting only to be read as a flag by
+    /// clap, so it has to be attached to its own flag with `=`.
+    #[test]
+    fn a_value_starting_with_a_dash_is_attached_to_its_flag() {
+        let hint = hint_for(&["42", "--content", "-leading-dash"]);
+        assert!(
+            hint.contains("lk edit 42 --content=-leading-dash"),
+            "a dashed value must be attached with `=`: {hint}"
+        );
+    }
+
+    /// The `=` joining must not swallow a genuine following flag.
+    #[test]
+    fn flags_that_take_no_value_are_left_separate() {
+        let hint = hint_for(&["42", "--touch", "--status", "accepted"]);
+        assert!(
+            hint.contains("lk edit 42 --touch --status accepted"),
+            "--touch takes no value and --status is a real flag: {hint}"
+        );
     }
 }

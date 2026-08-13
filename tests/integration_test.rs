@@ -719,7 +719,7 @@ fn test_add_blocks_same_title() {
 ///
 /// `find_similar_entries` returns blocking and non-blocking hits together, so a
 /// keyword-only match can ride along with the title collision. Reporting it under
-/// `similar_entries` — next to "update that entry instead" — points the caller at
+/// `similar_entries` — next to "edit that entry instead" — points the caller at
 /// an entry that has nothing to do with the subject, which is how an unrelated
 /// entry gets overwritten.
 #[test]
@@ -860,6 +860,170 @@ fn test_add_reports_possibly_related_but_still_adds() {
             .unwrap_or_default()
             .contains("WAS added"),
         "the note must state the add succeeded: {result}"
+    );
+}
+
+/// Drive the MCP server over stdio with one JSON-RPC line and return the replies.
+fn mcp_request(project: &std::path::Path, request: &str) -> Vec<serde_json::Value> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = lk_bin()
+        .args(["mcp", "--project", project.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.as_mut().unwrap(), "{request}").unwrap();
+    let out = child.wait_with_output().unwrap();
+
+    // Fail on the offending line rather than skipping it. Anything the server
+    // prints to stdout is part of the JSON-RPC stream, so a line that does not
+    // parse is the bug — dropping it would surface later as a confusing symptom
+    // (an empty tool list) far from the cause.
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .unwrap_or_else(|e| panic!("MCP wrote a non-JSON line to stdout ({e}): {l:?}"))
+        })
+        .collect()
+}
+
+/// Every MCP tool is named after the CLI subcommand it mirrors, so an agent that
+/// learns one surface can transliterate to the other. `update_knowledge` was the
+/// one exception, and it transliterated to `lk update` — the binary self-updater.
+#[test]
+fn test_mcp_tool_names_mirror_the_cli_subcommands() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let names: Vec<String> = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    )
+    .into_iter()
+    // Selecting the tools/list reply out of the stream, not discarding failures.
+    .filter_map(|v| v["result"]["tools"].as_array().cloned())
+    .flatten()
+    .map(|t| {
+        t["name"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a tool in tools/list has no name: {t}"))
+            .to_string()
+    })
+    .collect();
+
+    assert!(!names.is_empty(), "tools/list returned nothing: {names:?}");
+    assert!(
+        names.iter().any(|n| n == "edit_knowledge"),
+        "the entry-editing tool must be named after `lk edit`: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "update_knowledge"),
+        "`update_knowledge` transliterates to `lk update`, which upgrades the binary: {names:?}"
+    );
+}
+
+/// An edit that names no field changes nothing, so reporting success would leave
+/// the caller believing the entry was updated. The CLI already refuses it; both
+/// surfaces have to answer the same way.
+#[test]
+fn test_edit_with_no_fields_is_refused_on_both_surfaces() {
+    let dir = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    lk_bin()
+        .args(["add", "Guard test", "--content", "original", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // CLI: already guarded.
+    let cli = lk_bin()
+        .args(["edit", "1", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!cli.status.success(), "the CLI must refuse an empty edit");
+
+    // MCP: must not answer `updated: true` for an edit that did nothing.
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"edit_knowledge","arguments":{"id":1}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    assert!(
+        !body.contains("\"updated\": true"),
+        "an edit with no fields must not report success: {body}"
+    );
+    assert!(
+        body.to_lowercase().contains("nothing to edit"),
+        "and it must say why: {body}"
+    );
+
+    // The entry is untouched either way.
+    let get = lk_bin()
+        .args(["get", "1", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(entry["content"], "original");
+}
+
+/// `edit_knowledge` is the MCP tool for editing an entry, so an agent falling
+/// back to the CLI reaches for `lk update` — which upgrades the binary. The reply
+/// has to name `lk edit` outright; clap's "unexpected argument" would send the
+/// caller through two more invocations to find it.
+#[test]
+fn test_update_with_entry_args_points_at_edit() {
+    let output = lk_bin()
+        .args(["update", "42", "--content", "new body"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "the mistake must not self-update");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lk edit 42 --content 'new body'"),
+        "must suggest the equivalent edit, ready to paste: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "clap's default reply is what we are replacing: {stderr}"
+    );
+}
+
+/// The same pointer has to be reachable from `--help`, since a caller who used
+/// no positional lands there.
+#[test]
+fn test_update_help_disclaims_editing() {
+    let output = lk_bin().args(["update", "--help"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("lk edit"), "got {stdout}");
+    assert!(
+        stdout.contains("--skip-verify"),
+        "the real option must survive the hidden catch-all: {stdout}"
+    );
+    assert!(
+        !stdout.contains("entry_args"),
+        "the catch-all is an implementation detail and must stay hidden: {stdout}"
     );
 }
 

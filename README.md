@@ -136,7 +136,7 @@ lk keywords --regen --all       # regenerate every local entry
 
 | Outcome | When | What happens |
 | --- | --- | --- |
-| **Refused** | The title matches an existing one — ignoring case, spacing, punctuation and full-width forms — or is all but identical to it | Nothing is added. The colliding entries come back as `similar_entries` with `added: false`, each carrying a `match_reason` (`same-title` for an exact match after normalization, `similar-title` for a marginal difference). Update that entry instead, or re-run with `--force`. |
+| **Refused** | The title matches an existing one — ignoring case, spacing, punctuation and full-width forms — or is all but identical to it | Nothing is added. The colliding entries come back as `similar_entries` with `added: false`, each carrying a `match_reason` (`same-title` for an exact match after normalization, `similar-title` for a marginal difference). Edit that entry instead, or re-run with `--force`. |
 | **Added, with a note** | The topic looks close but the title differs | **The entry is saved.** Related entries are listed under `possibly_related` purely for information. |
 
 Anything below both thresholds is added silently.
@@ -191,7 +191,7 @@ How scope is selected:
 - **Reads** (`search`, `list`, `stats`): `--scope all` (default — merges both stores and tags each result with its `scope`), or restrict to `project` / `user`. In an uninitialized project the (missing) project store is simply skipped, so reads return user-scope results instead of erroring.
 - **Targets** (`get`, `edit`, `delete`, `supersede`): pass an entry id or uid. A numeric id resolves in the project DB (or the DB named by `--scope`); a uid resolves across scopes (project, then user — and skips the project store when it isn't initialized). Because project and user ids both start at 1, address user-scope entries by uid (shown in `--json` output). `supersede` requires both entries in the same scope.
 
-The `lk-knowledge` MCP tools mirror this: `search_knowledge` / `list_knowledge` / `get_stats` take a `scope` and gracefully skip an uninitialized project; `add_knowledge` takes a `scope` (default `auto`, same user-scope fallback); and `get_knowledge` / `update_knowledge` / `supersede_knowledge` accept an id or uid string.
+The `lk-knowledge` MCP tools mirror this: `search_knowledge` / `list_knowledge` / `get_stats` take a `scope` and gracefully skip an uninitialized project; `add_knowledge` takes a `scope` (default `auto`, same user-scope fallback); and `get_knowledge` / `edit_knowledge` / `supersede_knowledge` accept an id or uid string.
 
 #### User-scope markdown
 
@@ -399,7 +399,7 @@ Once installed, Claude has access to these tools:
 | `add_knowledge` | Add new entries with duplicate detection |
 | `list_knowledge` | Browse entries with source/category filtering and pagination |
 | `get_knowledge` | Retrieve full content of an entry by ID |
-| `update_knowledge` | Update title, content, keywords, or status of an entry |
+| `edit_knowledge` | Edit title, content, keywords, or status of an entry (CLI: `lk edit`) |
 | `supersede_knowledge` | Mark an entry as superseded by another (bidirectional) |
 | `get_stats` | Get knowledge base statistics |
 | `list_projects` | List registered projects (multi-project mode only) |

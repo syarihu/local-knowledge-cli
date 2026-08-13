@@ -15,7 +15,7 @@ $ARGUMENTS contains a hint about what to save, or is empty to auto-extract from 
    - Discussion flow and conclusions (how the conclusion was reached)
    - Unresolved issues and next steps
 2. Check for existing entries: `lk search "<topic>" --json --full --category context`
-   - If a matching entry exists, update it with `lk edit <id> --content "..."` instead of creating a new one
+   - If a matching entry exists, edit it with `lk edit <id-or-uid> --content "..."` instead of creating a new one
 3. For each entry, run:
    `lk add "<title>" --keywords "conversation-log,<kw1>,<kw2>" --content "<content>" --category context`
 4. Report what was saved
