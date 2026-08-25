@@ -207,12 +207,15 @@ The recorded value is the repo's **git remote slug** (`owner/repo`), resolved in
 
 1. `--project <name>` on `lk add`
 2. `LK_PROJECT` in the environment
-3. `origin`'s remote URL, normalized (`git@host:o/r.git`, `https://host/o/r.git` and `ssh://git@host/o/r` all become `o/r`)
-4. the main worktree's directory name, then the project root's
+3. `git config lk.project` in the repo
+4. `origin`'s remote URL, normalized (`git@host:o/r.git`, `https://host/o/r.git` and `ssh://git@host/o/r` all become `o/r`)
+5. the main worktree's directory name, then the project root's
+
+`git config lk.project acme/thing` is the one to reach for when the detected key is wrong or unwanted — it persists, every worktree of the repo shares it, it needs no `lk init`, and because it belongs to the repo rather than the environment it is honored through MCP too. `--project` and `LK_PROJECT` stay one-off overrides for a single add or shell.
 
 The slug is preferred over a directory name because a linked worktree's directory changes per branch (one repo would otherwise scatter across several names) and because the owner keeps same-named repos in different orgs apart. A bare name passed to `--project` is expanded to the full slug when it names the current repo.
 
-A remote whose URL is a filesystem path (`file://`, a local clone, or an scp/ssh form with an absolute path) contributes only its last segment, so no local directory layout is stored. A self-hosted remote addressed by a server path — `ssh://host/home/alice/repo.git` — keeps that path as its key, because that path is the repo's identity and truncating it would merge unrelated repos; pass `--project` if you would rather record something else.
+A remote whose URL is a filesystem path (`file://`, a local clone, or an scp/ssh form with an absolute path) contributes only its last segment, so no local directory layout is stored. A self-hosted remote addressed by a server path — `ssh://host/home/alice/repo.git` — keeps that path as its key, because that path is the repo's identity and truncating it would merge unrelated repos; set `git config lk.project` in that repo to record something else instead.
 
 `lk get` and `--json` output always show the full slug. The human-readable `search` / `list` badge shows just the repo name, and only for entries recorded against a *different* project than the one you are standing in — so results from this repo stay unadorned while a hit carried in from elsewhere is marked. Entries added before this existed have no project recorded. The value round-trips through markdown as a `project:` line, so `lk sync` preserves it.
 

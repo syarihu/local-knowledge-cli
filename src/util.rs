@@ -215,6 +215,26 @@ pub fn project_repo_name(key: &str) -> &str {
     key.rsplit('/').next().unwrap_or(key)
 }
 
+/// A per-repo override: `git config lk.project <owner/repo>`.
+///
+/// Unlike `LK_PROJECT` this persists, is shared by every worktree (they share one
+/// config), needs no `lk init`, and — because it belongs to the repo rather than to
+/// the environment — it is safe to honor on the MCP path too. It is what to reach
+/// for when the detected key is unwanted: a self-hosted remote's server path, or a
+/// fork whose knowledge should be filed under the upstream name.
+fn git_config_project(root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--get", "lk.project"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    normalize_project_key(String::from_utf8_lossy(&out.stdout).trim())
+}
+
 /// `origin`'s remote URL for `root`, normalized to a slug. `None` when `root` is not
 /// a repo, has no `origin`, or git is unavailable.
 fn git_remote_slug(root: &Path) -> Option<String> {
@@ -231,14 +251,18 @@ fn git_remote_slug(root: &Path) -> Option<String> {
 }
 
 /// The project key to record on entries added from `root`.
-/// Resolution order: `origin`'s remote slug → the main worktree's directory name →
-/// `root`'s own directory name. `None` when none of those yields a usable key.
+/// Resolution order: `git config lk.project` → `origin`'s remote slug → the main
+/// worktree's directory name → `root`'s own directory name. `None` when none of
+/// those yields a usable key.
 /// (`LK_PROJECT` is honored by [`current_project_key`], deliberately not here.)
 ///
 /// The remote slug is preferred because a linked worktree's directory name varies
 /// per branch (so one repo would otherwise scatter across keys) and because it
 /// carries the owner, keeping same-named repos in different orgs apart.
 pub fn project_key_for(root: &Path) -> Option<String> {
+    if let Some(configured) = git_config_project(root) {
+        return Some(configured);
+    }
     if let Some(slug) = git_remote_slug(root) {
         return Some(slug);
     }
@@ -257,7 +281,8 @@ pub fn project_key_for(root: &Path) -> Option<String> {
 /// The environment override lives here rather than in `project_key_for` on purpose:
 /// it is a per-invocation escape hatch for the CLI, and a long-running MCP server
 /// that inherited the variable would otherwise stamp it onto every registered
-/// project's entries.
+/// project's entries. For a lasting override, `git config lk.project` is the one to
+/// use — it belongs to the repo, so every surface honors it.
 pub fn current_project_key() -> Option<String> {
     if let Ok(v) = std::env::var("LK_PROJECT")
         && let Some(key) = normalize_project_key(&v)

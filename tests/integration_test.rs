@@ -1800,6 +1800,65 @@ fn test_search_badges_only_other_projects() {
 }
 
 #[test]
+fn test_git_config_lk_project_overrides_the_remote() {
+    // The lasting per-repo override: it beats the detected remote, and `LK_PROJECT`
+    // still beats it (one invocation should always be able to say otherwise).
+    let home = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(proj.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-q"]).status.success());
+    assert!(
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:syarihu/detected.git"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        git(&["config", "lk.project", "syarihu/configured"])
+            .status
+            .success()
+    );
+
+    let add = |extra_env: Option<(&str, &str)>, title: &str| {
+        let mut cmd = lk_bin();
+        cmd.args([
+            "add", title, "-k", "gitcfg", "-c", "body", "--scope", "user", "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .env_remove("LK_PROJECT");
+        if let Some((k, v)) = extra_env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success());
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+
+    assert_eq!(
+        add(None, "configured project")["project"],
+        "syarihu/configured",
+        "git config lk.project must win over the origin remote"
+    );
+    assert_eq!(
+        add(Some(("LK_PROJECT", "syarihu/from-env")), "env beats config")["project"],
+        "syarihu/from-env",
+        "a one-off LK_PROJECT must still win"
+    );
+}
+
+#[test]
 fn test_lk_project_env_overrides_detection() {
     let home = tempfile::tempdir().unwrap();
     let proj = setup_temp_project();
