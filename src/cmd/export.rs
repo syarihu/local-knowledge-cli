@@ -143,7 +143,18 @@ fn export_to_dir(
     } else if let Some(q) = query {
         // Export entries matching a search query
 
-        db::search_entries(conn, q, false, None, Some("local"), None, None, None, 100)?
+        db::search_entries(
+            conn,
+            q,
+            false,
+            None,
+            Some("local"),
+            None,
+            None,
+            None,
+            None,
+            100,
+        )?
     } else {
         // Export all local entries
         db::list_entries_by_source(conn, "local")?

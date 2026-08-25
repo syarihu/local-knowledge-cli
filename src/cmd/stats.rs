@@ -1,6 +1,10 @@
 use crate::db;
 use crate::util::{get_db_path, get_project_root, open_db_with_migrate};
 
+/// Shown for entries with no project recorded — everything added before the column
+/// existed, and anything added where no project could be detected.
+const UNATTRIBUTED: &str = "(unattributed)";
+
 pub fn cmd_keywords(json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_db_with_migrate()?;
     let rows = db::keyword_counts(&conn)?;
@@ -132,6 +136,7 @@ pub fn cmd_keywords_regen(
 pub fn cmd_stats(
     json_output: bool,
     verbose: bool,
+    by_project: bool,
     scope: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conns = super::read_connections(scope)?;
@@ -178,6 +183,22 @@ pub fn cmd_stats(
     }
     let unique_keywords = kw_union.len();
 
+    // Merged across scopes: the same project can hold entries in both stores, and
+    // seeing them split by DB answers a different question than "how much do I know
+    // about this project".
+    let mut by_project_counts: std::collections::BTreeMap<Option<String>, i64> =
+        std::collections::BTreeMap::new();
+    if by_project {
+        for (conn, _) in &conns {
+            for (project, count) in db::project_counts(conn)? {
+                *by_project_counts.entry(project).or_insert(0) += count;
+            }
+        }
+    }
+    // Most entries first; the unattributed group sorts by the same rule as the rest.
+    let mut by_project_rows: Vec<(Option<String>, i64)> = by_project_counts.into_iter().collect();
+    by_project_rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
     if json_output {
         let mut obj = serde_json::json!({
             "total_entries": total,
@@ -188,6 +209,17 @@ pub fn cmd_stats(
         });
         if verbose {
             obj["project_root"] = serde_json::json!(get_project_root().to_string_lossy());
+        }
+        if by_project {
+            obj["by_project"] = serde_json::json!(
+                by_project_rows
+                    .iter()
+                    .map(|(project, count)| serde_json::json!({
+                        "project": project,
+                        "entries": count,
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
         println!("{}", serde_json::to_string(&obj)?);
     } else {
@@ -201,6 +233,24 @@ pub fn cmd_stats(
         }
         if verbose {
             println!("  Project root:     {}", get_project_root().display());
+        }
+        if by_project {
+            println!("\nBy project:");
+            if by_project_rows.is_empty() {
+                println!("  (no entries)");
+            }
+            // Terminal columns, not characters: a Japanese project name is twice as
+            // wide as its char count and would push the count column out of line.
+            let width = by_project_rows
+                .iter()
+                .map(|(p, _)| crate::util::display_width(p.as_deref().unwrap_or(UNATTRIBUTED)))
+                .max()
+                .unwrap_or(0);
+            for (project, count) in &by_project_rows {
+                let name = project.as_deref().unwrap_or(UNATTRIBUTED);
+                let pad = " ".repeat(width.saturating_sub(crate::util::display_width(name)));
+                println!("  {name}{pad}  {count}");
+            }
         }
     }
     Ok(())

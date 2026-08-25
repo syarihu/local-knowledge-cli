@@ -266,6 +266,9 @@ enum Commands {
         /// Show verbose details (project root, schema version)
         #[arg(long, short)]
         verbose: bool,
+        /// Break entry counts down by the project each was recorded against
+        #[arg(long)]
+        by_project: bool,
         /// Scope: "project", "user", or "all" (default)
         #[arg(long, default_value = "all")]
         scope: String,
@@ -660,8 +663,9 @@ fn main() {
         Commands::Stats {
             json,
             verbose,
+            by_project,
             scope,
-        } => cmd::cmd_stats(json, verbose, Some(&scope)),
+        } => cmd::cmd_stats(json, verbose, by_project, Some(&scope)),
         Commands::CommandLog { lines } => cmd::cmd_command_log(lines),
         Commands::Update {
             skip_verify,

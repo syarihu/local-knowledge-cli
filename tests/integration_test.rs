@@ -863,6 +863,25 @@ fn test_add_reports_possibly_related_but_still_adds() {
     );
 }
 
+/// Pin `updated_at` on entries picked out by title.
+///
+/// Entries added moments apart share a timestamp (`updated_at` has second
+/// granularity), which leaves `ORDER BY updated_at DESC` to fall back to scan order —
+/// enough to make a ranking assertion pass for the wrong reason. Pinning beats
+/// sleeping past the boundary: it is exact, and it costs no wall clock.
+fn set_updated_at(db: &std::path::Path, rows: &[(&str, &str)]) {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    for (title, when) in rows {
+        let changed = conn
+            .execute(
+                "UPDATE entries SET updated_at = ?1 WHERE title = ?2",
+                rusqlite::params![when, title],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "expected exactly one entry titled {title:?}");
+    }
+}
+
 /// Drive the MCP server over stdio with one JSON-RPC line and return the replies.
 fn mcp_request(project: &std::path::Path, request: &str) -> Vec<serde_json::Value> {
     mcp_request_env(project, None, request)
@@ -1835,6 +1854,290 @@ fn setup_project_filter_fixture(
         assert!(out.status.success(), "seeding {title} failed");
     }
     run
+}
+
+#[test]
+fn test_ties_prefer_the_current_project() {
+    // `--keyword-only` takes the unranked path, where every hit scores the same, so
+    // the tie-break is the only thing deciding the order. The entry from elsewhere is
+    // added last (newer `updated_at`), which is what would otherwise win.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = |args: &[&str], env: Option<(&str, &str)>| {
+        let mut cmd = lk_bin();
+        cmd.args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env("LK_PROJECT", "syarihu/here");
+        if let Some((k, v)) = env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+
+    run(
+        &[
+            "add",
+            "tie entry from here",
+            "-k",
+            "tiekw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+        ],
+        None,
+    );
+    run(
+        &[
+            "add",
+            "tie entry from elsewhere",
+            "-k",
+            "tiekw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+        ],
+        Some(("LK_PROJECT", "syarihu/elsewhere")),
+    );
+
+    let out = run(
+        &[
+            "search",
+            "tiekw",
+            "--keyword-only",
+            "--scope",
+            "user",
+            "--json",
+        ],
+        None,
+    );
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(
+        hits[0]["project"], "syarihu/here",
+        "a tie must favour the project we are standing in: {hits:?}"
+    );
+
+    // Standing somewhere else flips it, which shows the order follows the current
+    // project rather than anything baked into the entries.
+    let out = run(
+        &[
+            "search",
+            "tiekw",
+            "--keyword-only",
+            "--scope",
+            "user",
+            "--json",
+        ],
+        Some(("LK_PROJECT", "syarihu/elsewhere")),
+    );
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(hits[0]["project"], "syarihu/elsewhere", "{hits:?}");
+}
+
+#[test]
+fn test_limit_one_still_reaches_the_current_projects_entry() {
+    // The boundary the preference exists for: with `--limit 1` the SQL hands back
+    // only the newest row, so a preference applied after the merge could never
+    // promote the current project's older entry. It has to happen inside the query.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = |args: &[&str], project: Option<&str>| {
+        let mut cmd = lk_bin();
+        cmd.args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env_remove("LK_PROJECT");
+        if let Some(p) = project {
+            cmd.env("LK_PROJECT", p);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+
+    // Attributed to this directory's own project (no LK_PROJECT, so it is detected),
+    // and made the OLDER of the two below, so `updated_at DESC` would drop it.
+    let here = proj
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+    run(
+        &[
+            "add",
+            "limit one from here",
+            "-k",
+            "limitkw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+        ],
+        None,
+    );
+    run(
+        &[
+            "add",
+            "limit one from elsewhere",
+            "-k",
+            "limitkw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+        ],
+        Some("syarihu/elsewhere"),
+    );
+    // Pinned rather than waited for: entries added moments apart share a timestamp
+    // (second granularity), which would leave the ordering under test to scan order.
+    set_updated_at(
+        &home.path().join(".config/lk/knowledge.db"),
+        &[
+            ("limit one from here", "2020-01-01T00:00:00"),
+            ("limit one from elsewhere", "2030-01-01T00:00:00"),
+        ],
+    );
+
+    let expect_here = |out: std::process::Output, what: &str| {
+        let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(hits.len(), 1, "{what}: {hits:?}");
+        assert_eq!(
+            hits[0]["project"], here,
+            "{what}: the single slot must go to the current project's older entry: {hits:?}"
+        );
+    };
+    expect_here(
+        run(
+            &[
+                "search",
+                "limitkw",
+                "--keyword-only",
+                "--scope",
+                "user",
+                "--limit",
+                "1",
+                "--json",
+            ],
+            None,
+        ),
+        "cli",
+    );
+
+    // The same through MCP, which resolves the project from the request's root.
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_knowledge","arguments":{"query":"limitkw","keyword_only":true,"scope":"user","limit":1}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("search_knowledge did not return JSON ({e}): {body}"));
+    let entries = out["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1, "body: {body}");
+    assert_eq!(entries[0]["project"], here, "body: {body}");
+}
+
+#[test]
+fn test_stats_by_project_counts_across_scopes() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env_remove("LK_PROJECT")
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+
+    // Two entries for one project (one per scope), one for another, one unattributed.
+    for (scope, project) in [
+        ("user", "hoge/app"),
+        ("project", "hoge/app"),
+        ("user", "fuga/app"),
+    ] {
+        assert!(
+            run(&[
+                "add",
+                &format!("stats entry {scope} {project}"),
+                "-k",
+                "statskw",
+                "-c",
+                "body",
+                "--scope",
+                scope,
+                "--project",
+                project,
+            ])
+            .status
+            .success()
+        );
+    }
+    let added: serde_json::Value = serde_json::from_slice(
+        &run(&[
+            "add",
+            "stats entry unattributed",
+            "-k",
+            "statskw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+            "--json",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    assert!(
+        run(&["edit", added["uid"].as_str().unwrap(), "--project", ""])
+            .status
+            .success()
+    );
+
+    let out = run(&["stats", "--by-project", "--json"]);
+    assert!(out.status.success());
+    let stats: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = stats["by_project"].as_array().expect("by_project array");
+    let count_for = |name: Option<&str>| -> i64 {
+        rows.iter()
+            .find(|r| r["project"].as_str() == name)
+            .map(|r| r["entries"].as_i64().unwrap())
+            .unwrap_or(0)
+    };
+    // The same project in both stores is one row, not two.
+    assert_eq!(count_for(Some("hoge/app")), 2, "rows: {rows:?}");
+    assert_eq!(count_for(Some("fuga/app")), 1);
+    assert_eq!(count_for(None), 1, "unattributed entries must be visible");
+
+    // The human-readable form names the unattributed group rather than dropping it.
+    let text = String::from_utf8_lossy(&run(&["stats", "--by-project"]).stdout).to_string();
+    assert!(
+        text.contains("By project:") && text.contains("(unattributed)"),
+        "{text}"
+    );
 }
 
 #[test]

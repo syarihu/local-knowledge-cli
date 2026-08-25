@@ -33,6 +33,10 @@ pub fn cmd_search(
         None => None,
     };
     let conns = super::read_connections(scope)?;
+    // Resolved before the queries: the per-scope `LIMIT` decides which candidates
+    // survive, so a preference applied only after the merge could not promote an
+    // entry that never made it out of its own scope.
+    let here = crate::util::current_project_key();
     let config = crate::config::Config::load(&get_knowledge_dir());
 
     // Query each scope's DB and collect. Keywords are fetched on the SAME conn the
@@ -48,6 +52,7 @@ pub fn cmd_search(
             status,
             since,
             project_filter.as_ref(),
+            here.as_deref(),
             limit,
         )?;
         for r in results {
@@ -59,11 +64,16 @@ pub fn cmd_search(
             items.push((score, label, r, kws));
         }
     }
-    // Sort by score ASC (smaller 1/(1+|bm25|) = better match), tie-break on
-    // updated_at DESC — matching the per-DB SQL order `ORDER BY rank, updated_at DESC`.
+    // Sort by score ASC (smaller 1/(1+|bm25|) = better match). A tie means bm25 could
+    // not tell the two apart — or that neither came from the ranked path at all, since
+    // the keyword and LIKE fallbacks carry no score and every row ties. Among equals,
+    // knowledge recorded in the repo you are standing in is the better guess; only
+    // then does the per-DB order (updated_at DESC) decide.
     items.sort_by(|a, b| {
+        let mine = |e: &db::Entry| here.is_some() && e.project.as_deref() == here.as_deref();
         a.0.partial_cmp(&b.0)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| mine(&b.2).cmp(&mine(&a.2)))
             .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
     });
     items.truncate(limit);
@@ -122,12 +132,6 @@ pub fn cmd_search(
         // Badge a hit whose recorded project is not the one we are standing in. A
         // project-scope hit can carry another repo's project too (via `--project`, or
         // md synced from elsewhere), so the badge follows the value, not the scope.
-        // Resolved once per command because it shells out to git.
-        let here = items
-            .iter()
-            .any(|(_, _, r, _)| r.project.is_some())
-            .then(crate::util::current_project_key)
-            .flatten();
         for (_, label, r, kws) in &items {
             let snippet = truncate_str(&r.content, 80);
             let days = days_since(&r.updated_at);

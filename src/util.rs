@@ -209,6 +209,15 @@ pub fn normalize_project_key(raw: &str) -> Option<String> {
     Some(s.to_string())
 }
 
+/// Terminal columns a string occupies.
+///
+/// Delegates to `unicode-width` rather than a hand-written range table: combining
+/// marks are zero-width, emoji are two, and getting that wrong misaligns exactly the
+/// names a table is meant to line up.
+pub fn display_width(s: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(s)
+}
+
 /// The repo name of a project key: its last path segment. Used for display, so a
 /// slug reads as `local-knowledge-cli` rather than `syarihu/local-knowledge-cli`.
 pub fn project_repo_name(key: &str) -> &str {
@@ -237,6 +246,11 @@ fn git_config_project(root: &Path) -> Option<String> {
 
 /// `origin`'s remote URL for `root`, normalized to a slug. `None` when `root` is not
 /// a repo, has no `origin`, or git is unavailable.
+///
+/// Deliberately `git remote get-url` rather than reading `remote.origin.url`: git
+/// expands `url.<base>.insteadOf` here and picks the first of several URLs, and a
+/// key that ignored those rules would disagree with the remote the user actually
+/// pushes to. Worth the second process.
 fn git_remote_slug(root: &Path) -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -890,6 +904,16 @@ mod tests {
             normalize_project_key("github.com:syarihu/local-knowledge-cli.git").as_deref(),
             Some("syarihu/local-knowledge-cli")
         );
+    }
+
+    #[test]
+    fn test_display_width_counts_wide_characters_as_two() {
+        assert_eq!(display_width("owner/repo"), 10);
+        assert_eq!(display_width("組織/アプリ"), 11); // 組織=4, /=1, アプリ=6
+        // A combining mark adds no columns, and an emoji takes two.
+        assert_eq!(display_width("は\u{3099}"), 2);
+        assert_eq!(display_width("😀"), 2);
+        assert_eq!(display_width(""), 0);
     }
 
     #[test]
