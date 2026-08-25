@@ -239,14 +239,16 @@ pub fn cmd_stats(
             if by_project_rows.is_empty() {
                 println!("  (no entries)");
             }
+            // Terminal columns, not characters: a Japanese project name is twice as
+            // wide as its char count and would push the count column out of line.
             let width = by_project_rows
                 .iter()
-                .map(|(p, _)| p.as_deref().unwrap_or(UNATTRIBUTED).chars().count())
+                .map(|(p, _)| crate::util::display_width(p.as_deref().unwrap_or(UNATTRIBUTED)))
                 .max()
                 .unwrap_or(0);
             for (project, count) in &by_project_rows {
                 let name = project.as_deref().unwrap_or(UNATTRIBUTED);
-                let pad = " ".repeat(width.saturating_sub(name.chars().count()));
+                let pad = " ".repeat(width.saturating_sub(crate::util::display_width(name)));
                 println!("  {name}{pad}  {count}");
             }
         }

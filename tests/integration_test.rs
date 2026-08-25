@@ -1925,6 +1925,114 @@ fn test_ties_prefer_the_current_project() {
 }
 
 #[test]
+fn test_limit_one_still_reaches_the_current_projects_entry() {
+    // The boundary the preference exists for: with `--limit 1` the SQL hands back
+    // only the newest row, so a preference applied after the merge could never
+    // promote the current project's older entry. It has to happen inside the query.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = |args: &[&str], project: Option<&str>| {
+        let mut cmd = lk_bin();
+        cmd.args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env_remove("LK_PROJECT");
+        if let Some(p) = project {
+            cmd.env("LK_PROJECT", p);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+
+    // Attributed to this directory's own project (no LK_PROJECT, so it is detected),
+    // and deliberately the OLDER of the two: `updated_at DESC` would drop it, and
+    // `updated_at` has second granularity, so the wait is what makes the order real.
+    let here = proj
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+    run(
+        &[
+            "add",
+            "limit one from here",
+            "-k",
+            "limitkw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+        ],
+        None,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    run(
+        &[
+            "add",
+            "limit one from elsewhere",
+            "-k",
+            "limitkw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+        ],
+        Some("syarihu/elsewhere"),
+    );
+
+    let expect_here = |out: std::process::Output, what: &str| {
+        let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(hits.len(), 1, "{what}: {hits:?}");
+        assert_eq!(
+            hits[0]["project"], here,
+            "{what}: the single slot must go to the current project's older entry: {hits:?}"
+        );
+    };
+    expect_here(
+        run(
+            &[
+                "search",
+                "limitkw",
+                "--keyword-only",
+                "--scope",
+                "user",
+                "--limit",
+                "1",
+                "--json",
+            ],
+            None,
+        ),
+        "cli",
+    );
+
+    // The same through MCP, which resolves the project from the request's root.
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_knowledge","arguments":{"query":"limitkw","keyword_only":true,"scope":"user","limit":1}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("search_knowledge did not return JSON ({e}): {body}"));
+    let entries = out["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1, "body: {body}");
+    assert_eq!(entries[0]["project"], here, "body: {body}");
+}
+
+#[test]
 fn test_stats_by_project_counts_across_scopes() {
     let home = tempfile::tempdir().unwrap();
     let proj = setup_temp_project();

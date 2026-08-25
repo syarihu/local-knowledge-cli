@@ -240,7 +240,7 @@ By project:
   syarihu/some-app              7
 ```
 
-Search results also use it as a **tie-break**: when two hits score the same — which is every hit on the keyword and substring fallbacks, since only full-text search produces a score — the one recorded in the project you are standing in comes first. Genuine relevance differences are never reordered.
+Search results also use it as a **tie-break**: when two hits score the same — which is every hit on the keyword and substring fallbacks, since only full-text search produces a score — the one recorded in the project you are standing in comes first. Genuine relevance differences are never reordered. The preference is applied while candidates are still being selected, so it holds at `--limit 1` too, not just within a page that was already chosen.
 
 `lk get` and `--json` output always show the full slug. The human-readable `search` / `list` badge shows just the repo name, and only for entries recorded against a *different* project than the one you are standing in — so results from this repo stay unadorned while a hit carried in from elsewhere is marked. Entries added before this existed have no project recorded. The value round-trips through markdown as a `project:` line, so `lk sync` preserves it.
 

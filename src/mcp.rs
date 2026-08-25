@@ -862,6 +862,10 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             // from (ids are per-DB). rank is 1/(1+|bm25|): smaller = better, so sort
             // ASCENDING to match per-DB order (None ranks sort last).
             let conns = read_scope_conns(scope, &project_root)?;
+            // Before the queries: `LIMIT` is applied per scope, so a preference
+            // applied after the merge could not promote an entry that was already
+            // dropped. Resolved against the project this request targets.
+            let here = util::project_key_for(&project_root);
             let mut items: Vec<(f64, &'static str, db::Entry, Vec<String>)> = Vec::new();
             for (conn, label) in &conns {
                 let entries = db::search_entries(
@@ -873,6 +877,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     status,
                     None,
                     project_filter.as_ref(),
+                    here.as_deref(),
                     limit,
                 )
                 .map_err(|e| format!("search error: {e}"))?;
@@ -888,11 +893,6 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             // targets, then fall back to the per-DB order (updated_at DESC). Same
             // rule as the CLI, resolved against the request's project rather than
             // the server's own directory.
-            let here = items
-                .iter()
-                .any(|(_, _, e, _)| e.project.is_some())
-                .then(|| util::project_key_for(&project_root))
-                .flatten();
             items.sort_by(|a, b| {
                 let mine =
                     |e: &db::Entry| here.is_some() && e.project.as_deref() == here.as_deref();

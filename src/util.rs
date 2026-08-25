@@ -209,45 +209,74 @@ pub fn normalize_project_key(raw: &str) -> Option<String> {
     Some(s.to_string())
 }
 
+/// Terminal columns a string occupies, counting East Asian wide characters as two.
+///
+/// Enough for aligning a column of project names without pulling in a full
+/// character-width table: repo slugs are ASCII, and the wide case that does turn up
+/// is Japanese, which lives in these ranges.
+pub fn display_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| match c as u32 {
+            0x1100..=0x115F        // Hangul Jamo
+            | 0x2E80..=0x303E      // CJK radicals, Kangxi, CJK symbols and punctuation
+            | 0x3041..=0x33FF      // Hiragana, Katakana, CJK compatibility
+            | 0x3400..=0x4DBF      // CJK extension A
+            | 0x4E00..=0x9FFF      // CJK unified ideographs
+            | 0xA000..=0xA4CF      // Yi
+            | 0xAC00..=0xD7A3      // Hangul syllables
+            | 0xF900..=0xFAFF      // CJK compatibility ideographs
+            | 0xFE30..=0xFE6F      // CJK compatibility forms
+            | 0xFF00..=0xFF60      // Fullwidth forms
+            | 0xFFE0..=0xFFE6      // Fullwidth signs
+            | 0x20000..=0x3FFFD => 2, // CJK extensions B and beyond
+            _ => 1,
+        })
+        .sum()
+}
+
 /// The repo name of a project key: its last path segment. Used for display, so a
 /// slug reads as `local-knowledge-cli` rather than `syarihu/local-knowledge-cli`.
 pub fn project_repo_name(key: &str) -> &str {
     key.rsplit('/').next().unwrap_or(key)
 }
 
-/// A per-repo override: `git config lk.project <owner/repo>`.
+/// `lk.project` and `origin`'s URL for `root`, read in a single `git` invocation.
 ///
-/// Unlike `LK_PROJECT` this persists, is shared by every worktree (they share one
-/// config), needs no `lk init`, and — because it belongs to the repo rather than to
-/// the environment — it is safe to honor on the MCP path too. It is what to reach
-/// for when the detected key is unwanted: a self-hosted remote's server path, or a
-/// fork whose knowledge should be filed under the upstream name.
-fn git_config_project(root: &Path) -> Option<String> {
-    let out = std::process::Command::new("git")
+/// One process rather than two: this runs on every search now that the ranking
+/// tie-break needs the current project before the query, not just when a hit turns
+/// out to be attributed.
+fn git_config_values(root: &Path) -> (Option<String>, Option<String>) {
+    let Ok(out) = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["config", "--get", "lk.project"])
+        .args([
+            "config",
+            "-z",
+            "--get-regexp",
+            "^(lk\\.project|remote\\.origin\\.url)$",
+        ])
         .output()
-        .ok()?;
+    else {
+        return (None, None);
+    };
     if !out.status.success() {
-        return None;
+        return (None, None);
     }
-    normalize_project_key(String::from_utf8_lossy(&out.stdout).trim())
-}
-
-/// `origin`'s remote URL for `root`, normalized to a slug. `None` when `root` is not
-/// a repo, has no `origin`, or git is unavailable.
-fn git_remote_slug(root: &Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (mut lk_project, mut origin) = (None, None);
+    // `-z` separates entries with NUL and the key from its value with a newline, so a
+    // value containing spaces (or anything else) stays intact.
+    for entry in text.split('\0').filter(|e| !e.is_empty()) {
+        let Some((key, value)) = entry.split_once('\n') else {
+            continue;
+        };
+        match key {
+            "lk.project" => lk_project = Some(value.to_string()),
+            "remote.origin.url" => origin = Some(value.to_string()),
+            _ => {}
+        }
     }
-    normalize_project_key(String::from_utf8_lossy(&out.stdout).trim())
+    (lk_project, origin)
 }
 
 /// The project key to record on entries added from `root`.
@@ -260,10 +289,14 @@ fn git_remote_slug(root: &Path) -> Option<String> {
 /// per branch (so one repo would otherwise scatter across keys) and because it
 /// carries the owner, keeping same-named repos in different orgs apart.
 pub fn project_key_for(root: &Path) -> Option<String> {
-    if let Some(configured) = git_config_project(root) {
-        return Some(configured);
+    let (configured, origin) = git_config_values(root);
+    // A per-repo override wins: it persists, every worktree shares it, it needs no
+    // `lk init`, and it belongs to the repo rather than the environment — which is
+    // what makes it safe to honor on the MCP path too.
+    if let Some(key) = configured.as_deref().and_then(normalize_project_key) {
+        return Some(key);
     }
-    if let Some(slug) = git_remote_slug(root) {
+    if let Some(slug) = origin.as_deref().and_then(normalize_project_key) {
         return Some(slug);
     }
     let dir = main_worktree_root(root);
@@ -890,6 +923,13 @@ mod tests {
             normalize_project_key("github.com:syarihu/local-knowledge-cli.git").as_deref(),
             Some("syarihu/local-knowledge-cli")
         );
+    }
+
+    #[test]
+    fn test_display_width_counts_wide_characters_as_two() {
+        assert_eq!(display_width("owner/repo"), 10);
+        assert_eq!(display_width("組織/アプリ"), 11); // 組織=4, /=1, アプリ=6
+        assert_eq!(display_width(""), 0);
     }
 
     #[test]

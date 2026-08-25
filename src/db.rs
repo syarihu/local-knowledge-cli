@@ -700,6 +700,11 @@ pub fn search_entries(
     status: Option<&str>,
     since: Option<&str>,
     project: Option<&ProjectFilter>,
+    // The caller's current project. Among candidates the query could not tell apart,
+    // entries recorded against it are kept over the rest — applied here, inside the
+    // over-fetch window, because a caller that reorders afterwards can only reorder
+    // what `limit` already let through.
+    prefer_project: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
     // Each scope must return at most `limit` rows (callers merge then truncate), so a
@@ -761,7 +766,9 @@ pub fn search_entries(
             let entry = row?;
             if seen_titles.insert(entry.title.to_lowercase()) {
                 results.push(entry);
-                if results.len() >= limit {
+                // No early break: `prefer_project` may promote a candidate from
+                // further down the window, which stopping at `limit` would discard.
+                if results.len() >= fetch_limit as usize {
                     break;
                 }
             }
@@ -812,7 +819,7 @@ pub fn search_entries(
                         {
                             seen_ids.insert(entry.id);
                             results.push(entry);
-                            if results.len() >= limit {
+                            if results.len() >= fetch_limit as usize {
                                 break;
                             }
                         }
@@ -868,7 +875,7 @@ pub fn search_entries(
                 if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
                     seen_ids.insert(entry.id);
                     results.push(entry);
-                    if results.len() >= limit {
+                    if results.len() >= fetch_limit as usize {
                         break;
                     }
                 }
@@ -917,7 +924,7 @@ pub fn search_entries(
                 if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
                     seen_ids.insert(entry.id);
                     results.push(entry);
-                    if results.len() >= limit {
+                    if results.len() >= fetch_limit as usize {
                         break;
                     }
                 }
@@ -925,8 +932,21 @@ pub fn search_entries(
         }
     }
 
-    // Both branches dedup by title as rows arrive and stop at `limit`, so `results` is
-    // already title-unique and within the limit — no final pass needed.
+    // Both branches dedup by title as rows arrive, collecting up to the over-fetch
+    // window. Prefer the caller's project among candidates the query ranked equally,
+    // then cut to `limit` — doing this here, rather than in the caller, is what lets
+    // a preferred entry outrank one the window would otherwise have handed back.
+    if let Some(here) = prefer_project {
+        results.sort_by(|a, b| {
+            let mine = |e: &Entry| e.project.as_deref() == Some(here);
+            let rank = |e: &Entry| e.rank.unwrap_or(f64::MAX);
+            rank(a)
+                .partial_cmp(&rank(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| mine(b).cmp(&mine(a)))
+        });
+    }
+    results.truncate(limit);
     Ok(results)
 }
 
@@ -1726,8 +1746,10 @@ mod tests {
         )
         .unwrap();
 
-        let results =
-            search_entries(&conn, "OAuth", false, None, None, None, None, None, 10).unwrap();
+        let results = search_entries(
+            &conn, "OAuth", false, None, None, None, None, None, None, 10,
+        )
+        .unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "OAuth Login");
     }
@@ -1767,6 +1789,7 @@ mod tests {
             &conn,
             "how does the auth middleware refresh a token",
             false,
+            None,
             None,
             None,
             None,
@@ -1827,6 +1850,7 @@ mod tests {
             &conn,
             "トークン スキーマ",
             false,
+            None,
             None,
             None,
             None,
@@ -1905,8 +1929,10 @@ mod tests {
         )
         .unwrap();
 
-        let results =
-            search_entries(&conn, "needle", false, None, None, None, None, None, 3).unwrap();
+        let results = search_entries(
+            &conn, "needle", false, None, None, None, None, None, None, 3,
+        )
+        .unwrap();
         assert_eq!(
             results.len(),
             3,
@@ -1933,9 +1959,11 @@ mod tests {
         )
         .unwrap();
         assert!(
-            search_entries(&conn, "needle", false, None, None, None, None, None, 0)
-                .unwrap()
-                .is_empty()
+            search_entries(
+                &conn, "needle", false, None, None, None, None, None, None, 0
+            )
+            .unwrap()
+            .is_empty()
         );
     }
 
@@ -1956,14 +1984,36 @@ mod tests {
         )
         .unwrap();
         assert!(
-            search_entries(&conn, "  --  __ ", false, None, None, None, None, None, 5)
-                .unwrap()
-                .is_empty()
+            search_entries(
+                &conn,
+                "  --  __ ",
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                5
+            )
+            .unwrap()
+            .is_empty()
         );
         assert!(
-            search_entries(&conn, "  --  __ ", true, None, None, None, None, None, 5)
-                .unwrap()
-                .is_empty()
+            search_entries(
+                &conn,
+                "  --  __ ",
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                5
+            )
+            .unwrap()
+            .is_empty()
         );
     }
 
@@ -1983,7 +2033,7 @@ mod tests {
         .unwrap();
 
         let results =
-            search_entries(&conn, "mykey", true, None, None, None, None, None, 10).unwrap();
+            search_entries(&conn, "mykey", true, None, None, None, None, None, None, 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "A");
     }
@@ -2039,6 +2089,7 @@ mod tests {
             Some("proposed"),
             None,
             None,
+            None,
             10,
         )
         .unwrap();
@@ -2053,6 +2104,7 @@ mod tests {
             None,
             None,
             Some("accepted"),
+            None,
             None,
             None,
             10,
@@ -2071,6 +2123,7 @@ mod tests {
             Some("proposed"),
             None,
             None,
+            None,
             10,
         )
         .unwrap();
@@ -2078,7 +2131,10 @@ mod tests {
         assert_eq!(r[0].title, "Plan OAuth 認証");
 
         // No status filter returns both
-        let r = search_entries(&conn, "OAuth", false, None, None, None, None, None, 10).unwrap();
+        let r = search_entries(
+            &conn, "OAuth", false, None, None, None, None, None, None, 10,
+        )
+        .unwrap();
         assert_eq!(r.len(), 2);
     }
 
@@ -2142,14 +2198,25 @@ mod tests {
         .unwrap();
 
         // 3+ char Japanese query via trigram FTS
-        let results =
-            search_entries(&conn, "トークン", false, None, None, None, None, None, 10).unwrap();
+        let results = search_entries(
+            &conn,
+            "トークン",
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .unwrap();
         assert!(!results.is_empty(), "trigram should match 3+ char Japanese");
         assert_eq!(results[0].title, "認証フロー");
 
         // 2-char Japanese query falls back to LIKE
         let results =
-            search_entries(&conn, "認証", false, None, None, None, None, None, 10).unwrap();
+            search_entries(&conn, "認証", false, None, None, None, None, None, None, 10).unwrap();
         assert!(
             !results.is_empty(),
             "LIKE fallback should match 2-char Japanese"
@@ -2157,8 +2224,19 @@ mod tests {
         assert_eq!(results[0].title, "認証フロー");
 
         // Multi-word Japanese query
-        let results =
-            search_entries(&conn, "レート制限", false, None, None, None, None, None, 10).unwrap();
+        let results = search_entries(
+            &conn,
+            "レート制限",
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .unwrap();
         assert!(!results.is_empty(), "should match multi-char Japanese");
     }
 
@@ -2622,6 +2700,7 @@ mod tests {
             None,
             None,
             Some(&exact),
+            None,
             10,
         )
         .unwrap();
@@ -2638,6 +2717,7 @@ mod tests {
             None,
             None,
             Some(&bare),
+            None,
             10,
         )
         .unwrap();
@@ -2664,6 +2744,7 @@ mod tests {
             None,
             None,
             Some(&hit),
+            None,
             10,
         )
         .unwrap();
@@ -2686,6 +2767,7 @@ mod tests {
             None,
             None,
             Some(&miss),
+            None,
             10,
         )
         .unwrap();
@@ -2721,6 +2803,7 @@ mod tests {
                 None,
                 None,
                 Some(&filter),
+                None,
                 10,
             )
             .unwrap()
@@ -2757,6 +2840,7 @@ mod tests {
                 None,
                 None,
                 Some(&filter),
+                None,
                 10,
             )
             .unwrap();
@@ -2801,7 +2885,19 @@ mod tests {
         )
         .unwrap();
 
-        let r = search_entries(&conn, "migration", false, None, None, None, None, None, 5).unwrap();
+        let r = search_entries(
+            &conn,
+            "migration",
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            5,
+        )
+        .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].project.as_deref(), Some("syarihu/other-repo"));
         assert!(
@@ -2918,6 +3014,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             10,
         )
         .unwrap();
@@ -2941,8 +3038,10 @@ mod tests {
         .unwrap();
 
         // Hyphenated query should still find the entry
-        let results =
-            search_entries(&conn, "auth-API", false, None, None, None, None, None, 10).unwrap();
+        let results = search_entries(
+            &conn, "auth-API", false, None, None, None, None, None, None, 10,
+        )
+        .unwrap();
         assert!(!results.is_empty(), "hyphenated query should find entry");
         assert!(results[0].title.contains("Auth"));
     }

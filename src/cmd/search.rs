@@ -33,6 +33,10 @@ pub fn cmd_search(
         None => None,
     };
     let conns = super::read_connections(scope)?;
+    // Resolved before the queries: the per-scope `LIMIT` decides which candidates
+    // survive, so a preference applied only after the merge could not promote an
+    // entry that never made it out of its own scope.
+    let here = crate::util::current_project_key();
     let config = crate::config::Config::load(&get_knowledge_dir());
 
     // Query each scope's DB and collect. Keywords are fetched on the SAME conn the
@@ -48,6 +52,7 @@ pub fn cmd_search(
             status,
             since,
             project_filter.as_ref(),
+            here.as_deref(),
             limit,
         )?;
         for r in results {
@@ -59,15 +64,6 @@ pub fn cmd_search(
             items.push((score, label, r, kws));
         }
     }
-    // The project we are standing in, resolved once (it shells out to git) and only
-    // when some hit is attributed at all. Used to order ties below and to badge the
-    // hits that came from somewhere else.
-    let here = items
-        .iter()
-        .any(|(_, _, r, _)| r.project.is_some())
-        .then(crate::util::current_project_key)
-        .flatten();
-
     // Sort by score ASC (smaller 1/(1+|bm25|) = better match). A tie means bm25 could
     // not tell the two apart — or that neither came from the ranked path at all, since
     // the keyword and LIKE fallbacks carry no score and every row ties. Among equals,
