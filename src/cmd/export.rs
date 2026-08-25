@@ -1,9 +1,51 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cmd::sync::import_md_file;
 use crate::db;
 use crate::markdown;
 use crate::util::{get_knowledge_dir, get_project_root, now_iso, open_db_with_migrate};
+
+/// The file name for a group of entries, as a single safe path segment.
+///
+/// A group is a keyword, and keywords are written freely: `feature/auth` turned into
+/// a path that no directory existed for (so `export` failed outright), and
+/// `x/../../README` resolved outside the store and overwrote whatever was there.
+/// Characters a file name cannot carry fold to `-`.
+///
+/// A name that had to be changed carries a short digest of the original, so two
+/// keywords can never land on the same file — `feature/auth` and a literal
+/// `feature-auth` stay apart. The digest is of the group alone, so the name is stable
+/// across runs and independent of whatever other groups exist.
+fn export_file_name(group: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    const UNSAFE: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+    let folded: String = group
+        .chars()
+        .map(|c| {
+            if c.is_control() || UNSAFE.contains(&c) {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    // A leading dot hides the file (and `.` / `..` are not names at all); Windows
+    // drops trailing dots and spaces.
+    let trimmed = folded.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    let safe = if trimmed.is_empty() {
+        "general"
+    } else {
+        trimmed
+    };
+
+    if safe == group {
+        format!("exported-{safe}.md")
+    } else {
+        let digest = hex::encode(&Sha256::digest(group.as_bytes())[..3]);
+        format!("exported-{safe}-{digest}.md")
+    }
+}
 
 pub fn cmd_export(
     dir: Option<PathBuf>,
@@ -206,7 +248,13 @@ fn export_to_dir(
         let mut sorted_entries: Vec<&db::Entry> = group_entries.iter().collect();
         sorted_entries.sort_by_key(|e| e.title.to_lowercase());
 
-        let filename = format!("exported-{group_name}.md");
+        let filename = export_file_name(group_name);
+        // The name is one segment by construction; this keeps that an invariant
+        // rather than a comment, so a future change to the naming can't quietly
+        // reintroduce a path.
+        if Path::new(&filename).components().count() != 1 {
+            return Err(format!("refusing to export to a non-file name: {filename:?}").into());
+        }
         let filepath = output_dir.join(&filename);
 
         let mut all_kws: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -298,4 +346,57 @@ pub fn cmd_import(path: &std::path::Path) -> Result<(), Box<dyn std::error::Erro
     let count = import_md_file(&conn, path, &root)?;
     println!("Imported {count} entries from {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_export_file_name_leaves_ordinary_keywords_alone() {
+        // The common case must keep the name it has always had: `sync` matches
+        // entries by their stored `source_file`, so a gratuitous rename would look
+        // like the old file was deleted and a new one added.
+        assert_eq!(export_file_name("features"), "exported-features.md");
+        assert_eq!(export_file_name("認証"), "exported-認証.md");
+        assert_eq!(export_file_name("feature-auth"), "exported-feature-auth.md");
+    }
+
+    #[test]
+    fn test_export_file_name_cannot_escape_the_output_directory() {
+        // `x/../../README` used to resolve outside the store and overwrite the file
+        // it landed on. Whatever the keyword, the result is one path segment.
+        for group in [
+            "x/../../README",
+            "../escape",
+            "/etc/passwd",
+            "a\\b",
+            "..",
+            ".",
+            "",
+            "  ",
+            ".hidden",
+        ] {
+            let name = export_file_name(group);
+            assert_eq!(
+                Path::new(&name).components().count(),
+                1,
+                "{group:?} produced {name:?}"
+            );
+            assert!(!name.contains('/') && !name.contains('\\'), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn test_export_file_name_keeps_folded_keywords_apart() {
+        // `feature/auth` folds to the same letters as a literal `feature-auth`, so the
+        // folded one carries a digest of the original: two keywords must never share a
+        // file, or exporting one would overwrite the other's entries.
+        let folded = export_file_name("feature/auth");
+        assert!(folded.starts_with("exported-feature-auth-"), "{folded}");
+        assert_ne!(folded, export_file_name("feature-auth"));
+        assert_ne!(folded, export_file_name("feature:auth"));
+        // Stable across calls, and independent of any other group.
+        assert_eq!(folded, export_file_name("feature/auth"));
+    }
 }

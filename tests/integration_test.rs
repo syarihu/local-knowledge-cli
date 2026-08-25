@@ -863,6 +863,112 @@ fn test_add_reports_possibly_related_but_still_adds() {
     );
 }
 
+#[test]
+fn test_export_keyword_cannot_write_outside_the_store() {
+    // A keyword becomes the exported file's name, so `x/../../README` used to resolve
+    // out of `.knowledge/` and overwrite whatever it landed on.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    std::fs::write(dir.path().join("README.md"), "the project's own readme").unwrap();
+    // The traversal needs this directory to exist for `..` to resolve through it.
+    std::fs::create_dir_all(dir.path().join(".knowledge/exported-x")).unwrap();
+
+    assert!(
+        run(&[
+            "add",
+            "innocent looking entry",
+            "-k",
+            "x/../../README",
+            "-c",
+            "overwritten?",
+        ])
+        .status
+        .success()
+    );
+    let out = run(&["export"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+        "the project's own readme",
+        "export must not write outside .knowledge/"
+    );
+    // It still exported — into the store, under a flattened name.
+    let written: Vec<String> = std::fs::read_dir(dir.path().join(".knowledge"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("exported-"))
+        .collect();
+    assert_eq!(written.len(), 1, "files: {written:?}");
+    // Flattened, and inside the store — the `..` survives only as literal text.
+    assert!(!written[0].contains('/'), "{written:?}");
+}
+
+#[test]
+fn test_export_round_trips_a_keyword_with_a_slash() {
+    // `feature/auth` is an ordinary keyword to write, and it used to fail the whole
+    // export with "No such file or directory" — the flattened name has to survive a
+    // `sync` back as well, since that is how the md store stays the source of truth.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    assert!(
+        run(&[
+            "add",
+            "auth flow",
+            "-k",
+            "feature/auth",
+            "-c",
+            "how login works"
+        ])
+        .status
+        .success()
+    );
+
+    let out = run(&["export"]);
+    assert!(
+        out.status.success(),
+        "export failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sync = run(&["sync", "--json"]);
+    assert!(
+        sync.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let search = run(&["search", "login", "--scope", "project", "--json"]);
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&search.stdout).unwrap();
+    assert_eq!(
+        hits.len(),
+        1,
+        "the entry must survive the round trip: {hits:?}"
+    );
+    assert_eq!(hits[0]["source"], "shared", "{hits:?}");
+}
+
 /// Pin `updated_at` on entries picked out by title.
 ///
 /// Entries added moments apart share a timestamp (`updated_at` has second

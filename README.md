@@ -286,6 +286,10 @@ Warning: This project requires lk >= 0.8.0, but you have 0.7.2. Run `lk update` 
 
 Commit `.lk-version` to keep the team on a compatible version.
 
+### Exported file names
+
+`lk export` groups entries by their first keyword and writes one file per group, named `exported-<keyword>.md`. Keywords are free text, so a name that cannot be a file name is flattened: path separators and the characters file systems reject fold to `-`, and a keyword that had to be changed carries a short digest of the original, so `feature/auth` and a literal `feature-auth` never land on the same file. Ordinary keywords keep the name they have always had.
+
 ### Markdown Format
 
 Knowledge markdown files use YAML frontmatter and `## Entry:` headings:
