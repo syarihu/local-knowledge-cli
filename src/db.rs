@@ -1104,13 +1104,20 @@ pub fn update_entry(
         conn.execute_batch("SAVEPOINT update_keywords")?;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             conn.execute("DELETE FROM keywords WHERE entry_id = ?1", params![id])?;
-            for kw in kws {
+            // Lowercased and deduped like the other insert paths: keyword search
+            // lowercases the needle, so a keyword stored as `AUTH` would never match a
+            // search for `auth`, and the table has no unique constraint to stop
+            // case-variants in one edit from becoming duplicate rows.
+            let mut seen = std::collections::HashSet::new();
+            let unique: Vec<String> = kws
+                .iter()
+                .map(|k| k.to_lowercase())
+                .filter(|k| seen.insert(k.clone()))
+                .collect();
+            for kw in &unique {
                 conn.execute(
-                    // Lowercased like every other insert path: keyword search
-                    // lowercases the needle, so a keyword stored as `AUTH` here would
-                    // never match a search for `auth`.
                     "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
-                    params![id, kw.to_lowercase()],
+                    params![id, kw],
                 )?;
             }
             conn.execute(
@@ -3158,6 +3165,38 @@ mod tests {
             .unwrap();
             assert!(hits.iter().all(|e| e.project.is_some()));
         }
+    }
+
+    #[test]
+    fn test_edit_keywords_are_lowercased_and_deduped() {
+        // Keyword search lowercases the needle, so an entry edited to hold `AUTH`
+        // could never be found by `auth` — and the table has no unique constraint, so
+        // case-variants in one edit used to become duplicate rows.
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &["initial".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        update_entry(
+            &conn,
+            id,
+            None,
+            None,
+            Some(&["AUTH".to_string(), "auth".to_string(), "Login".to_string()]),
+            &now_iso(),
+        )
+        .unwrap();
+
+        let mut kws = get_keywords(&conn, id).unwrap();
+        kws.sort();
+        assert_eq!(kws, vec!["auth", "login"]);
     }
 
     #[test]
