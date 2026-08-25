@@ -191,7 +191,11 @@ pub fn normalize_project_key(raw: &str) -> Option<String> {
     };
     // Only the last segment of a path names the repo — the rest is machine-specific,
     // which is exactly what a project key must not depend on. A URL's path keeps
-    // every segment so deeper namespaces (GitLab subgroups) survive.
+    // every segment so deeper namespaces (GitLab subgroups) survive. That also keeps
+    // a server path from a self-hosted remote (`ssh://host/home/alice/repo.git` →
+    // `home/alice/repo`): it is that repo's identity, and there is no signal telling
+    // it apart from `group/sub/repo`, so truncating would merge unrelated repos.
+    // `--project` overrides it for anyone who would rather not record the path.
     let s = if from_path || is_fs_path(s) {
         last_segment(s)
     } else {

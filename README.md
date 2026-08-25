@@ -212,6 +212,8 @@ The recorded value is the repo's **git remote slug** (`owner/repo`), resolved in
 
 The slug is preferred over a directory name because a linked worktree's directory changes per branch (one repo would otherwise scatter across several names) and because the owner keeps same-named repos in different orgs apart. A bare name passed to `--project` is expanded to the full slug when it names the current repo.
 
+A remote whose URL is a filesystem path (`file://`, a local clone, or an scp/ssh form with an absolute path) contributes only its last segment, so no local directory layout is stored. A self-hosted remote addressed by a server path — `ssh://host/home/alice/repo.git` — keeps that path as its key, because that path is the repo's identity and truncating it would merge unrelated repos; pass `--project` if you would rather record something else.
+
 `lk get` and `--json` output always show the full slug. The human-readable `search` / `list` badge shows just the repo name, and only for entries recorded against a *different* project than the one you are standing in — so results from this repo stay unadorned while a hit carried in from elsewhere is marked. Entries added before this existed have no project recorded. The value round-trips through markdown as a `project:` line, so `lk sync` preserves it.
 
 #### User-scope markdown
