@@ -176,16 +176,16 @@ pub fn normalize_project_key(raw: &str) -> Option<String> {
         )
     } else {
         match raw.split_once(':') {
-            // scp-like `[user@]host:path`: the head is a host, so it holds no `/` and
-            // is either `user@host` or a dotted hostname. That excludes a bare
-            // `owner/repo` (no colon at all) and a Windows drive letter, whose head is
-            // a single letter — while still accepting a single-segment path
-            // (`git@host:repo.git`), an ordinary remote that a `/`-in-path rule missed.
-            Some((head, path))
-                if !head.contains('/') && (head.contains('@') || head.contains('.')) =>
-            {
-                (path, false)
+            // A Windows drive letter: the head is a single letter, which no hostname
+            // is. What follows is a path — including the drive-relative `C:repo`,
+            // whose drive letter must not survive into the key.
+            Some((head, path)) if head.len() == 1 && head.starts_with(char::is_alphabetic) => {
+                (path, true)
             }
+            // scp-like `[user@]host:path`. The head is a host, so it holds no path
+            // separator; requiring a dot or `@` in it would drop the short hostnames
+            // git accepts (`localhost:owner/repo.git`, `myhost:repo.git`).
+            Some((head, path)) if !head.contains('/') && !head.contains('\\') => (path, false),
             _ => (raw, false),
         }
     };
@@ -831,6 +831,30 @@ mod tests {
         assert_eq!(
             normalize_project_key("example.internal:repo.git").as_deref(),
             Some("repo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_scp_with_short_hostname() {
+        // git accepts a host with no dot in it; the host must not survive in the key.
+        assert_eq!(
+            normalize_project_key("localhost:owner/repo.git").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            normalize_project_key("myhost:repo.git").as_deref(),
+            Some("repo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_drive_relative_windows_path() {
+        // `C:repo` is relative to the drive's current directory — still a path, and
+        // the drive letter is machine state that must not reach the key.
+        assert_eq!(normalize_project_key("C:repo").as_deref(), Some("repo"));
+        assert_eq!(
+            normalize_project_key(r"C:repos\thing.git").as_deref(),
+            Some("thing")
         );
     }
 
