@@ -2073,6 +2073,17 @@ fn test_edit_project_sets_and_clears() {
         serde_json::from_slice(&run(&["get", &uid, "--json"]).stdout).unwrap();
     assert_eq!(entry["project"], "syarihu/backfilled");
 
+    // An unusable value must not quietly replace the attribution with a detected
+    // one: "set this value" is not "set whatever you can figure out".
+    let out = run(&["edit", &uid, "--project", "///"]);
+    assert!(!out.status.success(), "an unusable value must fail loudly");
+    let entry: serde_json::Value =
+        serde_json::from_slice(&run(&["get", &uid, "--json"]).stdout).unwrap();
+    assert_eq!(
+        entry["project"], "syarihu/backfilled",
+        "the existing attribution must survive a rejected edit"
+    );
+
     // An empty value clears it, which is how a wrong attribution gets removed.
     assert!(run(&["edit", &uid, "--project", ""]).status.success());
     let entry: serde_json::Value =

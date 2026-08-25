@@ -179,10 +179,21 @@ pub fn cmd_edit(
     // Resolved before the transaction: an explicit value goes through the same
     // expansion `lk add --project` uses, and an empty one clears the attribution
     // (`--project ""`), which is how a wrong value gets removed rather than replaced.
+    //
+    // An unusable value is an error here, where `add` falls back to detection: on
+    // `add` the field would otherwise be filled in anyway, but on `edit` the entry
+    // already has an attribution, and quietly replacing it with a detected one is
+    // not what "set this value" asked for.
     let project_update: Option<Option<String>> = match project {
         None => None,
         Some(p) if p.trim().is_empty() => Some(None),
         Some(p) => {
+            if crate::util::normalize_project_key(p).is_none() {
+                return Err(format!(
+                    "Invalid --project {p:?} (expected owner/repo or a repo name; pass \"\" to clear)"
+                )
+                .into());
+            }
             let (key, note) = crate::util::resolve_project_arg(p);
             if let Some(note) = note
                 && !json_output

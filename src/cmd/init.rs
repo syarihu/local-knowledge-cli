@@ -54,6 +54,10 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     let gitignore_path = root.join(".gitignore");
     let gitignore_entries = [
         ".knowledge/knowledge.db",
+        // WAL mode leaves these two beside the DB whenever it is open; they are
+        // machine state, and a stray `git add -A` picks them up otherwise.
+        ".knowledge/knowledge.db-wal",
+        ".knowledge/knowledge.db-shm",
         ".knowledge/knowledge.db.bak.*",
         ".knowledge/search.log",
         ".knowledge/command.log",
