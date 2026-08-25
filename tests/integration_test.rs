@@ -1031,10 +1031,17 @@ fn test_export_keeps_the_files_permissions() {
     assert!(run(&["export"]).status.success());
 
     let path = dir.path().join(".knowledge/exported-perm.md");
+    // Compared against a sibling written the ordinary way rather than a fixed 0644: the
+    // export is created `0666 & !umask` like any plain write, and the child `lk`
+    // inherits this process's umask, so this holds however the suite is run.
+    let probe = dir.path().join(".knowledge/.umask-probe");
+    std::fs::write(&probe, "").unwrap();
+    let expected = std::fs::metadata(&probe).unwrap().permissions().mode() & 0o777;
+    std::fs::remove_file(&probe).unwrap();
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(
-        mode, 0o644,
-        "a fresh project-scope export should be readable"
+        mode, expected,
+        "a fresh project-scope export should get the mode a plain write would"
     );
 
     // An existing file keeps whatever mode it had.

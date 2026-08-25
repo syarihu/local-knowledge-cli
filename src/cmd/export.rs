@@ -116,34 +116,61 @@ fn export_file_name(group: &str) -> String {
 /// rename replaces the directory entry itself, atomically, and cannot be raced into
 /// following a link.
 ///
-/// The new file is created with the mode of the file it replaces, or `0666` for a new
-/// one — as `std::fs::write` would, so the caller's umask still applies. Copying an
-/// existing mode is an explicit `set_permissions`, since umask must not narrow it.
-fn write_atomically(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// An `owner_only` file is 0600 from the moment it exists, rather than tightened after
+/// the rename: user-scope knowledge is private, and a mode fixed up afterwards leaves
+/// the contents readable while they are being written and readable for good if the
+/// process dies in between. Otherwise the new file is created with the mode of the file
+/// it replaces, or `0666` for a new one — as `std::fs::write` would, so the caller's
+/// umask still applies. Restoring a replaced file's mode is an explicit
+/// `set_permissions`, since umask must not narrow it.
+///
+/// Only the usual rwx bits survive a replacement: setuid/setgid/sticky are dropped, and
+/// the file is a new inode, so ACLs and xattrs are not carried over either.
+///
+/// The parent directory is deliberately left unsynced. An export is regenerable from the
+/// DB, so a rename lost to a power cut costs a re-run rather than data.
+fn write_atomically(
+    path: &Path,
+    contents: &str,
+    owner_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
     let dir = path.parent().ok_or("output path has no parent directory")?;
+    #[cfg(not(unix))]
+    let _ = owner_only;
     #[cfg(unix)]
-    let existing_mode = {
+    let target_mode = {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .ok()
-            .map(|m| m.permissions().mode() & 0o777)
+        if owner_only {
+            Some(0o600)
+        } else {
+            std::fs::metadata(path)
+                .ok()
+                .map(|m| m.permissions().mode() & 0o777)
+        }
     };
 
     // `create_new` in a loop: a name nobody else holds, and never a write into
     // something that already exists.
     let mut temp_path = None;
     let mut file = None;
-    for attempt in 0..16 {
-        let candidate = dir.join(format!(".lk-export-{}-{attempt}.tmp", std::process::id()));
+    for _ in 0..16 {
+        // A nonce, not just an attempt counter: a temp left behind by a kill or a power
+        // cut would otherwise be sitting on the one name a later run with the same pid
+        // is bound to retry, and every export from that pid would fail.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let candidate = dir.join(format!(".lk-export-{}-{nonce:08x}.tmp", std::process::id()));
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             // Let the kernel apply umask to this, exactly as a plain create would.
-            opts.mode(existing_mode.unwrap_or(0o666));
+            opts.mode(target_mode.unwrap_or(0o666));
         }
         match opts.open(&candidate) {
             Ok(f) => {
@@ -165,7 +192,7 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), Box<dyn std::erro
         file.sync_all()?;
         drop(file);
         #[cfg(unix)]
-        if let Some(mode) = existing_mode {
+        if let Some(mode) = target_mode {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(mode))?;
         }
@@ -460,7 +487,9 @@ fn export_to_dir(
             lines.push(String::new());
         }
 
-        write_atomically(&filepath, &lines.join("\n"))?;
+        // `restrict_files` is passed down rather than applied afterwards, so the file is
+        // never briefly readable while private knowledge is being written into it.
+        write_atomically(&filepath, &lines.join("\n"), restrict_files)?;
         // User-scope md can hold private knowledge — keep it owner-only even if the
         // containing dir is loosened. (Git tracks only the exec bit, so 0600 vs 0644
         // causes no diff churn for a dotfiles-tracked store.)
@@ -661,6 +690,35 @@ mod tests {
             file_system_key(&export_file_name("ß")),
             file_system_key(&export_file_name("ss")),
             "the key does not full-case-fold; see the note in `file_system_key`"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_an_owner_only_write_starts_out_owner_only() {
+        // The mode has to be right at creation, not fixed up after the rename: with the
+        // flag ignored the file would be created `0666 & !umask` — 0644 under the usual
+        // 022 — and stay readable until the caller tightened it, which is too late for
+        // anything already written into it.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mode_of = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let private = dir.path().join("private.md");
+        write_atomically(&private, "secret", true).unwrap();
+        assert_eq!(mode_of(&private), 0o600, "user-scope md must be owner-only");
+        assert_eq!(std::fs::read_to_string(&private).unwrap(), "secret");
+
+        // Without the flag: whatever a plain write would have produced here, so the
+        // umask still decides and this holds wherever the suite runs.
+        let probe = dir.path().join("probe");
+        std::fs::write(&probe, "").unwrap();
+        let plain = dir.path().join("plain.md");
+        write_atomically(&plain, "public", false).unwrap();
+        assert_eq!(
+            mode_of(&plain),
+            mode_of(&probe),
+            "a project-scope export should get the mode a plain write would"
         );
     }
 }
