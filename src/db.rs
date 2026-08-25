@@ -569,24 +569,42 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         for (entry_id, keyword) in rows {
             per_entry.entry(entry_id).or_default().push(keyword);
         }
-        // Rewrite only the entries whose set actually changes, so an already-clean DB
-        // is left alone.
-        for (entry_id, keywords) in per_entry {
-            let normalized = normalize_keywords(&keywords);
-            if normalized == keywords {
-                continue;
-            }
-            conn.execute(
-                "DELETE FROM keywords WHERE entry_id = ?1",
-                params![entry_id],
-            )?;
-            for kw in normalized {
+        // In one savepoint: this deletes an entry's keywords before re-inserting them,
+        // so an interruption between the two would lose them outright — and the
+        // version would still say 6, with nothing left to recover from.
+        conn.execute_batch("SAVEPOINT migrate_keywords")?;
+        let result = (|| -> Result<bool, Box<dyn std::error::Error>> {
+            let mut changed = false;
+            // Rewrite only the entries whose set actually changes, so an already-clean
+            // DB is left alone.
+            for (entry_id, keywords) in per_entry {
+                let normalized = normalize_keywords(&keywords);
+                if normalized == keywords {
+                    continue;
+                }
                 conn.execute(
-                    "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
-                    params![entry_id, kw],
+                    "DELETE FROM keywords WHERE entry_id = ?1",
+                    params![entry_id],
                 )?;
+                for kw in normalized {
+                    conn.execute(
+                        "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
+                        params![entry_id, kw],
+                    )?;
+                }
+                changed = true;
             }
-            migrated = true;
+            Ok(changed)
+        })();
+        match result {
+            Ok(changed) => {
+                conn.execute_batch("RELEASE migrate_keywords")?;
+                migrated |= changed;
+            }
+            Err(e) => {
+                conn.execute_batch("ROLLBACK TO migrate_keywords").ok();
+                return Err(e);
+            }
         }
     }
 

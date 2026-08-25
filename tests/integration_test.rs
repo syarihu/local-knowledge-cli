@@ -1006,6 +1006,104 @@ fn test_export_does_not_truncate_a_hard_linked_target() {
     assert!(exported.contains("how login works"), "{exported}");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_export_keeps_the_files_permissions() {
+    // The atomic replace writes a temp file (created 0600) and renames it, and a
+    // rename keeps the source's mode — so without care, replacing a committed
+    // `.knowledge/*.md` would quietly make it owner-only.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    assert!(
+        run(&["add", "perm entry", "-k", "perm", "-c", "one"])
+            .status
+            .success()
+    );
+    assert!(run(&["export"]).status.success());
+
+    let path = dir.path().join(".knowledge/exported-perm.md");
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o644,
+        "a fresh project-scope export should be readable"
+    );
+
+    // An existing file keeps whatever mode it had.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    assert!(
+        run(&["add", "perm entry two", "-k", "perm", "-c", "two"])
+            .status
+            .success()
+    );
+    assert!(run(&["export"]).status.success());
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o640, "replacing a file must not change its mode");
+}
+
+#[test]
+fn test_keyword_normalization_survives_every_path() {
+    // Keywords are stored NFC and lowercased on every path, and the needles are
+    // normalized the same way — so a decomposed query finds a composed keyword and
+    // vice versa. Reverting the normalization in any one path fails this.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+
+    // `add` with a decomposed keyword, then `edit` to add an uppercase one.
+    let composed = "が";
+    let decomposed = "か\u{3099}";
+    assert!(
+        run(&["add", "nfc entry", "-k", decomposed, "-c", "body"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["edit", "1", "-k", &format!("{decomposed},GA")])
+            .status
+            .success()
+    );
+
+    let get: serde_json::Value =
+        serde_json::from_slice(&run(&["get", "1", "--json"]).stdout).unwrap();
+    let kws: Vec<&str> = get["keywords"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    assert_eq!(kws, vec![composed, "ga"], "stored form: {kws:?}");
+
+    // Both spellings of the needle find it, through the keyword-only path.
+    for needle in [composed, decomposed] {
+        let out = run(&[
+            "search",
+            needle,
+            "--keyword-only",
+            "--scope",
+            "project",
+            "--json",
+        ]);
+        let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(hits.len(), 1, "needle {needle:?} found: {hits:?}");
+    }
+}
+
 #[test]
 fn test_export_round_trips_a_keyword_with_a_slash() {
     // `feature/auth` is an ordinary keyword to write, and it used to fail the whole

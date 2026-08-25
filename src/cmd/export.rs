@@ -72,12 +72,13 @@ fn looks_disambiguated(base: &str) -> bool {
 /// that agree here would land on one file, and the second write would take the first
 /// group's entries with it.
 ///
-/// `to_lowercase` is not full case folding, so a directory with ext4's `casefold`
-/// attribute could still see `ß` and `ss` as one name. Everything that follows from
-/// the ordinary use of this tool — case variants, and the NFC/NFD spellings macOS
-/// folds — is covered; that last gap is documented by a test rather than closed,
-/// because closing it means a full case-folding table for a directory flag almost
-/// nobody sets.
+/// `to_lowercase` is not full case folding, so a directory carrying ext4's `casefold`
+/// attribute would still see `ß` and `ss` as one name — and neither this key nor the
+/// check in `cmd_export` can tell. Everything that follows from ordinary use of this
+/// tool — case variants, and the NFC/NFD spellings macOS folds — is covered. That
+/// last gap stays open knowingly: closing it means carrying a full case-folding table
+/// for a directory flag almost nobody sets, and keywords are normalized on the way in
+/// (`db::normalize_keyword`), so a pair like `ß`/`ss` has to be deliberate.
 fn file_system_key(name: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     name.nfc().collect::<String>().to_lowercase()
@@ -302,8 +303,9 @@ fn export_to_dir(
     }
 
     // Names are a pure function of the keyword, so this only guards against a digest
-    // collision (2^-64) or the documented full-case-folding gap: a clash is reported
-    // rather than silently overwriting one group's file with another's.
+    // collision (2^-64): a clash is reported rather than silently overwriting one
+    // group's file with another's. It compares under `file_system_key`, which does not
+    // full-case-fold — see the note there for the gap that leaves.
     {
         let mut by_key: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
         for group in groups.keys() {
@@ -398,6 +400,19 @@ fn export_to_dir(
             .prefix(".lk-export-")
             .tempfile_in(output_dir)?;
         std::io::Write::write_all(&mut temp, lines.join("\n").as_bytes())?;
+        // A temp file is created 0600, and a rename keeps the source's mode rather
+        // than the target's — so without this, replacing a world-readable
+        // `.knowledge/*.md` (which is committed and read by other tools) would
+        // quietly make it owner-only. Keep what the file had, or the usual default
+        // for a new one; user-scope files are tightened to 0600 further down anyway.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&filepath)
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0o644);
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(mode))?;
+        }
         temp.persist(&filepath)
             .map_err(|e| format!("failed to write {}: {}", filepath.display(), e.error))?;
         // User-scope md can hold private knowledge — keep it owner-only even if the
@@ -589,17 +604,17 @@ mod tests {
 
     #[test]
     fn test_full_case_folding_is_a_known_gap() {
-        // Documented rather than closed: `to_lowercase` is not full case folding, so a
-        // directory with ext4's `casefold` attribute would still see these as one
-        // name. Closing it means carrying a case-folding table for a flag almost
-        // nobody sets; the export refuses the pair up front instead (see `cmd_export`).
-        assert_eq!(
-            file_system_key(&export_file_name("ß")),
-            file_system_key("exported-ß.md")
-        );
+        // Pinned as a limitation, not a guarantee: `to_lowercase` is not full case
+        // folding, so `ß` and `ss` are two names here even though a directory with
+        // ext4's `casefold` attribute would see one — and the duplicate check in
+        // `cmd_export` uses this same key, so it does not catch the pair either.
+        // Closing it means carrying a case-folding table for a flag almost nobody
+        // sets. If this assertion ever fails because the key learned to fold, the
+        // gap is closed and the comments above should go.
         assert_ne!(
             file_system_key(&export_file_name("ß")),
-            file_system_key(&export_file_name("ss"))
+            file_system_key(&export_file_name("ss")),
+            "the key does not full-case-fold; see the note in `file_system_key`"
         );
     }
 }

@@ -209,8 +209,12 @@ pub fn idf(df: usize, n: usize) -> f64 {
 /// [`DF_RATIO_CAP`] are excluded from numerator and denominator alike, so a pile
 /// of near-universal tags neither creates nor dilutes a match.
 pub fn kw_sim(a: &[String], b: &[String], df: &HashMap<String, usize>, n: usize) -> f64 {
-    let lower =
-        |ks: &[String]| -> HashSet<String> { ks.iter().map(|k| k.to_lowercase()).collect() };
+    let lower = |ks: &[String]| -> HashSet<String> {
+        // The same normalization the keywords are stored under: lowercasing alone
+        // would read a decomposed spelling as a different keyword and report no
+        // overlap where a user sees the same word.
+        ks.iter().map(|k| crate::db::normalize_keyword(k)).collect()
+    };
     let (sa, sb) = (lower(a), lower(b));
     if sa.is_empty() || sb.is_empty() {
         return 0.0;
