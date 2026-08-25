@@ -107,28 +107,6 @@ fn export_file_name(group: &str) -> String {
     }
 }
 
-/// Write `contents` to `path` by creating a fresh file beside it and renaming over it.
-///
-/// Not `std::fs::write`: that follows a symlink and truncates a hard link's shared
-/// inode, and `.knowledge/` travels with the repository — a link committed as
-/// `exported-auth.md -> ../README.md`, or a hard link to it, was enough to damage a
-/// file outside the store. It also leaves a half-written file if it fails midway. A
-/// rename replaces the directory entry itself, atomically, and cannot be raced into
-/// following a link.
-///
-/// An `owner_only` file is 0600 from the moment it exists, rather than tightened after
-/// the rename: user-scope knowledge is private, and a mode fixed up afterwards leaves
-/// the contents readable while they are being written and readable for good if the
-/// process dies in between. Otherwise the new file is created with the mode of the file
-/// it replaces, or `0666` for a new one — as `std::fs::write` would, so the caller's
-/// umask still applies. Restoring a replaced file's mode is an explicit
-/// `set_permissions`, since umask must not narrow it.
-///
-/// Only the usual rwx bits survive a replacement: setuid/setgid/sticky are dropped, and
-/// the file is a new inode, so ACLs and xattrs are not carried over either.
-///
-/// The parent directory is deliberately left unsynced. An export is regenerable from the
-/// DB, so a rename lost to a power cut costs a re-run rather than data.
 /// Refuse a destination that is not a plain file inside `output_dir`.
 ///
 /// The name is one segment by construction; checking it keeps that an invariant rather
@@ -153,6 +131,67 @@ fn check_destination(output_dir: &Path, filename: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
+/// Create a file in `dir` that nobody else holds, at `mode` before the umask narrows it.
+///
+/// `create_new` in a loop, so this never opens something that already exists. The name
+/// carries a nonce rather than only an attempt counter: a temp left behind by a kill or
+/// a power cut would otherwise be sitting on the one name a later run with the same pid
+/// is bound to retry, and every export from that pid would fail.
+///
+/// Separate from `write_atomically` so the mode a file is *created* with can be asserted
+/// on its own — that is the part protecting content while it is being written, and a
+/// test of the final mode passes whether or not it is right.
+fn create_temp_file(
+    dir: &Path,
+    mode: Option<u32>,
+) -> Result<(PathBuf, std::fs::File), Box<dyn std::error::Error>> {
+    for _ in 0..16 {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let candidate = dir.join(format!(".lk-export-{}-{nonce:08x}.tmp", std::process::id()));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Let the kernel apply umask to this, exactly as a plain create would.
+            opts.mode(mode.unwrap_or(0o666));
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        match opts.open(&candidate) {
+            Ok(f) => return Ok((candidate, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err("could not create a temporary file to export into".into())
+}
+
+/// Write `contents` to `path` by creating a fresh file beside it and renaming over it.
+///
+/// Not `std::fs::write`: that follows a symlink and truncates a hard link's shared
+/// inode, and `.knowledge/` travels with the repository — a link committed as
+/// `exported-auth.md -> ../README.md`, or a hard link to it, was enough to damage a
+/// file outside the store. It also leaves a half-written file if it fails midway. A
+/// rename replaces the directory entry itself, atomically, and cannot be raced into
+/// following a link.
+///
+/// An `owner_only` file is 0600 from the moment it exists, rather than tightened after
+/// the rename: user-scope knowledge is private, and a mode fixed up afterwards leaves
+/// the contents readable while they are being written and readable for good if the
+/// process dies in between. Otherwise the new file is created with the mode of the file
+/// it replaces, or `0666` for a new one — as `std::fs::write` would, so the caller's
+/// umask still applies. Restoring a replaced file's mode is an explicit
+/// `set_permissions`, since umask must not narrow it.
+///
+/// Only the usual rwx bits survive a replacement: setuid/setgid/sticky are dropped, and
+/// the file is a new inode, so ACLs and xattrs are not carried over either.
+///
+/// The parent directory is deliberately left unsynced. An export is regenerable from the
+/// DB, so a rename lost to a power cut costs a re-run rather than data.
 fn write_atomically(
     path: &Path,
     contents: &str,
@@ -175,41 +214,10 @@ fn write_atomically(
         }
     };
 
-    // `create_new` in a loop: a name nobody else holds, and never a write into
-    // something that already exists.
-    let mut temp_path = None;
-    let mut file = None;
-    for _ in 0..16 {
-        // A nonce, not just an attempt counter: a temp left behind by a kill or a power
-        // cut would otherwise be sitting on the one name a later run with the same pid
-        // is bound to retry, and every export from that pid would fail.
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        let candidate = dir.join(format!(".lk-export-{}-{nonce:08x}.tmp", std::process::id()));
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // Let the kernel apply umask to this, exactly as a plain create would.
-            opts.mode(target_mode.unwrap_or(0o666));
-        }
-        match opts.open(&candidate) {
-            Ok(f) => {
-                temp_path = Some(candidate);
-                file = Some(f);
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.into()),
-        }
-    }
-    let (temp_path, mut file) = match (temp_path, file) {
-        (Some(p), Some(f)) => (p, f),
-        _ => return Err("could not create a temporary file to export into".into()),
-    };
+    #[cfg(unix)]
+    let (temp_path, mut file) = create_temp_file(dir, target_mode)?;
+    #[cfg(not(unix))]
+    let (temp_path, mut file) = create_temp_file(dir, None)?;
 
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         file.write_all(contents.as_bytes())?;
@@ -530,8 +538,24 @@ fn export_to_dir(
 
             let fhash = markdown::file_hash(&filepath)?;
             let now = now_iso();
-            for entry in group_entries {
-                db::update_entry_to_shared(conn, entry.id, &rel_path, &fhash, &now)?;
+            // Every entry in the file flips together, or none of them does. Half of them
+            // left `local` is a state the store cannot recover from: the next export
+            // rebuilds this file from the `local` ones alone, and `sync` then deletes the
+            // `shared` rows still pointing at it — so the entries that did flip are lost.
+            conn.execute_batch("SAVEPOINT export_flip")?;
+            let flipped = (|| -> Result<(), Box<dyn std::error::Error>> {
+                for entry in group_entries {
+                    db::update_entry_to_shared(conn, entry.id, &rel_path, &fhash, &now)?;
+                }
+                Ok(())
+            })();
+            match flipped {
+                Ok(()) => conn.execute_batch("RELEASE export_flip")?,
+                Err(e) => {
+                    conn.execute_batch("ROLLBACK TO export_flip; RELEASE export_flip;")
+                        .ok();
+                    return Err(e);
+                }
             }
         }
 
@@ -707,6 +731,34 @@ mod tests {
             file_system_key(&export_file_name("ß")),
             file_system_key(&export_file_name("ss")),
             "the key does not full-case-fold; see the note in `file_system_key`"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_an_owner_only_temp_file_is_private_before_anything_is_written() {
+        // The mode has to be right at creation. Asserting the final mode instead passes
+        // even if the file is created world-readable and tightened just before the
+        // rename — which leaves the contents readable for the whole write.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mode_of = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let (private, _f) = create_temp_file(dir.path(), Some(0o600)).unwrap();
+        assert_eq!(
+            mode_of(&private),
+            0o600,
+            "a user-scope temp must be private from the moment it exists"
+        );
+
+        // Without a mode, whatever a plain create would have produced under this umask.
+        let probe = dir.path().join("probe");
+        std::fs::write(&probe, "").unwrap();
+        let (plain, _f2) = create_temp_file(dir.path(), None).unwrap();
+        assert_eq!(
+            mode_of(&plain),
+            mode_of(&probe),
+            "a project-scope temp should follow the umask"
         );
     }
 

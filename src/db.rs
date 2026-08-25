@@ -2757,10 +2757,12 @@ mod tests {
     fn test_migration_7_keeps_each_entry_s_keyword_order() {
         // The rewrite deletes an entry's keywords and re-inserts them, and `get_keywords`
         // returns insertion order — which `export` reads as the group, and therefore the
-        // file name. Reordering here would rename a store's files. The `ORDER BY` in the
-        // migration is what makes the read order defined; this test guards the invariant
-        // against a future rewrite (a sort, a different grouping) rather than proving
-        // SQLite would otherwise pick another order.
+        // file name. Reordering here would rename a store's files.
+        //
+        // `reverse_unordered_selects` is SQLite's own way of exposing this: it flips the
+        // order of any query whose order is not pinned, which is exactly what an
+        // unspecified order is allowed to do. So `migrate` runs on a connection with it
+        // on, and this test fails without the `ORDER BY`.
         let tmp = NamedTempFile::new().unwrap();
         let conn = init_db(tmp.path()).unwrap();
         let id = add_entry(
@@ -2789,13 +2791,47 @@ mod tests {
             .unwrap();
         drop(conn);
 
-        let (conn, migrated) = open_db(tmp.path()).unwrap();
-        assert!(migrated, "the version moved, so this counts as a migration");
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("PRAGMA reverse_unordered_selects = ON")
+            .unwrap();
+        assert!(migrate(tmp.path(), &conn).unwrap(), "the version moved");
         assert_eq!(
             get_keywords(&conn, id).unwrap(),
             vec!["zebra", "apple", "mango"],
             "the first keyword names the exported file"
         );
+        drop(conn);
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_migration_7_reports_itself_even_with_nothing_to_rewrite() {
+        // A v6 DB whose keywords are already normalized still gets its version moved to
+        // 7, so it was migrated. Reporting otherwise skips the backup cleanup and the
+        // notice — and the backup taken on the way in is then never trimmed.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        add_entry(
+            &conn,
+            "T",
+            "body",
+            &["already-normal".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version = 6", [])
+            .unwrap();
+        drop(conn);
+
+        let (conn, migrated) = open_db(tmp.path()).unwrap();
+        assert!(
+            migrated,
+            "the version moved from 6 to 7, so a migration ran"
+        );
+        assert_eq!(get_schema_version(&conn), 7);
         drop(conn);
         cleanup_backups(tmp.path(), 0).ok();
     }

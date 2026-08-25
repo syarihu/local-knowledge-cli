@@ -1119,6 +1119,65 @@ fn test_a_slashed_keyword_survives_an_export_sync_round_trip() {
     assert_eq!(exported(), first, "re-export must not rename the file");
 }
 
+/// Every entry in an exported file flips to `shared` together. If only some do, the next
+/// export rebuilds the file from the ones still `local`, and `sync` then deletes the
+/// `shared` rows pointing at it — losing the entries that did flip.
+#[test]
+fn test_the_flip_to_shared_is_all_or_nothing() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    // Same first keyword, so both land in one file.
+    assert!(
+        run(&["add", "first", "-k", "grp", "-c", "one"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["add", "second", "-k", "grp", "-c", "two"])
+            .status
+            .success()
+    );
+
+    // Let the second entry's flip fail, after the first one's has already been applied.
+    let db = dir.path().join(".knowledge/knowledge.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_second BEFORE UPDATE ON entries WHEN new.id = 2
+             BEGIN SELECT RAISE(ABORT, 'no'); END;",
+        )
+        .unwrap();
+    }
+
+    let out = run(&["export"]);
+    assert!(!out.status.success(), "export must report the failure");
+
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("DROP TRIGGER refuse_second").unwrap();
+        let sources: Vec<String> = conn
+            .prepare("SELECT source FROM entries ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            sources,
+            vec!["local", "local"],
+            "a half-applied flip must roll back"
+        );
+    }
+}
+
 /// A refusal must happen before the first file is written. Exporting group by group and
 /// failing part-way leaves the earlier groups written and flipped to `shared` while the
 /// command reports failure — a state neither outcome asked for.
