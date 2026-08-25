@@ -1065,29 +1065,52 @@ fn test_keyword_normalization_survives_every_path() {
     };
     assert!(run(&["init"]).status.success());
 
-    // `add` with a decomposed keyword, then `edit` to add an uppercase one.
     let composed = "が";
     let decomposed = "か\u{3099}";
+    let stored = |id: &str| -> Vec<String> {
+        let get: serde_json::Value =
+            serde_json::from_slice(&run(&["get", id, "--json"]).stdout).unwrap();
+        get["keywords"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // `add` on its own, asserted before anything replaces the keywords — so reverting
+    // the normalization in `add_entry_full` alone fails here.
     assert!(
         run(&["add", "nfc entry", "-k", decomposed, "-c", "body"])
             .status
             .success()
     );
+    assert_eq!(stored("1"), vec![composed], "add stored: {:?}", stored("1"));
+
+    // `edit` on a second entry, so the two paths are pinned independently.
     assert!(
-        run(&["edit", "1", "-k", &format!("{decomposed},GA")])
+        run(&[
+            "add",
+            "nfc entry two",
+            "-k",
+            "placeholder",
+            "-c",
+            "body two"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        run(&["edit", "2", "-k", &format!("{decomposed},GA,{composed}")])
             .status
             .success()
     );
-
-    let get: serde_json::Value =
-        serde_json::from_slice(&run(&["get", "1", "--json"]).stdout).unwrap();
-    let kws: Vec<&str> = get["keywords"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|k| k.as_str().unwrap())
-        .collect();
-    assert_eq!(kws, vec![composed, "ga"], "stored form: {kws:?}");
+    assert_eq!(
+        stored("2"),
+        vec![composed.to_string(), "ga".to_string()],
+        "edit stored: {:?}",
+        stored("2")
+    );
 
     // Both spellings of the needle find it, through the keyword-only path.
     for needle in [composed, decomposed] {
@@ -1100,7 +1123,7 @@ fn test_keyword_normalization_survives_every_path() {
             "--json",
         ]);
         let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(hits.len(), 1, "needle {needle:?} found: {hits:?}");
+        assert_eq!(hits.len(), 2, "needle {needle:?} found: {hits:?}");
     }
 }
 

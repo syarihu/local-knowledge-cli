@@ -107,6 +107,77 @@ fn export_file_name(group: &str) -> String {
     }
 }
 
+/// Write `contents` to `path` by creating a fresh file beside it and renaming over it.
+///
+/// Not `std::fs::write`: that follows a symlink and truncates a hard link's shared
+/// inode, and `.knowledge/` travels with the repository — a link committed as
+/// `exported-auth.md -> ../README.md`, or a hard link to it, was enough to damage a
+/// file outside the store. It also leaves a half-written file if it fails midway. A
+/// rename replaces the directory entry itself, atomically, and cannot be raced into
+/// following a link.
+///
+/// The new file is created with the mode of the file it replaces, or `0666` for a new
+/// one — as `std::fs::write` would, so the caller's umask still applies. Copying an
+/// existing mode is an explicit `set_permissions`, since umask must not narrow it.
+fn write_atomically(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let dir = path.parent().ok_or("output path has no parent directory")?;
+    #[cfg(unix)]
+    let existing_mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o777)
+    };
+
+    // `create_new` in a loop: a name nobody else holds, and never a write into
+    // something that already exists.
+    let mut temp_path = None;
+    let mut file = None;
+    for attempt in 0..16 {
+        let candidate = dir.join(format!(".lk-export-{}-{attempt}.tmp", std::process::id()));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Let the kernel apply umask to this, exactly as a plain create would.
+            opts.mode(existing_mode.unwrap_or(0o666));
+        }
+        match opts.open(&candidate) {
+            Ok(f) => {
+                temp_path = Some(candidate);
+                file = Some(f);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let (temp_path, mut file) = match (temp_path, file) {
+        (Some(p), Some(f)) => (p, f),
+        _ => return Err("could not create a temporary file to export into".into()),
+    };
+
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        #[cfg(unix)]
+        if let Some(mode) = existing_mode {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(mode))?;
+        }
+        std::fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        std::fs::remove_file(&temp_path).ok();
+    }
+    result
+}
+
 pub fn cmd_export(
     dir: Option<PathBuf>,
     ids: Option<&str>,
@@ -389,32 +460,7 @@ fn export_to_dir(
             lines.push(String::new());
         }
 
-        // Written to a fresh file beside the target and renamed over it, rather than
-        // written through whatever is already there. `std::fs::write` follows a
-        // symlink and truncates a hard link's shared inode — `.knowledge/` travels
-        // with the repository, so a committed `exported-auth.md -> ../README.md` or a
-        // hard link to it was enough to damage a file outside the store — and it
-        // leaves a half-written file if it fails midway. A rename replaces the entry
-        // itself, atomically, and cannot be raced into following a link.
-        let mut temp = tempfile::Builder::new()
-            .prefix(".lk-export-")
-            .tempfile_in(output_dir)?;
-        std::io::Write::write_all(&mut temp, lines.join("\n").as_bytes())?;
-        // A temp file is created 0600, and a rename keeps the source's mode rather
-        // than the target's — so without this, replacing a world-readable
-        // `.knowledge/*.md` (which is committed and read by other tools) would
-        // quietly make it owner-only. Keep what the file had, or the usual default
-        // for a new one; user-scope files are tightened to 0600 further down anyway.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&filepath)
-                .map(|m| m.permissions().mode() & 0o777)
-                .unwrap_or(0o644);
-            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(mode))?;
-        }
-        temp.persist(&filepath)
-            .map_err(|e| format!("failed to write {}: {}", filepath.display(), e.error))?;
+        write_atomically(&filepath, &lines.join("\n"))?;
         // User-scope md can hold private knowledge — keep it owner-only even if the
         // containing dir is loosened. (Git tracks only the exec bit, so 0600 vs 0644
         // causes no diff churn for a dotfiles-tracked store.)

@@ -19,7 +19,11 @@ pub const VALID_STATUSES: &[&str] = &["active", "deprecated", "proposed", "accep
 /// disambiguated name for no reason a user could see.
 pub fn normalize_keyword(kw: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
-    kw.trim().nfc().collect::<String>().to_lowercase()
+    // Lowercase first, compose second: lowercasing can break composition. `H` with a
+    // combining macron below lowercases to `h` + the mark, which is no longer NFC —
+    // composing afterwards lands it on `ẖ`, the same value the precomposed spelling
+    // normalizes to.
+    kw.trim().to_lowercase().nfc().collect()
 }
 
 /// Keywords as they are stored: normalized, blank-free, and deduplicated.
@@ -2743,6 +2747,66 @@ mod tests {
     }
 
     #[test]
+    fn test_migration_7_rolls_back_a_failed_keyword_rewrite() {
+        // The rewrite deletes an entry's keywords before re-inserting them. If the
+        // insert fails, the delete has to go with it — otherwise the keywords are gone
+        // and the version still says 6, with nothing left to recover from.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &["keep-me".to_string(), "and-me".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        // Back to a pre-normalization state, with a keyword the migration must rewrite.
+        conn.execute(
+            "INSERT INTO keywords (entry_id, keyword) VALUES (?1, 'MiXeD')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version = 6", [])
+            .unwrap();
+        // ...and an insert that always fails, so the rewrite cannot complete.
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_keywords BEFORE INSERT ON keywords
+             BEGIN SELECT RAISE(ABORT, 'no inserts'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(
+            open_db(tmp.path()).is_err(),
+            "the migration must fail rather than press on"
+        );
+
+        // Reopen past the trigger and check nothing was lost.
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("DROP TRIGGER refuse_keywords").unwrap();
+        let mut kws: Vec<String> = conn
+            .prepare("SELECT keyword FROM keywords WHERE entry_id = ?1")
+            .unwrap()
+            .query_map(params![id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        kws.sort();
+        assert_eq!(kws, vec!["MiXeD", "and-me", "keep-me"]);
+        assert_eq!(
+            get_schema_version(&conn),
+            6,
+            "the version must not advance past a rewrite that did not happen"
+        );
+        drop(conn);
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
     fn test_migration_6_survives_partial_application() {
         // Simulate a crash between migration 6's ALTER and the version bump: the
         // column exists while schema_version still says 5. Opening must recover
@@ -3245,6 +3309,13 @@ mod tests {
         let decomposed = "か\u{3099}";
         assert_ne!(composed, decomposed, "the fixture must differ bytewise");
         assert_eq!(normalize_keyword(decomposed), composed);
+        // Lowercasing can break composition, so it has to happen before the compose
+        // step: `H` + combining macron below and the precomposed `ẖ` are one keyword.
+        assert_eq!(
+            normalize_keyword("H\u{0331}"),
+            normalize_keyword("\u{1E96}")
+        );
+        assert_eq!(normalize_keyword("H\u{0331}"), "\u{1E96}");
         assert_eq!(
             normalize_keywords([composed, decomposed, " が ", "GA"]),
             vec!["が", "ga"],
