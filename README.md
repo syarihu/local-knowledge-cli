@@ -230,6 +230,18 @@ A full slug matches exactly, so `hoge/app` never answers with `fuga/app` — tha
 
 `lk edit <id-or-uid> --project owner/repo` fills in an entry added before the column existed, and `--project ""` clears it.
 
+See the spread with `lk stats --by-project`, which merges both scopes so one project is one row, and names the entries with nothing recorded rather than hiding them:
+
+```console
+$ lk stats --by-project
+By project:
+  syarihu/local-knowledge-cli  42
+  (unattributed)               18
+  syarihu/some-app              7
+```
+
+Search results also use it as a **tie-break**: when two hits score the same — which is every hit on the keyword and substring fallbacks, since only full-text search produces a score — the one recorded in the project you are standing in comes first. Genuine relevance differences are never reordered.
+
 `lk get` and `--json` output always show the full slug. The human-readable `search` / `list` badge shows just the repo name, and only for entries recorded against a *different* project than the one you are standing in — so results from this repo stay unadorned while a hit carried in from elsewhere is marked. Entries added before this existed have no project recorded. The value round-trips through markdown as a `project:` line, so `lk sync` preserves it.
 
 #### User-scope markdown

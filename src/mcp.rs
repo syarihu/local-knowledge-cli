@@ -882,11 +882,23 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     items.push((score, label, e, kws));
                 }
             }
-            // Score ASC (better match first), tie-break updated_at DESC — matching
-            // the per-DB SQL order `ORDER BY rank, updated_at DESC`.
+            // Score ASC (better match first). Among ties — where bm25 saw no
+            // difference, or where the keyword/LIKE fallbacks produced no score at
+            // all — prefer knowledge recorded against the project this request
+            // targets, then fall back to the per-DB order (updated_at DESC). Same
+            // rule as the CLI, resolved against the request's project rather than
+            // the server's own directory.
+            let here = items
+                .iter()
+                .any(|(_, _, e, _)| e.project.is_some())
+                .then(|| util::project_key_for(&project_root))
+                .flatten();
             items.sort_by(|a, b| {
+                let mine =
+                    |e: &db::Entry| here.is_some() && e.project.as_deref() == here.as_deref();
                 a.0.partial_cmp(&b.0)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| mine(&b.2).cmp(&mine(&a.2)))
                     .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
             });
             items.truncate(limit);

@@ -1269,6 +1269,27 @@ pub fn get_schema_version_public(conn: &Connection) -> i64 {
     get_schema_version(conn)
 }
 
+/// One row of [`project_counts`]: the project (`None` when unattributed) and how
+/// many entries carry it.
+pub type ProjectCount = (Option<String>, i64);
+
+/// Entry counts grouped by the project they were recorded against, most first.
+/// Entries with no project are returned under `None`, so "unattributed" is visible
+/// rather than missing — it is usually the largest group in an existing store.
+pub fn project_counts(conn: &Connection) -> Result<Vec<ProjectCount>, Box<dyn std::error::Error>> {
+    let mut stmt = conn.prepare(
+        "SELECT project, COUNT(*) AS n FROM entries GROUP BY project ORDER BY n DESC, project ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, Option<String>>(0)?, row.get(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 pub fn get_stats(conn: &Connection) -> Result<DbStats, Box<dyn std::error::Error>> {
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
     let shared: i64 = conn.query_row(

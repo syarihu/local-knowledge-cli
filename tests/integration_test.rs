@@ -1838,6 +1838,175 @@ fn setup_project_filter_fixture(
 }
 
 #[test]
+fn test_ties_prefer_the_current_project() {
+    // `--keyword-only` takes the unranked path, where every hit scores the same, so
+    // the tie-break is the only thing deciding the order. The entry from elsewhere is
+    // added last (newer `updated_at`), which is what would otherwise win.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = |args: &[&str], env: Option<(&str, &str)>| {
+        let mut cmd = lk_bin();
+        cmd.args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env("LK_PROJECT", "syarihu/here");
+        if let Some((k, v)) = env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+
+    run(
+        &[
+            "add",
+            "tie entry from here",
+            "-k",
+            "tiekw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+        ],
+        None,
+    );
+    run(
+        &[
+            "add",
+            "tie entry from elsewhere",
+            "-k",
+            "tiekw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+        ],
+        Some(("LK_PROJECT", "syarihu/elsewhere")),
+    );
+
+    let out = run(
+        &[
+            "search",
+            "tiekw",
+            "--keyword-only",
+            "--scope",
+            "user",
+            "--json",
+        ],
+        None,
+    );
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(
+        hits[0]["project"], "syarihu/here",
+        "a tie must favour the project we are standing in: {hits:?}"
+    );
+
+    // Standing somewhere else flips it, which shows the order follows the current
+    // project rather than anything baked into the entries.
+    let out = run(
+        &[
+            "search",
+            "tiekw",
+            "--keyword-only",
+            "--scope",
+            "user",
+            "--json",
+        ],
+        Some(("LK_PROJECT", "syarihu/elsewhere")),
+    );
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(hits[0]["project"], "syarihu/elsewhere", "{hits:?}");
+}
+
+#[test]
+fn test_stats_by_project_counts_across_scopes() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env_remove("LK_PROJECT")
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+
+    // Two entries for one project (one per scope), one for another, one unattributed.
+    for (scope, project) in [
+        ("user", "hoge/app"),
+        ("project", "hoge/app"),
+        ("user", "fuga/app"),
+    ] {
+        assert!(
+            run(&[
+                "add",
+                &format!("stats entry {scope} {project}"),
+                "-k",
+                "statskw",
+                "-c",
+                "body",
+                "--scope",
+                scope,
+                "--project",
+                project,
+            ])
+            .status
+            .success()
+        );
+    }
+    let added: serde_json::Value = serde_json::from_slice(
+        &run(&[
+            "add",
+            "stats entry unattributed",
+            "-k",
+            "statskw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+            "--json",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    assert!(
+        run(&["edit", added["uid"].as_str().unwrap(), "--project", ""])
+            .status
+            .success()
+    );
+
+    let out = run(&["stats", "--by-project", "--json"]);
+    assert!(out.status.success());
+    let stats: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = stats["by_project"].as_array().expect("by_project array");
+    let count_for = |name: Option<&str>| -> i64 {
+        rows.iter()
+            .find(|r| r["project"].as_str() == name)
+            .map(|r| r["entries"].as_i64().unwrap())
+            .unwrap_or(0)
+    };
+    // The same project in both stores is one row, not two.
+    assert_eq!(count_for(Some("hoge/app")), 2, "rows: {rows:?}");
+    assert_eq!(count_for(Some("fuga/app")), 1);
+    assert_eq!(count_for(None), 1, "unattributed entries must be visible");
+
+    // The human-readable form names the unattributed group rather than dropping it.
+    let text = String::from_utf8_lossy(&run(&["stats", "--by-project"]).stdout).to_string();
+    assert!(
+        text.contains("By project:") && text.contains("(unattributed)"),
+        "{text}"
+    );
+}
+
+#[test]
 fn test_search_project_filter_exact_and_bare() {
     let home = tempfile::tempdir().unwrap();
     let proj = setup_temp_project();
