@@ -1106,8 +1106,11 @@ pub fn update_entry(
             conn.execute("DELETE FROM keywords WHERE entry_id = ?1", params![id])?;
             for kw in kws {
                 conn.execute(
+                    // Lowercased like every other insert path: keyword search
+                    // lowercases the needle, so a keyword stored as `AUTH` here would
+                    // never match a search for `auth`.
                     "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
-                    params![id, kw],
+                    params![id, kw.to_lowercase()],
                 )?;
             }
             conn.execute(

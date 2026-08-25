@@ -919,6 +919,49 @@ fn test_export_keyword_cannot_write_outside_the_store() {
 }
 
 #[test]
+fn test_export_refuses_to_write_through_a_symlink() {
+    // `.knowledge/` travels with the repository, so a link committed as
+    // `exported-auth.md -> ../README.md` would let an export truncate a file outside
+    // the store — the lexical one-segment check cannot see that.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    std::fs::write(dir.path().join("README.md"), "the project's own readme").unwrap();
+    assert!(
+        run(&["add", "auth entry", "-k", "auth", "-c", "how login works"])
+            .status
+            .success()
+    );
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        "../README.md",
+        dir.path().join(".knowledge/exported-auth.md"),
+    )
+    .unwrap();
+
+    let out = run(&["export"]);
+    assert!(!out.status.success(), "export must refuse the symlink");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("symlink"),
+        "and say why: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+        "the project's own readme",
+        "the link target must be untouched"
+    );
+}
+
+#[test]
 fn test_export_round_trips_a_keyword_with_a_slash() {
     // `feature/auth` is an ordinary keyword to write, and it used to fail the whole
     // export with "No such file or directory" — the flattened name has to survive a

@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::cmd::sync::import_md_file;
@@ -5,25 +6,25 @@ use crate::db;
 use crate::markdown;
 use crate::util::{get_knowledge_dir, get_project_root, now_iso, open_db_with_migrate};
 
-/// The file name for a group of entries, as a single safe path segment.
+/// The base name for a group, as a single safe path segment (no `exported-` prefix,
+/// no extension, no digest).
 ///
 /// A group is a keyword, and keywords are written freely: `feature/auth` turned into
 /// a path that no directory existed for (so `export` failed outright), and
 /// `x/../../README` resolved outside the store and overwrote whatever was there.
 /// Characters a file name cannot carry fold to `-`.
-///
-/// A name that had to be changed carries a short digest of the original, so two
-/// keywords can never land on the same file — `feature/auth` and a literal
-/// `feature-auth` stay apart. The digest is of the group alone, so the name is stable
-/// across runs and independent of whatever other groups exist.
-fn export_file_name(group: &str) -> String {
-    use sha2::{Digest, Sha256};
-
+fn export_base_name(group: &str) -> String {
     const UNSAFE: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+    // Bidirectional controls are not `char::is_control`, and a file name that renders
+    // differently from its bytes is a name nobody can act on.
+    const BIDI: &[char] = &[
+        '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}',
+        '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+    ];
     let folded: String = group
         .chars()
         .map(|c| {
-            if c.is_control() || UNSAFE.contains(&c) {
+            if c.is_control() || UNSAFE.contains(&c) || BIDI.contains(&c) {
                 '-'
             } else {
                 c
@@ -35,24 +36,100 @@ fn export_file_name(group: &str) -> String {
     let trimmed = folded.trim_matches(|c: char| c == '.' || c.is_whitespace());
 
     // File systems cap a path component at 255 bytes, and a keyword is free text: a
-    // 300-character one failed the export outright with ENAMETOOLONG, the same way an
-    // unflattened separator did. Cut on a character boundary, well inside the cap — a
-    // truncated name differs from the keyword, so it picks up the digest below and
-    // stays distinct from anything else truncating to the same prefix.
+    // 300-character one failed the export with ENAMETOOLONG, the same way an
+    // unflattened separator did. Cut on a character boundary, well inside the cap.
     const MAX_NAME_BYTES: usize = 120;
     let mut end = trimmed.len().min(MAX_NAME_BYTES);
     while end > 0 && !trimmed.is_char_boundary(end) {
         end -= 1;
     }
     let capped = trimmed[..end].trim_matches(|c: char| c == '.' || c == '-' || c.is_whitespace());
-    let safe = if capped.is_empty() { "general" } else { capped };
-
-    if safe == group {
-        format!("exported-{safe}.md")
+    if capped.is_empty() {
+        "general".to_string()
     } else {
-        let digest = hex::encode(&Sha256::digest(group.as_bytes())[..3]);
-        format!("exported-{safe}-{digest}.md")
+        capped.to_string()
     }
+}
+
+/// Length of the hex digest appended to disambiguate a name.
+const DIGEST_HEX: usize = 16;
+
+/// A digest of the group itself, so a disambiguated name depends on nothing else and
+/// stays stable across runs.
+fn group_digest(group: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(&Sha256::digest(group.as_bytes())[..DIGEST_HEX / 2])
+}
+
+/// Whether a base name already looks like it carries a digest, in which case an
+/// undisambiguated name would sit in the same namespace as a disambiguated one.
+fn looks_disambiguated(base: &str) -> bool {
+    base.rsplit_once('-').is_some_and(|(_, tail)| {
+        tail.len() == DIGEST_HEX
+            && tail
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+    })
+}
+
+/// How a file system that ignores case and normalization would see a name. Two
+/// groups whose names differ only that way would land on one file, and the second
+/// write would take the first group's entries with it.
+fn file_system_key(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name.nfc().collect::<String>().to_lowercase()
+}
+
+/// The output file name for every group, with collisions resolved before anything is
+/// written.
+///
+/// A name carries a digest of its keyword when the keyword had to be changed to
+/// become a file name — otherwise `feature/auth` and a literal `feature-auth` would
+/// share a file and overwrite each other's entries. Names that need no change keep
+/// the one they have always had, so existing stores see no churn and `sync` keeps
+/// matching entries by their stored `source_file`.
+fn export_file_names<'a>(groups: impl Iterator<Item = &'a str>) -> HashMap<String, String> {
+    let planned: Vec<(String, String, bool)> = groups
+        .map(|group| {
+            let base = export_base_name(group);
+            let needs = base != group || looks_disambiguated(&base);
+            (group.to_string(), base, needs)
+        })
+        .collect();
+
+    let name_of = |base: &str, digested: bool, group: &str| -> String {
+        if digested {
+            format!("exported-{base}-{}.md", group_digest(group))
+        } else {
+            format!("exported-{base}.md")
+        }
+    };
+
+    // Anything two groups would share on a case- or normalization-insensitive file
+    // system gets a digest on both sides, which the group's own bytes decide.
+    let mut clashing: HashSet<String> = HashSet::new();
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for (group, base, needs) in &planned {
+        let key = file_system_key(&name_of(base, *needs, group));
+        match seen.get(&key) {
+            Some(first) => {
+                clashing.insert(first.clone());
+                clashing.insert(group.clone());
+            }
+            None => {
+                seen.insert(key, group.clone());
+            }
+        }
+    }
+
+    planned
+        .into_iter()
+        .map(|(group, base, needs)| {
+            let digested = needs || clashing.contains(&group);
+            let name = name_of(&base, digested, &group);
+            (group, name)
+        })
+        .collect()
 }
 
 pub fn cmd_export(
@@ -250,13 +327,20 @@ fn export_to_dir(
         groups.entry(group).or_default().push(entry);
     }
 
+    // Resolved for every group before the first write, so a collision can be given a
+    // distinct name rather than discovered as a truncated file.
+    let file_names = export_file_names(groups.keys().map(String::as_str));
+
     let mut total = 0;
     for (group_name, group_entries) in &groups {
         // Sort entries within each group by title for stable output
         let mut sorted_entries: Vec<&db::Entry> = group_entries.iter().collect();
         sorted_entries.sort_by_key(|e| e.title.to_lowercase());
 
-        let filename = export_file_name(group_name);
+        let filename = file_names
+            .get(group_name)
+            .cloned()
+            .unwrap_or_else(|| format!("exported-{}.md", export_base_name(group_name)));
         // The name is one segment by construction; this keeps that an invariant
         // rather than a comment, so a future change to the naming can't quietly
         // reintroduce a path.
@@ -264,6 +348,18 @@ fn export_to_dir(
             return Err(format!("refusing to export to a non-file name: {filename:?}").into());
         }
         let filepath = output_dir.join(&filename);
+        // A symlink here would be followed, and `.knowledge/` travels with the repo —
+        // a link committed as `exported-auth.md -> ../README.md` would let an export
+        // truncate a file outside the store. The store's directory may well be a
+        // symlink (that is how a dotfiles setup works); an individual entry file being
+        // one is not something to write through.
+        if std::fs::symlink_metadata(&filepath).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(format!(
+                "{} is a symlink; refusing to write through it. Remove it and export again.",
+                filepath.display()
+            )
+            .into());
+        }
 
         let mut all_kws: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for entry in &sorted_entries {
@@ -360,20 +456,26 @@ pub fn cmd_import(path: &std::path::Path) -> Result<(), Box<dyn std::error::Erro
 mod tests {
     use super::*;
 
+    fn name_for(group: &str) -> String {
+        export_file_names(std::iter::once(group))
+            .remove(group)
+            .unwrap()
+    }
+
     #[test]
     fn test_export_file_name_leaves_ordinary_keywords_alone() {
-        // The common case must keep the name it has always had: `sync` matches
-        // entries by their stored `source_file`, so a gratuitous rename would look
-        // like the old file was deleted and a new one added.
-        assert_eq!(export_file_name("features"), "exported-features.md");
-        assert_eq!(export_file_name("認証"), "exported-認証.md");
-        assert_eq!(export_file_name("feature-auth"), "exported-feature-auth.md");
+        // The common case must keep the name it has always had: `sync` matches entries
+        // by their stored `source_file`, so a gratuitous rename would look like the old
+        // file was deleted and a new one added.
+        assert_eq!(name_for("features"), "exported-features.md");
+        assert_eq!(name_for("認証"), "exported-認証.md");
+        assert_eq!(name_for("feature-auth"), "exported-feature-auth.md");
     }
 
     #[test]
     fn test_export_file_name_cannot_escape_the_output_directory() {
-        // `x/../../README` used to resolve outside the store and overwrite the file
-        // it landed on. Whatever the keyword, the result is one path segment.
+        // `x/../../README` used to resolve outside the store and overwrite the file it
+        // landed on. Whatever the keyword, the result is one path segment.
         for group in [
             "x/../../README",
             "../escape",
@@ -384,14 +486,19 @@ mod tests {
             "",
             "  ",
             ".hidden",
+            "left\u{202E}right",
         ] {
-            let name = export_file_name(group);
+            let name = name_for(group);
             assert_eq!(
                 Path::new(&name).components().count(),
                 1,
                 "{group:?} produced {name:?}"
             );
             assert!(!name.contains('/') && !name.contains('\\'), "{name:?}");
+            assert!(
+                !name.chars().any(|c| c.is_control() || c == '\u{202E}'),
+                "{name:?}"
+            );
         }
     }
 
@@ -404,7 +511,7 @@ mod tests {
             "認".repeat(100), // 300 bytes in UTF-8
             format!("{}/{}", "x".repeat(200), "y".repeat(200)),
         ] {
-            let name = export_file_name(&group);
+            let name = name_for(&group);
             assert!(
                 name.len() <= 255,
                 "{} bytes for a {}-byte keyword: {name}",
@@ -416,22 +523,55 @@ mod tests {
                 "{name}"
             );
         }
-        // Two keywords sharing a prefix but truncated to the same letters stay apart.
-        let a = export_file_name(&"z".repeat(300));
-        let b = export_file_name(&format!("{}{}", "z".repeat(300), "-tail"));
-        assert_ne!(a, b);
+        assert_ne!(
+            name_for(&"z".repeat(300)),
+            name_for(&format!("{}{}", "z".repeat(300), "-tail"))
+        );
     }
 
     #[test]
-    fn test_export_file_name_keeps_folded_keywords_apart() {
-        // `feature/auth` folds to the same letters as a literal `feature-auth`, so the
-        // folded one carries a digest of the original: two keywords must never share a
-        // file, or exporting one would overwrite the other's entries.
-        let folded = export_file_name("feature/auth");
-        assert!(folded.starts_with("exported-feature-auth-"), "{folded}");
-        assert_ne!(folded, export_file_name("feature-auth"));
-        assert_ne!(folded, export_file_name("feature:auth"));
-        // Stable across calls, and independent of any other group.
-        assert_eq!(folded, export_file_name("feature/auth"));
+    fn test_every_group_gets_its_own_file() {
+        // The point of the digest: no two keywords may share a file, or exporting one
+        // would take the other's entries with it. Includes the shapes that collide
+        // only after folding, only on a case- or normalization-insensitive file
+        // system, or only because a keyword looks like it already carries a digest.
+        let groups = [
+            "feature/auth",
+            "feature-auth",
+            "feature:auth",
+            "|/</////",
+            ":/\\:////",
+            "auth",
+            "AUTH",
+            "が",         // U+304C
+            "か\u{3099}", // the same text, decomposed
+            "x-0123456789abcdef",
+            "x/0123456789abcdef",
+        ];
+        let names = export_file_names(groups.iter().copied());
+        assert_eq!(names.len(), groups.len());
+
+        let mut keys: Vec<String> = names.values().map(|n| file_system_key(n)).collect();
+        keys.sort();
+        let unique = keys.len();
+        keys.dedup();
+        assert_eq!(
+            keys.len(),
+            unique,
+            "two groups share a file name: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_names_are_stable_across_runs() {
+        // A name may not depend on which other groups happen to exist, or a later
+        // keyword would rename an existing file and `sync` would read it as a delete
+        // plus an add.
+        let alone = name_for("feature/auth");
+        let together = export_file_names(["feature/auth", "unrelated", "another/one"].into_iter())
+            .remove("feature/auth")
+            .unwrap();
+        assert_eq!(alone, together);
     }
 }
