@@ -863,6 +863,25 @@ fn test_add_reports_possibly_related_but_still_adds() {
     );
 }
 
+/// Pin `updated_at` on entries picked out by title.
+///
+/// Entries added moments apart share a timestamp (`updated_at` has second
+/// granularity), which leaves `ORDER BY updated_at DESC` to fall back to scan order —
+/// enough to make a ranking assertion pass for the wrong reason. Pinning beats
+/// sleeping past the boundary: it is exact, and it costs no wall clock.
+fn set_updated_at(db: &std::path::Path, rows: &[(&str, &str)]) {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    for (title, when) in rows {
+        let changed = conn
+            .execute(
+                "UPDATE entries SET updated_at = ?1 WHERE title = ?2",
+                rusqlite::params![when, title],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "expected exactly one entry titled {title:?}");
+    }
+}
+
 /// Drive the MCP server over stdio with one JSON-RPC line and return the replies.
 fn mcp_request(project: &std::path::Path, request: &str) -> Vec<serde_json::Value> {
     mcp_request_env(project, None, request)
@@ -1950,8 +1969,7 @@ fn test_limit_one_still_reaches_the_current_projects_entry() {
     };
 
     // Attributed to this directory's own project (no LK_PROJECT, so it is detected),
-    // and deliberately the OLDER of the two: `updated_at DESC` would drop it, and
-    // `updated_at` has second granularity, so the wait is what makes the order real.
+    // and made the OLDER of the two below, so `updated_at DESC` would drop it.
     let here = proj
         .path()
         .file_name()
@@ -1971,7 +1989,6 @@ fn test_limit_one_still_reaches_the_current_projects_entry() {
         ],
         None,
     );
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     run(
         &[
             "add",
@@ -1984,6 +2001,15 @@ fn test_limit_one_still_reaches_the_current_projects_entry() {
             "user",
         ],
         Some("syarihu/elsewhere"),
+    );
+    // Pinned rather than waited for: entries added moments apart share a timestamp
+    // (second granularity), which would leave the ordering under test to scan order.
+    set_updated_at(
+        &home.path().join(".config/lk/knowledge.db"),
+        &[
+            ("limit one from here", "2020-01-01T00:00:00"),
+            ("limit one from elsewhere", "2030-01-01T00:00:00"),
+        ],
     );
 
     let expect_here = |out: std::process::Output, what: &str| {
