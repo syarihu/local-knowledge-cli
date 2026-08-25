@@ -1799,6 +1799,424 @@ fn test_search_badges_only_other_projects() {
     );
 }
 
+/// Seed a user-scope store with one entry per project shape and return the runner.
+fn setup_project_filter_fixture(
+    home: &tempfile::TempDir,
+    proj: &tempfile::TempDir,
+) -> impl Fn(&[&str]) -> std::process::Output {
+    let home = home.path().to_path_buf();
+    let proj = proj.path().to_path_buf();
+    let run = move |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(&proj)
+            .env("HOME", &home)
+            .env_remove("LK_PROJECT")
+            .output()
+            .unwrap()
+    };
+    for (title, project) in [
+        ("filter hoge entry", "hoge/app"),
+        ("filter fuga entry", "fuga/app"),
+        ("filter lk entry", "syarihu/local-knowledge-cli"),
+    ] {
+        let out = run(&[
+            "add",
+            title,
+            "-k",
+            "filterkw",
+            "-c",
+            "shared body text",
+            "--scope",
+            "user",
+            "--project",
+            project,
+        ]);
+        assert!(out.status.success(), "seeding {title} failed");
+    }
+    run
+}
+
+#[test]
+fn test_search_project_filter_exact_and_bare() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = setup_project_filter_fixture(&home, &proj);
+
+    let projects = |args: &[&str]| -> Vec<String> {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        let mut got: Vec<String> = hits
+            .iter()
+            .filter_map(|h| h["project"].as_str().map(str::to_string))
+            .collect();
+        got.sort();
+        got
+    };
+
+    // A full slug is exact: `hoge/app` must never answer with `fuga/app`.
+    assert_eq!(
+        projects(&[
+            "search",
+            "shared",
+            "--scope",
+            "user",
+            "--project",
+            "hoge/app",
+            "--json"
+        ]),
+        vec!["hoge/app"]
+    );
+    // A bare name deliberately spans owners.
+    assert_eq!(
+        projects(&[
+            "search",
+            "shared",
+            "--scope",
+            "user",
+            "--project",
+            "app",
+            "--json"
+        ]),
+        vec!["fuga/app", "hoge/app"]
+    );
+    // Unfiltered still returns everything.
+    assert_eq!(
+        projects(&["search", "shared", "--scope", "user", "--json"]).len(),
+        3
+    );
+}
+
+#[test]
+fn test_bare_project_filter_warns_when_it_spans_owners() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = setup_project_filter_fixture(&home, &proj);
+
+    let out = run(&["search", "shared", "--scope", "user", "--project", "app"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("matches 2 recorded project values") && stderr.contains("fuga/app"),
+        "an ambiguous bare name must say so: {stderr}"
+    );
+
+    // The case the warning exists for: a page that can only show one project. The
+    // check asks the store, so the limit cannot hide the ambiguity.
+    let out = run(&[
+        "search",
+        "shared",
+        "--scope",
+        "user",
+        "--project",
+        "app",
+        "--limit",
+        "1",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("matches 2 recorded project values"),
+        "--limit 1 must still warn: {stderr}"
+    );
+
+    // An exact slug is unambiguous by construction, so it stays quiet.
+    let out = run(&[
+        "search",
+        "shared",
+        "--scope",
+        "user",
+        "--project",
+        "hoge/app",
+    ]);
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("matched"));
+}
+
+#[test]
+fn test_list_project_filter_agrees_with_search() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = setup_project_filter_fixture(&home, &proj);
+
+    let uids = |args: &[&str]| -> Vec<String> {
+        let out = run(args);
+        assert!(out.status.success());
+        let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        let mut got: Vec<String> = hits
+            .iter()
+            .map(|h| h["uid"].as_str().unwrap().to_string())
+            .collect();
+        got.sort();
+        got
+    };
+
+    // `list` filters in Rust, `search` in SQL — they must answer the same question.
+    assert_eq!(
+        uids(&["list", "--scope", "user", "--project", "app", "--json"]),
+        uids(&[
+            "search",
+            "shared",
+            "--scope",
+            "user",
+            "--project",
+            "app",
+            "--json"
+        ])
+    );
+}
+
+#[test]
+fn test_project_filter_dot_means_the_current_project() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = setup_project_filter_fixture(&home, &proj);
+
+    // One more entry attributed to the project we are standing in.
+    let here = proj
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        run(&[
+            "add",
+            "filter here entry",
+            "-k",
+            "filterkw",
+            "-c",
+            "shared body text",
+            "--scope",
+            "user"
+        ])
+        .status
+        .success()
+    );
+
+    let out = run(&[
+        "search",
+        "shared",
+        "--scope",
+        "user",
+        "--project",
+        ".",
+        "--json",
+    ]);
+    assert!(out.status.success());
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(hits.len(), 1, "only the current project's entry");
+    assert_eq!(hits[0]["project"], here);
+}
+
+#[test]
+fn test_invalid_project_filter_errors_instead_of_returning_nothing() {
+    // Silently matching nothing would read as "no knowledge here", which is worse
+    // than an error: it invites re-recording something that already exists.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = setup_project_filter_fixture(&home, &proj);
+
+    let out = run(&[
+        "search",
+        "shared",
+        "--scope",
+        "user",
+        "--project",
+        "///",
+        "--json",
+    ]);
+    assert!(!out.status.success(), "an unusable filter must fail loudly");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--project"));
+}
+
+#[test]
+fn test_edit_project_sets_and_clears() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env_remove("LK_PROJECT")
+            .output()
+            .unwrap()
+    };
+    let added: serde_json::Value = serde_json::from_slice(
+        &run(&[
+            "add",
+            "edit project entry",
+            "-k",
+            "editkw",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+            "--json",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    let uid = added["uid"].as_str().unwrap().to_string();
+
+    assert!(
+        run(&["edit", &uid, "--project", "syarihu/backfilled"])
+            .status
+            .success()
+    );
+    let entry: serde_json::Value =
+        serde_json::from_slice(&run(&["get", &uid, "--json"]).stdout).unwrap();
+    assert_eq!(entry["project"], "syarihu/backfilled");
+
+    // An unusable value must not quietly replace the attribution with a detected
+    // one: "set this value" is not "set whatever you can figure out".
+    let out = run(&["edit", &uid, "--project", "///"]);
+    assert!(!out.status.success(), "an unusable value must fail loudly");
+    let entry: serde_json::Value =
+        serde_json::from_slice(&run(&["get", &uid, "--json"]).stdout).unwrap();
+    assert_eq!(
+        entry["project"], "syarihu/backfilled",
+        "the existing attribution must survive a rejected edit"
+    );
+
+    // An empty value clears it, which is how a wrong attribution gets removed.
+    assert!(run(&["edit", &uid, "--project", ""]).status.success());
+    let entry: serde_json::Value =
+        serde_json::from_slice(&run(&["get", &uid, "--json"]).stdout).unwrap();
+    assert!(
+        entry["project"].is_null(),
+        "project should be cleared: {entry}"
+    );
+}
+
+#[test]
+fn test_mcp_project_filter_dot_follows_the_requested_project() {
+    // The MCP server serves registered projects from one process, so `.` must mean
+    // the project the request targets — not the directory the server was started in
+    // (here, this repository). Reverting to the CWD-based resolution fails this.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let targeted = proj
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+
+    let add = |args: &[&str]| {
+        let out = lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env_remove("LK_PROJECT")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    };
+    // One entry attributed to the targeted project (detected from its directory)...
+    add(&[
+        "add",
+        "dot filter targeted",
+        "-k",
+        "dotkw",
+        "-c",
+        "shared body text",
+        "--scope",
+        "user",
+    ]);
+    // ...and one attributed to the repo the server process runs in.
+    add(&[
+        "add",
+        "dot filter server cwd",
+        "-k",
+        "dotkw",
+        "-c",
+        "shared body text",
+        "--scope",
+        "user",
+        "--project",
+        "syarihu/local-knowledge-cli",
+    ]);
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_knowledge","arguments":{"query":"shared","scope":"user","project_filter":"."}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("search_knowledge did not return JSON ({e}): {body}"));
+    let entries = out["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1, "body: {body}");
+    assert_eq!(
+        entries[0]["project"], targeted,
+        "`.` must resolve to the requested project, not the server's directory: {body}"
+    );
+}
+
+#[test]
+fn test_mcp_project_filter_rejects_a_non_string_value() {
+    // Reading a malformed filter as "absent" would widen the search to everything —
+    // the opposite of what was asked.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let _run = setup_project_filter_fixture(&home, &proj);
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_knowledge","arguments":{"query":"shared","scope":"user","project_filter":123}}}"#,
+    );
+    let text = format!("{replies:?}");
+    assert!(
+        text.contains("project_filter"),
+        "a non-string filter must be refused: {text}"
+    );
+    assert!(
+        !text.contains("hoge/app") || text.contains("expected a string"),
+        "it must not fall back to an unfiltered search: {text}"
+    );
+}
+
+#[test]
+fn test_mcp_project_filter() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let run = setup_project_filter_fixture(&home, &proj);
+    let _ = run(&["list", "--scope", "user", "--json"]);
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_knowledge","arguments":{"query":"shared","scope":"user","project_filter":"hoge/app"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("search_knowledge did not return JSON ({e}): {body}"));
+    let entries = out["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1, "body: {body}");
+    assert_eq!(entries[0]["project"], "hoge/app");
+}
+
 #[test]
 fn test_git_config_lk_project_overrides_the_remote() {
     // The lasting per-repo override: it beats the detected remote, and `LK_PROJECT`

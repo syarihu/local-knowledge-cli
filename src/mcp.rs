@@ -344,6 +344,10 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
                     "description": "Maximum number of results (default: 5)",
                     "default": 5
                 },
+                "project_filter": {
+                    "type": "string",
+                    "description": "Only return entries recorded against this project: 'owner/repo' (exact), a bare repo name (any owner), or '.' for the project this request targets. Filters by where an entry came from — unrelated to 'project', which selects which registered project to search."
+                },
                 "scope": {
                     "type": "string",
                     "enum": ["project", "user", "all"],
@@ -435,6 +439,10 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
                     "type": "integer",
                     "description": "Skip first N results (default: 0)",
                     "default": 0
+                },
+                "project_filter": {
+                    "type": "string",
+                    "description": "Only list entries recorded against this project: 'owner/repo' (exact), a bare repo name (any owner), or '.' for the project this request targets."
                 },
                 "scope": {
                     "type": "string",
@@ -578,6 +586,32 @@ fn tool_def_list_projects() -> Value {
 
 // ── tool execution ───────────────────────────────────────────────────
 
+/// Read the `project_filter` argument. Named apart from `project`, which selects
+/// the registered project a request targets; this one filters by the project an
+/// entry was recorded against.
+fn parse_project_filter_param(
+    params: &Value,
+    project_root: &Path,
+) -> Result<Option<db::ProjectFilter>, String> {
+    match &params["project_filter"] {
+        Value::Null => Ok(None),
+        // `.` follows the project this request targets, not the server's working
+        // directory: one process serves several registered projects.
+        Value::String(raw) => db::ProjectFilter::parse_for(raw, Some(project_root))
+            .map(Some)
+            .ok_or_else(|| {
+                // `{raw:?}` escapes a control character in the client's value rather
+                // than printing it raw, matching how CLI `--project` reports one.
+                format!("Invalid project_filter {raw:?} (expected owner/repo, a repo name, or '.')")
+            }),
+        // Present but not a string is a client bug. Reading it as "absent" would
+        // widen the search to everything — the opposite of what was asked.
+        other => Err(format!(
+            "Invalid project_filter: expected a string, got {other}"
+        )),
+    }
+}
+
 fn entry_to_json(e: &db::Entry, kws: &[String], config: &Config) -> Value {
     let days = util::days_since(&e.updated_at);
     let threshold = config.stale_threshold_for(&e.source);
@@ -671,7 +705,7 @@ fn open_scope_conn_mcp(scope: &str, project_root: &Path) -> Result<rusqlite::Con
              Add one with add_knowledge(scope=\"user\")."
                 .to_string()
         }),
-        o => Err(format!("Invalid scope '{o}' (expected: project, user)")),
+        o => Err(format!("Invalid scope {o:?} (expected: project, user)")),
     }
 }
 
@@ -809,6 +843,8 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let status = params["status"].as_str();
             let limit = params["limit"].as_u64().unwrap_or(5) as usize;
             let scope = params["scope"].as_str();
+            // Not "project": that parameter names which registered project to search.
+            let project_filter = parse_project_filter_param(params, &project_root)?;
 
             // Validate status if provided
             if let Some(st) = status
@@ -836,6 +872,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     source,
                     status,
                     None,
+                    project_filter.as_ref(),
                     limit,
                 )
                 .map_err(|e| format!("search error: {e}"))?;
@@ -1056,6 +1093,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let limit = params["limit"].as_u64().unwrap_or(20) as usize;
             let offset = params["offset"].as_u64().unwrap_or(0) as usize;
             let scope = params["scope"].as_str();
+            let project_filter = parse_project_filter_param(params, &project_root)?;
 
             // Validate status so a typo errors instead of silently returning [].
             if let Some(st) = status
@@ -1085,6 +1123,13 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     }
                     // Apply status filter (e.g. proposed = open plan items).
                     if status.is_some_and(|st| e.status != st) {
+                        continue;
+                    }
+                    // Same meaning as the SQL filter `search_knowledge` uses.
+                    if project_filter
+                        .as_ref()
+                        .is_some_and(|pf| !pf.matches(e.project.as_deref()))
+                    {
                         continue;
                     }
                     let kws = db::get_keywords(conn, e.id).unwrap_or_default();

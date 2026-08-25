@@ -1,9 +1,11 @@
 use crate::db;
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_list(
     category: Option<&str>,
     source: Option<&str>,
     status: Option<&str>,
+    project: Option<&str>,
     limit: Option<usize>,
     offset: usize,
     scope: Option<&str>,
@@ -28,6 +30,10 @@ pub fn cmd_list(
             ("status", status.unwrap_or("")),
         ],
     );
+    let project_filter = match project {
+        Some(p) => Some(super::parse_project_filter(p)?),
+        None => None,
+    };
     let conns = super::read_connections(scope)?;
 
     // Merge entries across scopes, tagging each with its scope label.
@@ -40,10 +46,17 @@ pub fn cmd_list(
         if let Some(st) = status {
             entries.retain(|e| e.status == st);
         }
+        // `list` filters in Rust like its other filters; `search` has to do it in SQL
+        // to keep `LIMIT` meaningful. `ProjectFilter::matches` is the shared meaning.
+        if let Some(pf) = project_filter.as_ref() {
+            entries.retain(|e| pf.matches(e.project.as_deref()));
+        }
         for e in entries {
             tagged.push((label, e));
         }
     }
+
+    super::warn_if_bare_name_is_ambiguous(&conns, project_filter.as_ref(), json_output);
 
     // Re-sort the merged set by updated_at DESC so pagination is globally correct
     // (each DB returns its own updated_at DESC; concatenation alone would not be).

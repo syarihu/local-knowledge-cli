@@ -1,4 +1,6 @@
 .knowledge/knowledge.db
+.knowledge/knowledge.db-wal
+.knowledge/knowledge.db-shm
 .knowledge/knowledge.db.bak.*
 .knowledge/search.log
 .knowledge/command.log

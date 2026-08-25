@@ -15,6 +15,69 @@ pub fn is_valid_status(s: &str) -> bool {
     VALID_STATUSES.contains(&s)
 }
 
+/// How a user-supplied `--project` value matches `entries.project`.
+///
+/// The two forms are deliberately asymmetric. A full slug matches exactly, so
+/// `hoge/app` never picks up `fuga/app` — the reason the key carries an owner at
+/// all. A bare name matches on the last segment, which finds the slug and also any
+/// bare value recorded where no remote was known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectFilter {
+    Exact(String),
+    BareName(String),
+}
+
+impl ProjectFilter {
+    /// Build from a user-supplied value, normalizing it the way a recorded key is.
+    /// `.` means the current directory's project — see [`ProjectFilter::parse_for`]
+    /// when the request targets a project other than the process's own directory.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::parse_for(value, None)
+    }
+
+    /// [`ProjectFilter::parse`] with an explicit root for `.`. The MCP server serves
+    /// several registered projects from one process, so resolving `.` against its
+    /// working directory would filter by the wrong repo entirely.
+    pub fn parse_for(value: &str, root: Option<&std::path::Path>) -> Option<Self> {
+        let key = if value.trim() == "." {
+            match root {
+                Some(root) => crate::util::project_key_for(root)?,
+                None => crate::util::current_project_key()?,
+            }
+        } else {
+            crate::util::normalize_project_key(value)?
+        };
+        Some(if key.contains('/') {
+            ProjectFilter::Exact(key)
+        } else {
+            ProjectFilter::BareName(key)
+        })
+    }
+
+    /// The value compared against, for messages and for the SQL parameter.
+    pub fn key(&self) -> &str {
+        match self {
+            ProjectFilter::Exact(k) | ProjectFilter::BareName(k) => k,
+        }
+    }
+
+    /// Whether a stored project matches. Kept in step with the SQL in
+    /// `append_filters` — `test_project_filter_sql_and_rust_agree` pins them together,
+    /// since `search` filters in SQL (it must, to keep `LIMIT` meaningful) while
+    /// `list` filters in Rust.
+    pub fn matches(&self, project: Option<&str>) -> bool {
+        let Some(project) = project else {
+            return false;
+        };
+        match self {
+            ProjectFilter::Exact(k) => project == k,
+            // The LAST segment, not everything after the first `/`: a deeper
+            // namespace (`group/sub/repo`) must still answer to `repo`.
+            ProjectFilter::BareName(k) => project.rsplit('/').next() == Some(k.as_str()),
+        }
+    }
+}
+
 /// Search over-fetch margin: each query reads `limit + this` candidate rows so that
 /// progressive id/title dedup can still fill `limit` after dropping duplicates, while
 /// a bounded SQL `LIMIT` preserves SQLite's top-N optimization (no full sort of the
@@ -579,6 +642,54 @@ pub fn get_entry_by_uid(
     }
 }
 
+/// Append the optional `WHERE` fragments shared by the search paths and the
+/// ambiguity lookup, keeping one definition of what each filter means.
+fn append_filters(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    category: Option<&str>,
+    source: Option<&str>,
+    status: Option<&str>,
+    since: Option<&str>,
+    project: Option<&ProjectFilter>,
+) {
+    if let Some(cat) = category {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND e.category = ?{idx}"));
+        params.push(Box::new(cat.to_string()));
+    }
+    if let Some(src) = source {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND e.source = ?{idx}"));
+        params.push(Box::new(src.to_string()));
+    }
+    if let Some(st) = status {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND e.status = ?{idx}"));
+        params.push(Box::new(st.to_string()));
+    }
+    if let Some(s) = since {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND e.updated_at >= ?{idx}"));
+        params.push(Box::new(s.to_string()));
+    }
+    if let Some(pf) = project {
+        let idx = params.len() + 1;
+        match pf {
+            ProjectFilter::Exact(_) => sql.push_str(&format!(" AND e.project = ?{idx}")),
+            // Last segment of `e.project`: `rtrim` strips every trailing
+            // non-slash character, leaving the prefix through the last `/`, which
+            // `replace` then removes. A value with no `/` comes back whole (SQLite
+            // returns X unchanged for an empty search string), so one expression
+            // covers a slug, a deeper namespace, and a bare value alike.
+            ProjectFilter::BareName(_) => sql.push_str(&format!(
+                " AND replace(e.project, rtrim(e.project, replace(e.project, '/', '')), '') = ?{idx}"
+            )),
+        }
+        params.push(Box::new(pf.key().to_string()));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn search_entries(
     conn: &Connection,
@@ -588,6 +699,7 @@ pub fn search_entries(
     source: Option<&str>,
     status: Option<&str>,
     since: Option<&str>,
+    project: Option<&ProjectFilter>,
     limit: usize,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
     // Each scope must return at most `limit` rows (callers merge then truncate), so a
@@ -609,37 +721,6 @@ pub fn search_entries(
         i64::try_from(limit.saturating_add(SEARCH_DEDUP_MARGIN)).unwrap_or(i64::MAX);
     let mut results = Vec::new();
 
-    // Helper to append optional filters and return next param index
-    fn append_filters(
-        sql: &mut String,
-        params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
-        category: Option<&str>,
-        source: Option<&str>,
-        status: Option<&str>,
-        since: Option<&str>,
-    ) {
-        if let Some(cat) = category {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND e.category = ?{idx}"));
-            params.push(Box::new(cat.to_string()));
-        }
-        if let Some(src) = source {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND e.source = ?{idx}"));
-            params.push(Box::new(src.to_string()));
-        }
-        if let Some(st) = status {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND e.status = ?{idx}"));
-            params.push(Box::new(st.to_string()));
-        }
-        if let Some(s) = since {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND e.updated_at >= ?{idx}"));
-            params.push(Box::new(s.to_string()));
-        }
-    }
-
     if keyword_only {
         let words = split_query_words(query);
         let mut sql = format!(
@@ -657,7 +738,15 @@ pub fn search_entries(
         }
         sql.push(')');
 
-        append_filters(&mut sql, &mut param_values, category, source, status, since);
+        append_filters(
+            &mut sql,
+            &mut param_values,
+            category,
+            source,
+            status,
+            since,
+            project,
+        );
         sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
         param_values.push(Box::new(fetch_limit));
 
@@ -695,6 +784,7 @@ pub fn search_entries(
             source,
             status,
             since,
+            project,
         );
         // Bounded over-fetch: `fetch_limit` keeps SQLite's top-N optimization, and the
         // Rust-side dedup + early break below collects `limit` UNIQUE (id+title) rows,
@@ -756,7 +846,15 @@ pub fn search_entries(
             }
             kw_sql.push(')');
 
-            append_filters(&mut kw_sql, &mut kw_params, category, source, status, since);
+            append_filters(
+                &mut kw_sql,
+                &mut kw_params,
+                category,
+                source,
+                status,
+                since,
+                project,
+            );
             // Bounded over-fetch; the loop below dedups and breaks at `limit`.
             kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
             kw_params.push(Box::new(fetch_limit));
@@ -804,6 +902,7 @@ pub fn search_entries(
                 source,
                 status,
                 since,
+                project,
             );
             // Bounded over-fetch; the loop below dedups and breaks at `limit`.
             like_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
@@ -829,6 +928,39 @@ pub fn search_entries(
     // Both branches dedup by title as rows arrive and stop at `limit`, so `results` is
     // already title-unique and within the limit — no final pass needed.
     Ok(results)
+}
+
+/// The distinct recorded projects a filter matches, capped at `limit`.
+///
+/// Asked of the store rather than of a page of results: a `--limit 1` search would
+/// otherwise never notice that a bare name spans two owners, which is exactly the
+/// case the warning exists for.
+///
+/// A bare name compares a suffix, which `idx_entries_project` cannot seek, so this
+/// scans the index — deliberately: it runs only for a bare `--project` on a
+/// human-readable command, over a store of a few hundred rows. An expression index
+/// on the same last-segment expression is the fix if a base ever grows enough for
+/// it to matter.
+pub fn distinct_projects_for(
+    conn: &Connection,
+    filter: &ProjectFilter,
+    limit: usize,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut sql =
+        "SELECT DISTINCT e.project FROM entries e WHERE e.project IS NOT NULL".to_string();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    append_filters(&mut sql, &mut params, None, None, None, None, Some(filter));
+    sql.push_str(" ORDER BY e.project LIMIT ?");
+    params.push(Box::new(i64::try_from(limit).unwrap_or(i64::MAX)));
+
+    let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_ref.as_slice(), |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 pub fn get_entry(conn: &Connection, id: i64) -> Result<Option<Entry>, Box<dyn std::error::Error>> {
@@ -966,6 +1098,20 @@ pub fn replace_keywords(
             Err(e)
         }
     }
+}
+
+/// Set (or clear, with `None`) the project an entry is attributed to. Used by
+/// `lk edit --project` to fill in entries added before the column existed.
+pub fn update_entry_project(
+    conn: &Connection,
+    id: i64,
+    project: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute(
+        "UPDATE entries SET project = ?1, updated_at = ?2 WHERE id = ?3",
+        params![project, now_iso(), id],
+    )?;
+    Ok(())
 }
 
 pub fn update_entry_status(
@@ -1559,7 +1705,8 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_entries(&conn, "OAuth", false, None, None, None, None, 10).unwrap();
+        let results =
+            search_entries(&conn, "OAuth", false, None, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "OAuth Login");
     }
@@ -1599,6 +1746,7 @@ mod tests {
             &conn,
             "how does the auth middleware refresh a token",
             false,
+            None,
             None,
             None,
             None,
@@ -1658,6 +1806,7 @@ mod tests {
             &conn,
             "トークン スキーマ",
             false,
+            None,
             None,
             None,
             None,
@@ -1735,7 +1884,8 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_entries(&conn, "needle", false, None, None, None, None, 3).unwrap();
+        let results =
+            search_entries(&conn, "needle", false, None, None, None, None, None, 3).unwrap();
         assert_eq!(
             results.len(),
             3,
@@ -1762,7 +1912,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            search_entries(&conn, "needle", false, None, None, None, None, 0)
+            search_entries(&conn, "needle", false, None, None, None, None, None, 0)
                 .unwrap()
                 .is_empty()
         );
@@ -1785,12 +1935,12 @@ mod tests {
         )
         .unwrap();
         assert!(
-            search_entries(&conn, "  --  __ ", false, None, None, None, None, 5)
+            search_entries(&conn, "  --  __ ", false, None, None, None, None, None, 5)
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            search_entries(&conn, "  --  __ ", true, None, None, None, None, 5)
+            search_entries(&conn, "  --  __ ", true, None, None, None, None, None, 5)
                 .unwrap()
                 .is_empty()
         );
@@ -1811,7 +1961,8 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_entries(&conn, "mykey", true, None, None, None, None, 10).unwrap();
+        let results =
+            search_entries(&conn, "mykey", true, None, None, None, None, None, 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "A");
     }
@@ -1866,6 +2017,7 @@ mod tests {
             None,
             Some("proposed"),
             None,
+            None,
             10,
         )
         .unwrap();
@@ -1873,19 +2025,39 @@ mod tests {
         assert_eq!(r[0].title, "Plan OAuth 認証");
 
         // keyword-only path
-        let r =
-            search_entries(&conn, "oauth", true, None, None, Some("accepted"), None, 10).unwrap();
+        let r = search_entries(
+            &conn,
+            "oauth",
+            true,
+            None,
+            None,
+            Some("accepted"),
+            None,
+            None,
+            10,
+        )
+        .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title, "Done OAuth 認証");
 
         // LIKE fallback path (2-char CJK query that trigram FTS cannot match)
-        let r =
-            search_entries(&conn, "認証", false, None, None, Some("proposed"), None, 10).unwrap();
+        let r = search_entries(
+            &conn,
+            "認証",
+            false,
+            None,
+            None,
+            Some("proposed"),
+            None,
+            None,
+            10,
+        )
+        .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title, "Plan OAuth 認証");
 
         // No status filter returns both
-        let r = search_entries(&conn, "OAuth", false, None, None, None, None, 10).unwrap();
+        let r = search_entries(&conn, "OAuth", false, None, None, None, None, None, 10).unwrap();
         assert_eq!(r.len(), 2);
     }
 
@@ -1949,12 +2121,14 @@ mod tests {
         .unwrap();
 
         // 3+ char Japanese query via trigram FTS
-        let results = search_entries(&conn, "トークン", false, None, None, None, None, 10).unwrap();
+        let results =
+            search_entries(&conn, "トークン", false, None, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty(), "trigram should match 3+ char Japanese");
         assert_eq!(results[0].title, "認証フロー");
 
         // 2-char Japanese query falls back to LIKE
-        let results = search_entries(&conn, "認証", false, None, None, None, None, 10).unwrap();
+        let results =
+            search_entries(&conn, "認証", false, None, None, None, None, None, 10).unwrap();
         assert!(
             !results.is_empty(),
             "LIKE fallback should match 2-char Japanese"
@@ -1963,7 +2137,7 @@ mod tests {
 
         // Multi-word Japanese query
         let results =
-            search_entries(&conn, "レート制限", false, None, None, None, None, 10).unwrap();
+            search_entries(&conn, "レート制限", false, None, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty(), "should match multi-char Japanese");
     }
 
@@ -2379,6 +2553,211 @@ mod tests {
         cleanup_backups(tmp.path(), 0).ok();
     }
 
+    /// The projects used by the filter tests, one per matching shape.
+    #[cfg(test)]
+    fn seed_projects(conn: &Connection) {
+        for project in [
+            Some("hoge/app"),
+            Some("fuga/app"),
+            Some("app"),
+            Some("syarihu/local-knowledge-cli"),
+            // A GitLab-style subgroup: `repo` must still find it.
+            Some("group/sub/repo"),
+            None,
+        ] {
+            add_entry_full(
+                conn,
+                &format!("entry for {}", project.unwrap_or("none")),
+                "shared body text",
+                &[],
+                "",
+                "local",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                project,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_project_filter_exact_never_crosses_owners() {
+        // The whole reason the key carries an owner: `hoge/app` must not pick up
+        // `fuga/app`, while a bare `app` deliberately finds both (and a bare record).
+        let (conn, _tmp) = setup_test_db();
+        seed_projects(&conn);
+
+        let exact = ProjectFilter::Exact("hoge/app".to_string());
+        let hits = search_entries(
+            &conn,
+            "shared",
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some(&exact),
+            10,
+        )
+        .unwrap();
+        let got: Vec<Option<String>> = hits.into_iter().map(|e| e.project).collect();
+        assert_eq!(got, vec![Some("hoge/app".to_string())]);
+
+        let bare = ProjectFilter::BareName("app".to_string());
+        let hits = search_entries(
+            &conn,
+            "shared",
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some(&bare),
+            10,
+        )
+        .unwrap();
+        let mut got: Vec<String> = hits.into_iter().filter_map(|e| e.project).collect();
+        got.sort();
+        assert_eq!(got, vec!["app", "fuga/app", "hoge/app"]);
+    }
+
+    #[test]
+    fn test_bare_name_matches_the_last_segment_of_a_deep_namespace() {
+        // SQL/Rust agreement alone can't catch a shared misreading of the rule, so
+        // pin the rule itself: `repo` finds `group/sub/repo`, `sub` does not.
+        let (conn, _tmp) = setup_test_db();
+        seed_projects(&conn);
+
+        let hit = ProjectFilter::BareName("repo".to_string());
+        assert!(hit.matches(Some("group/sub/repo")));
+        let found = search_entries(
+            &conn,
+            "shared",
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some(&hit),
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .filter_map(|e| e.project.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["group/sub/repo"]
+        );
+
+        let miss = ProjectFilter::BareName("sub".to_string());
+        assert!(!miss.matches(Some("group/sub/repo")));
+        let found = search_entries(
+            &conn,
+            "shared",
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some(&miss),
+            10,
+        )
+        .unwrap();
+        assert!(found.is_empty(), "a middle segment is not the repo name");
+    }
+
+    #[test]
+    fn test_project_filter_sql_and_rust_agree() {
+        // `search` filters in SQL (it must, for LIMIT to mean anything) while `list`
+        // filters in Rust with `matches`. If the two ever drift, one command silently
+        // answers a different question than the other.
+        let (conn, _tmp) = setup_test_db();
+        seed_projects(&conn);
+        let all = list_entries(&conn, None).unwrap();
+
+        for filter in [
+            ProjectFilter::Exact("hoge/app".to_string()),
+            ProjectFilter::Exact("app".to_string()),
+            ProjectFilter::Exact("syarihu/local-knowledge-cli".to_string()),
+            ProjectFilter::BareName("app".to_string()),
+            ProjectFilter::BareName("local-knowledge-cli".to_string()),
+            ProjectFilter::BareName("repo".to_string()),
+            ProjectFilter::BareName("sub".to_string()),
+            ProjectFilter::Exact("group/sub/repo".to_string()),
+            ProjectFilter::BareName("nothing".to_string()),
+        ] {
+            let mut via_sql: Vec<String> = search_entries(
+                &conn,
+                "shared",
+                false,
+                None,
+                None,
+                None,
+                None,
+                Some(&filter),
+                10,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|e| e.title)
+            .collect();
+            let mut via_rust: Vec<String> = all
+                .iter()
+                .filter(|e| filter.matches(e.project.as_deref()))
+                .map(|e| e.title.clone())
+                .collect();
+            via_sql.sort();
+            via_rust.sort();
+            assert_eq!(via_sql, via_rust, "SQL and Rust disagree for {filter:?}");
+        }
+    }
+
+    #[test]
+    fn test_project_filter_never_matches_an_unattributed_entry() {
+        // A NULL project is "unknown", not "matches everything".
+        let (conn, _tmp) = setup_test_db();
+        seed_projects(&conn);
+        for filter in [
+            ProjectFilter::Exact("hoge/app".to_string()),
+            ProjectFilter::BareName("app".to_string()),
+        ] {
+            assert!(!filter.matches(None), "{filter:?} must not match NULL");
+            let hits = search_entries(
+                &conn,
+                "shared",
+                false,
+                None,
+                None,
+                None,
+                None,
+                Some(&filter),
+                10,
+            )
+            .unwrap();
+            assert!(hits.iter().all(|e| e.project.is_some()));
+        }
+    }
+
+    #[test]
+    fn test_update_entry_project_sets_and_clears() {
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(&conn, "T", "body", &[], "", "local", None, None).unwrap();
+        assert!(get_entry(&conn, id).unwrap().unwrap().project.is_none());
+
+        update_entry_project(&conn, id, Some("syarihu/repo")).unwrap();
+        assert_eq!(
+            get_entry(&conn, id).unwrap().unwrap().project.as_deref(),
+            Some("syarihu/repo")
+        );
+        update_entry_project(&conn, id, None).unwrap();
+        assert!(get_entry(&conn, id).unwrap().unwrap().project.is_none());
+    }
+
     #[test]
     fn test_search_returns_project() {
         // The ranked FTS path reads `rank` by column index, so appending `project` to
@@ -2401,7 +2780,7 @@ mod tests {
         )
         .unwrap();
 
-        let r = search_entries(&conn, "migration", false, None, None, None, None, 5).unwrap();
+        let r = search_entries(&conn, "migration", false, None, None, None, None, None, 5).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].project.as_deref(), Some("syarihu/other-repo"));
         assert!(
@@ -2517,6 +2896,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             10,
         )
         .unwrap();
@@ -2540,7 +2920,8 @@ mod tests {
         .unwrap();
 
         // Hyphenated query should still find the entry
-        let results = search_entries(&conn, "auth-API", false, None, None, None, None, 10).unwrap();
+        let results =
+            search_entries(&conn, "auth-API", false, None, None, None, None, None, 10).unwrap();
         assert!(!results.is_empty(), "hyphenated query should find entry");
         assert!(results[0].title.contains("Auth"));
     }

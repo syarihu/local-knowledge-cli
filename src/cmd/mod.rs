@@ -47,7 +47,7 @@ pub fn parse_scope(s: &str) -> Result<Scope, Box<dyn std::error::Error>> {
     match s {
         "project" => Ok(Scope::Project),
         "user" => Ok(Scope::User),
-        other => Err(format!("Invalid --scope '{other}' (expected: project, user)").into()),
+        other => Err(format!("Invalid --scope {other:?} (expected: project, user)").into()),
     }
 }
 
@@ -66,7 +66,7 @@ pub fn resolve_write_scope(s: &str) -> Result<(Scope, bool), Box<dyn std::error:
                 Ok((Scope::User, true))
             }
         }
-        other => Err(format!("Invalid --scope '{other}' (expected: project, user, auto)").into()),
+        other => Err(format!("Invalid --scope {other:?} (expected: project, user, auto)").into()),
     }
 }
 
@@ -182,7 +182,7 @@ pub fn read_connections(
         Some("project") => (true, true, false),
         Some("user") => (false, false, true),
         Some(other) => {
-            return Err(format!("Invalid --scope '{other}' (expected: project, user, all)").into());
+            return Err(format!("Invalid --scope {other:?} (expected: project, user, all)").into());
         }
     };
     let mut conns: Vec<(Connection, &'static str)> = Vec::new();
@@ -195,6 +195,70 @@ pub fn read_connections(
         conns.push((c, "user"));
     }
     Ok(conns)
+}
+
+/// Parse a `--project` filter value, erroring rather than silently matching nothing.
+/// `.` means the project of the current directory.
+pub fn parse_project_filter(
+    value: &str,
+) -> Result<crate::db::ProjectFilter, Box<dyn std::error::Error>> {
+    crate::db::ProjectFilter::parse(value).ok_or_else(|| {
+        if value.trim() == "." {
+            "No project could be detected here, so `--project .` matches nothing.".into()
+        } else {
+            let msg: Box<dyn std::error::Error> =
+                format!("Invalid --project {value:?} (expected owner/repo, a repo name, or `.`)")
+                    .into();
+            msg
+        }
+    })
+}
+
+/// Note when a bare `--project` name is ambiguous, so a hit from `fuga/app` is
+/// never quietly read as one from `hoge/app`. Full slugs are exact by construction,
+/// so only the bare form can be ambiguous.
+///
+/// The question is asked of the stores, not of the results: with `--limit 1` a page
+/// can only ever show one project, which is precisely when the warning matters most.
+pub fn warn_if_bare_name_is_ambiguous(
+    conns: &[(Connection, &'static str)],
+    filter: Option<&crate::db::ProjectFilter>,
+    json_output: bool,
+) {
+    let Some(filter @ crate::db::ProjectFilter::BareName(name)) = filter else {
+        return;
+    };
+    if json_output {
+        return;
+    }
+    // One more than we are willing to list, so a capped result is recognizable.
+    const LIST: usize = 3;
+    let mut seen: Vec<String> = Vec::new();
+    for (conn, _) in conns {
+        if let Ok(found) = crate::db::distinct_projects_for(conn, filter, LIST + 1) {
+            seen.extend(found);
+        }
+    }
+    seen.sort_unstable();
+    seen.dedup();
+    if seen.len() <= 1 {
+        return;
+    }
+    // "values", not "projects": `app` and `hoge/app` may well be the same repo
+    // recorded twice, once before a remote was known. And past the cap the count is
+    // a lower bound, so say "several" rather than print a number that is wrong.
+    if seen.len() > LIST {
+        eprintln!(
+            "Note: '{name}' matches several recorded project values (e.g. {}). Pass the full owner/repo to narrow it.",
+            seen[..LIST].join(", ")
+        );
+    } else {
+        eprintln!(
+            "Note: '{name}' matches {} recorded project values: {}. Pass the full owner/repo to narrow it.",
+            seen.len(),
+            seen.join(", ")
+        );
+    }
 }
 
 /// Log a command invocation to .knowledge/command.log (fire-and-forget).

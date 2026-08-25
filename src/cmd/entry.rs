@@ -116,6 +116,7 @@ pub fn cmd_edit(
     content: Option<&str>,
     status: Option<&str>,
     superseded_by: Option<&str>,
+    project: Option<&str>,
     touch: bool,
     scope: Option<super::Scope>,
     json_output: bool,
@@ -135,6 +136,9 @@ pub fn cmd_edit(
     }
     if superseded_by.is_some() {
         fields.push("superseded_by");
+    }
+    if project.is_some() {
+        fields.push("project");
     }
     if touch {
         fields.push("touch");
@@ -161,15 +165,44 @@ pub fn cmd_edit(
         && content.is_none()
         && status.is_none()
         && superseded_by.is_none()
+        && project.is_none()
         && !touch
     {
-        return Err("Nothing to edit. Specify --title, --keywords, --content, --status, --superseded-by, or --touch.".into());
+        return Err("Nothing to edit. Specify --title, --keywords, --content, --status, --superseded-by, --project, or --touch.".into());
     }
 
     // Warn if setting to superseded without --superseded-by
     if status == Some("superseded") && superseded_by.is_none() {
         eprintln!("Warning: Setting status to 'superseded' without --superseded-by.");
     }
+
+    // Resolved before the transaction: an explicit value goes through the same
+    // expansion `lk add --project` uses, and an empty one clears the attribution
+    // (`--project ""`), which is how a wrong value gets removed rather than replaced.
+    //
+    // An unusable value is an error here, where `add` falls back to detection: on
+    // `add` the field would otherwise be filled in anyway, but on `edit` the entry
+    // already has an attribution, and quietly replacing it with a detected one is
+    // not what "set this value" asked for.
+    let project_update: Option<Option<String>> = match project {
+        None => None,
+        Some(p) if p.trim().is_empty() => Some(None),
+        Some(p) => {
+            if crate::util::normalize_project_key(p).is_none() {
+                return Err(format!(
+                    "Invalid --project {p:?} (expected owner/repo or a repo name; pass \"\" to clear)"
+                )
+                .into());
+            }
+            let (key, note) = crate::util::resolve_project_arg(p);
+            if let Some(note) = note
+                && !json_output
+            {
+                eprintln!("Note: {note}");
+            }
+            Some(key)
+        }
+    };
 
     let kws = keywords_str.map(|s| {
         s.split(',')
@@ -216,6 +249,9 @@ pub fn cmd_edit(
                 status.unwrap_or(entry.status.as_str()),
                 sb.as_deref(),
             )?;
+        }
+        if let Some(p) = &project_update {
+            db::update_entry_project(&conn, local_id, p.as_deref())?;
         }
         Ok(())
     })();
