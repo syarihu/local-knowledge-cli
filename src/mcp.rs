@@ -600,7 +600,9 @@ fn parse_project_filter_param(
         Value::String(raw) => db::ProjectFilter::parse_for(raw, Some(project_root))
             .map(Some)
             .ok_or_else(|| {
-                format!("Invalid project_filter '{raw}' (expected owner/repo, a repo name, or '.')")
+                // `{raw:?}` escapes a control character in the client's value rather
+                // than printing it raw, matching how CLI `--project` reports one.
+                format!("Invalid project_filter {raw:?} (expected owner/repo, a repo name, or '.')")
             }),
         // Present but not a string is a client bug. Reading it as "absent" would
         // widen the search to everything — the opposite of what was asked.
@@ -703,7 +705,7 @@ fn open_scope_conn_mcp(scope: &str, project_root: &Path) -> Result<rusqlite::Con
              Add one with add_knowledge(scope=\"user\")."
                 .to_string()
         }),
-        o => Err(format!("Invalid scope '{o}' (expected: project, user)")),
+        o => Err(format!("Invalid scope {o:?} (expected: project, user)")),
     }
 }
 

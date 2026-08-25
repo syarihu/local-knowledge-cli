@@ -47,7 +47,7 @@ pub fn parse_scope(s: &str) -> Result<Scope, Box<dyn std::error::Error>> {
     match s {
         "project" => Ok(Scope::Project),
         "user" => Ok(Scope::User),
-        other => Err(format!("Invalid --scope '{other}' (expected: project, user)").into()),
+        other => Err(format!("Invalid --scope {other:?} (expected: project, user)").into()),
     }
 }
 
@@ -66,7 +66,7 @@ pub fn resolve_write_scope(s: &str) -> Result<(Scope, bool), Box<dyn std::error:
                 Ok((Scope::User, true))
             }
         }
-        other => Err(format!("Invalid --scope '{other}' (expected: project, user, auto)").into()),
+        other => Err(format!("Invalid --scope {other:?} (expected: project, user, auto)").into()),
     }
 }
 
@@ -182,7 +182,7 @@ pub fn read_connections(
         Some("project") => (true, true, false),
         Some("user") => (false, false, true),
         Some(other) => {
-            return Err(format!("Invalid --scope '{other}' (expected: project, user, all)").into());
+            return Err(format!("Invalid --scope {other:?} (expected: project, user, all)").into());
         }
     };
     let mut conns: Vec<(Connection, &'static str)> = Vec::new();

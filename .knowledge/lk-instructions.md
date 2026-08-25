@@ -30,11 +30,11 @@ After investigating unfamiliar code, save non-trivial, reusable findings (skip m
 `<id-or-uid>`: numeric id (project) or uid (resolves across scopes). All six below also take `--json` and `--scope` (`delete` takes `--scope` but not `--json`; `purge`/`import` take neither). Seldom-needed flags are left out — `lk <cmd> --help` for the complete list.
 
 ```
-lk search "<kw>" [--category C] [--status S] [--source local|shared] [--since YYYY-MM-DD] [--limit N] [--full]
+lk search "<kw>" [--category C] [--status S] [--source local|shared] [--since YYYY-MM-DD] [--project owner/repo|name|.] [--limit N] [--full]
 lk get    <id-or-uid>
 lk add    "<title>" -k "kw1,kw2" -c "<body>" [--category C] [--status S] [--force]
-lk edit   <id-or-uid> [-t "<title>"] [-k "kw1,kw2"] [-c "<body>"] [--status S] [--superseded-by <id-or-uid>] [--touch]
-lk list   [--category C] [--status S] [--source local|shared] [--limit N] [--offset N]
+lk edit   <id-or-uid> [-t "<title>"] [-k "kw1,kw2"] [-c "<body>"] [--status S] [--superseded-by <id-or-uid>] [--project owner/repo|""] [--touch]
+lk list   [--category C] [--status S] [--source local|shared] [--project owner/repo|name|.] [--limit N] [--offset N]
 lk supersede <old-id-or-uid> <new-id-or-uid>
 ```
 
