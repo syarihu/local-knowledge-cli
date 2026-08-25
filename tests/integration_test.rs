@@ -918,6 +918,9 @@ fn test_export_keyword_cannot_write_outside_the_store() {
     assert!(!written[0].contains('/'), "{written:?}");
 }
 
+// Gated on the whole function: on Windows there would be no link to refuse, and the
+// assertions below would fail rather than skip.
+#[cfg(unix)]
 #[test]
 fn test_export_refuses_to_write_through_a_symlink() {
     // `.knowledge/` travels with the repository, so a link committed as
@@ -940,7 +943,6 @@ fn test_export_refuses_to_write_through_a_symlink() {
             .success()
     );
 
-    #[cfg(unix)]
     std::os::unix::fs::symlink(
         "../README.md",
         dir.path().join(".knowledge/exported-auth.md"),
@@ -959,6 +961,49 @@ fn test_export_refuses_to_write_through_a_symlink() {
         "the project's own readme",
         "the link target must be untouched"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_export_does_not_truncate_a_hard_linked_target() {
+    // A hard link is not a symlink, so no check catches it: a plain write would
+    // truncate the inode `README.md` also points at. Writing a fresh file and renaming
+    // it over the entry replaces the directory entry instead.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    std::fs::write(dir.path().join("README.md"), "the project's own readme").unwrap();
+    assert!(
+        run(&["add", "auth entry", "-k", "auth", "-c", "how login works"])
+            .status
+            .success()
+    );
+    std::fs::hard_link(
+        dir.path().join("README.md"),
+        dir.path().join(".knowledge/exported-auth.md"),
+    )
+    .unwrap();
+
+    let out = run(&["export"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+        "the project's own readme",
+        "the hard link's other name must be untouched"
+    );
+    let exported = std::fs::read_to_string(dir.path().join(".knowledge/exported-auth.md")).unwrap();
+    assert!(exported.contains("how login works"), "{exported}");
 }
 
 #[test]

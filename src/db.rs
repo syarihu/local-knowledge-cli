@@ -11,6 +11,24 @@ const ENTRY_COLS_E: &str = "e.id, e.title, e.content, e.category, e.source, e.so
 
 pub const VALID_STATUSES: &[&str] = &["active", "deprecated", "proposed", "accepted", "superseded"];
 
+/// Keywords as they are stored: lowercased, blank-free, and deduplicated.
+///
+/// Every insert path goes through this. Search lowercases the needle, so a keyword
+/// stored with capitals could never be found; and the table has no unique constraint,
+/// so `auth, AUTH` in one edit would otherwise become two rows for one keyword.
+pub fn normalize_keywords<I, S>(kws: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut seen = std::collections::HashSet::new();
+    kws.into_iter()
+        .map(|k| k.as_ref().trim().to_lowercase())
+        .filter(|k| !k.is_empty())
+        .filter(|k| seen.insert(k.clone()))
+        .collect()
+}
+
 pub fn is_valid_status(s: &str) -> bool {
     VALID_STATUSES.contains(&s)
 }
@@ -113,7 +131,7 @@ pub struct DbStats {
 }
 
 /// Current schema version. Increment when adding new migrations.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     if let Some(parent) = db_path.parent() {
@@ -310,9 +328,9 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
             .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")?
             .query_row([], |row| row.get(0))?;
         if schema.contains("project") {
-            // Has all columns including project — current schema
-            set_schema_version(conn, SCHEMA_VERSION)?;
-            return Ok(false);
+            // Has every column, but the keyword normalization of migration 7 is not
+            // visible in the schema, so let that migration decide.
+            6
         } else if schema.contains("uid") {
             5 // Has uid but not project — needs migration 6
         } else if schema.contains("status") {
@@ -522,6 +540,44 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         migrated = true;
     }
 
+    // Migration 7: normalize stored keywords (version 6 -> 7). `lk edit --keywords`
+    // used to store them verbatim, and keyword search lowercases the needle, so those
+    // rows could never be found. SQLite's `lower()` is ASCII-only, so the folding has
+    // to happen in Rust.
+    if effective_version < 7 {
+        let mut rows: Vec<(i64, String)> = Vec::new();
+        {
+            let mut stmt = conn.prepare("SELECT entry_id, keyword FROM keywords")?;
+            let mapped = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            for row in mapped {
+                rows.push(row?);
+            }
+        }
+        let mut per_entry: HashMap<i64, Vec<String>> = HashMap::new();
+        for (entry_id, keyword) in rows {
+            per_entry.entry(entry_id).or_default().push(keyword);
+        }
+        // Rewrite only the entries whose set actually changes, so an already-clean DB
+        // is left alone.
+        for (entry_id, keywords) in per_entry {
+            let normalized = normalize_keywords(&keywords);
+            if normalized == keywords {
+                continue;
+            }
+            conn.execute(
+                "DELETE FROM keywords WHERE entry_id = ?1",
+                params![entry_id],
+            )?;
+            for kw in normalized {
+                conn.execute(
+                    "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
+                    params![entry_id, kw],
+                )?;
+            }
+            migrated = true;
+        }
+    }
+
     set_schema_version(conn, SCHEMA_VERSION)?;
     Ok(migrated)
 }
@@ -619,10 +675,10 @@ pub fn add_entry_full(
     )?;
     let entry_id = conn.last_insert_rowid();
 
-    for kw in final_kws {
+    for kw in normalize_keywords(final_kws) {
         conn.execute(
             "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
-            params![entry_id, kw.to_lowercase()],
+            params![entry_id, kw],
         )?;
     }
 
@@ -1104,17 +1160,7 @@ pub fn update_entry(
         conn.execute_batch("SAVEPOINT update_keywords")?;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             conn.execute("DELETE FROM keywords WHERE entry_id = ?1", params![id])?;
-            // Lowercased and deduped like the other insert paths: keyword search
-            // lowercases the needle, so a keyword stored as `AUTH` would never match a
-            // search for `auth`, and the table has no unique constraint to stop
-            // case-variants in one edit from becoming duplicate rows.
-            let mut seen = std::collections::HashSet::new();
-            let unique: Vec<String> = kws
-                .iter()
-                .map(|k| k.to_lowercase())
-                .filter(|k| seen.insert(k.clone()))
-                .collect();
-            for kw in &unique {
+            for kw in &normalize_keywords(kws) {
                 conn.execute(
                     "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
                     params![id, kw],
@@ -1144,14 +1190,7 @@ pub fn replace_keywords(
     entry_id: i64,
     kws: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Dedup after lowercasing — the keywords table has no unique constraint,
-    // so case-variants in the input would otherwise become duplicate rows.
-    let mut seen = std::collections::HashSet::new();
-    let unique_kws: Vec<String> = kws
-        .iter()
-        .map(|k| k.to_lowercase())
-        .filter(|k| seen.insert(k.clone()))
-        .collect();
+    let unique_kws = normalize_keywords(kws);
     conn.execute_batch("SAVEPOINT replace_keywords")?;
     match (|| -> Result<(), Box<dyn std::error::Error>> {
         conn.execute(
