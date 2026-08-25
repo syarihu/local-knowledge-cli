@@ -231,18 +231,28 @@ pub fn warn_if_bare_name_is_ambiguous(
     if json_output {
         return;
     }
+    // One more than we are willing to list, so a capped result is recognizable.
+    const LIST: usize = 3;
     let mut seen: Vec<String> = Vec::new();
     for (conn, _) in conns {
-        // Three is enough to say "more than one" and name a couple of them.
-        if let Ok(found) = crate::db::distinct_projects_for(conn, filter, 3) {
+        if let Ok(found) = crate::db::distinct_projects_for(conn, filter, LIST + 1) {
             seen.extend(found);
         }
     }
     seen.sort_unstable();
     seen.dedup();
-    if seen.len() > 1 {
-        // "values", not "projects": `app` and `hoge/app` may well be the same repo
-        // recorded twice, once before a remote was known.
+    if seen.len() <= 1 {
+        return;
+    }
+    // "values", not "projects": `app` and `hoge/app` may well be the same repo
+    // recorded twice, once before a remote was known. And past the cap the count is
+    // a lower bound, so say "several" rather than print a number that is wrong.
+    if seen.len() > LIST {
+        eprintln!(
+            "Note: '{name}' matches several recorded project values (e.g. {}). Pass the full owner/repo to narrow it.",
+            seen[..LIST].join(", ")
+        );
+    } else {
         eprintln!(
             "Note: '{name}' matches {} recorded project values: {}. Pass the full owner/repo to narrow it.",
             seen.len(),

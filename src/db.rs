@@ -935,6 +935,12 @@ pub fn search_entries(
 /// Asked of the store rather than of a page of results: a `--limit 1` search would
 /// otherwise never notice that a bare name spans two owners, which is exactly the
 /// case the warning exists for.
+///
+/// A bare name compares a suffix, which `idx_entries_project` cannot seek, so this
+/// scans the index — deliberately: it runs only for a bare `--project` on a
+/// human-readable command, over a store of a few hundred rows. An expression index
+/// on the same last-segment expression is the fix if a base ever grows enough for
+/// it to matter.
 pub fn distinct_projects_for(
     conn: &Connection,
     filter: &ProjectFilter,

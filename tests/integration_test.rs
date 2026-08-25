@@ -2084,6 +2084,78 @@ fn test_edit_project_sets_and_clears() {
 }
 
 #[test]
+fn test_mcp_project_filter_dot_follows_the_requested_project() {
+    // The MCP server serves registered projects from one process, so `.` must mean
+    // the project the request targets — not the directory the server was started in
+    // (here, this repository). Reverting to the CWD-based resolution fails this.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let targeted = proj
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+
+    let add = |args: &[&str]| {
+        let out = lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env_remove("LK_PROJECT")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    };
+    // One entry attributed to the targeted project (detected from its directory)...
+    add(&[
+        "add",
+        "dot filter targeted",
+        "-k",
+        "dotkw",
+        "-c",
+        "shared body text",
+        "--scope",
+        "user",
+    ]);
+    // ...and one attributed to the repo the server process runs in.
+    add(&[
+        "add",
+        "dot filter server cwd",
+        "-k",
+        "dotkw",
+        "-c",
+        "shared body text",
+        "--scope",
+        "user",
+        "--project",
+        "syarihu/local-knowledge-cli",
+    ]);
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_knowledge","arguments":{"query":"shared","scope":"user","project_filter":"."}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("search_knowledge did not return JSON ({e}): {body}"));
+    let entries = out["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1, "body: {body}");
+    assert_eq!(
+        entries[0]["project"], targeted,
+        "`.` must resolve to the requested project, not the server's directory: {body}"
+    );
+}
+
+#[test]
 fn test_mcp_project_filter_rejects_a_non_string_value() {
     // Reading a malformed filter as "absent" would widen the search to everything —
     // the opposite of what was asked.
