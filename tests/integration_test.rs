@@ -1056,6 +1056,114 @@ fn test_export_keeps_the_files_permissions() {
     assert_eq!(mode, 0o640, "replacing a file must not change its mode");
 }
 
+/// `feature/auth` is the keyword this whole change exists for — it used to make
+/// `export` fail outright. Exporting it is only half the job: the markdown has to read
+/// back as the same single keyword, or the next export names the file after a fragment
+/// and abandons the one it wrote before.
+#[test]
+fn test_a_slashed_keyword_survives_an_export_sync_round_trip() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    assert!(
+        run(&["add", "auth flow", "-k", "feature/auth", "-c", "body"])
+            .status
+            .success()
+    );
+    assert!(run(&["export"]).status.success());
+
+    let exported = || -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir.path().join(".knowledge"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.starts_with("exported-"))
+            .collect();
+        names.sort();
+        names
+    };
+    let first = exported();
+    assert_eq!(first.len(), 1, "one exported file: {first:?}");
+
+    // Edit the body so `sync` re-imports the file instead of matching on its hash.
+    let md = dir.path().join(".knowledge").join(&first[0]);
+    let text = std::fs::read_to_string(&md).unwrap();
+    std::fs::write(&md, text.replace("body", "body edited")).unwrap();
+    assert!(run(&["sync"]).status.success());
+
+    // One keyword — not the three (`feature`, `auth`, `feature/auth`) that a frontmatter
+    // parser splitting on word characters used to merge with the per-entry line.
+    let kws: serde_json::Value =
+        serde_json::from_slice(&run(&["keywords", "--json"]).stdout).unwrap();
+    let names: Vec<&str> = kws
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| {
+            k.get("keyword")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(names, vec!["feature/auth"], "keywords after sync: {kws:?}");
+
+    // ...so a second export lands on the same file rather than orphaning the first.
+    assert!(run(&["export"]).status.success());
+    assert_eq!(exported(), first, "re-export must not rename the file");
+}
+
+/// A refusal must happen before the first file is written. Exporting group by group and
+/// failing part-way leaves the earlier groups written and flipped to `shared` while the
+/// command reports failure — a state neither outcome asked for.
+#[cfg(unix)]
+#[test]
+fn test_a_symlink_in_a_later_group_stops_the_whole_export() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    // Groups are visited in alphabetical order, so `aaa` would be written first.
+    assert!(
+        run(&["add", "first", "-k", "aaa", "-c", "one"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["add", "second", "-k", "zzz", "-c", "two"])
+            .status
+            .success()
+    );
+
+    let victim = dir.path().join("victim.md");
+    std::fs::write(&victim, "do not touch\n").unwrap();
+    std::os::unix::fs::symlink(&victim, dir.path().join(".knowledge/exported-zzz.md")).unwrap();
+
+    let out = run(&["export"]);
+    assert!(!out.status.success(), "export must refuse");
+    assert!(
+        !dir.path().join(".knowledge/exported-aaa.md").exists(),
+        "the earlier group must not have been written"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&victim).unwrap(),
+        "do not touch\n",
+        "the symlink target must be untouched"
+    );
+}
+
 #[test]
 fn test_keyword_normalization_survives_every_path() {
     // Keywords are stored NFC and lowercased on every path, and the needles are

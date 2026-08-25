@@ -41,14 +41,14 @@ fn parse_frontmatter(text: &str) -> (Frontmatter, &str) {
             supersedes: Vec::new(),
         };
 
-        let kw_re =
+        // Ids and uids, so tokenizing is the right read here — unlike `keywords:`,
+        // whose values are free text and are parsed by `parse_keyword_list`.
+        let id_re =
             Regex::new(r"[\w\u{3040}-\u{309F}\u{30A0}-\u{30FF}\u{4E00}-\u{9FFF}-]+").unwrap();
         for line in fm_text.lines() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("keywords:") {
-                for mat in kw_re.find_iter(rest) {
-                    fm.keywords.push(mat.as_str().to_string());
-                }
+                fm.keywords.extend(parse_keyword_list(rest));
             } else if let Some(rest) = line.strip_prefix("category:") {
                 fm.category = rest.trim().to_string();
             } else if let Some(rest) = line.strip_prefix("uid:") {
@@ -72,7 +72,7 @@ fn parse_frontmatter(text: &str) -> (Frontmatter, &str) {
                     fm.superseded_by = Some(val);
                 }
             } else if let Some(rest) = line.strip_prefix("supersedes:") {
-                for mat in kw_re.find_iter(rest) {
+                for mat in id_re.find_iter(rest) {
                     fm.supersedes.push(mat.as_str().to_string());
                 }
             }
@@ -190,6 +190,28 @@ const ENTRY_META_KEYS: [&str; 6] = [
     "supersedes",
 ];
 
+/// Parse a `keywords:` value — `[a, b]`, or the bare `a, b` inside it — into keywords.
+///
+/// A keyword is whatever sits between the commas, not a run of word characters. The
+/// frontmatter used to tokenize instead, which split `feature/auth` into `feature` and
+/// `auth` (and `main.rs` into `main` and `rs`) while the per-entry parser below kept
+/// them whole. Since `export` writes both lines, an export/sync round trip grew
+/// `feature/auth` into three keywords — and then renamed the file on the next export,
+/// because the first keyword decides the name. One parser, so the two cannot drift.
+fn parse_keyword_list(value: &str) -> Vec<String> {
+    let value = value.trim();
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or(value);
+    inner
+        .split(',')
+        .map(|kw| kw.trim().trim_matches('"').trim_matches('\'').trim())
+        .filter(|kw| !kw.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Whether `line` is a metadata line that actually carries a value.
 ///
 /// The check is deliberately as strict as the value parsers below: `keywords: foo`
@@ -269,10 +291,8 @@ fn extract_entry_metadata(content: &str, file_kws: &[String]) -> (Vec<String>, S
 
     let kw_re = Regex::new(r"(?m)^keywords:\s*\[(.*)\]").unwrap();
     if let Some(cap) = kw_re.captures(block) {
-        let kw_str = cap.get(1).unwrap().as_str();
-        for kw in kw_str.split(',') {
-            let kw = kw.trim().to_string();
-            if !kw.is_empty() && !kws.contains(&kw) {
+        for kw in parse_keyword_list(cap.get(1).unwrap().as_str()) {
+            if !kws.contains(&kw) {
                 kws.push(kw);
             }
         }
@@ -330,6 +350,37 @@ pub fn file_hash(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_frontmatter_keywords_are_comma_separated_not_tokenized() {
+        // The frontmatter used to tokenize on word characters, so `feature/auth` and
+        // `main.rs` each arrived as two keywords while the per-entry parser kept them
+        // whole. `export` writes both lines, so a round trip grew one keyword into
+        // three and then renamed the file, since the first keyword names it.
+        let md = "---\nkeywords: [feature/auth, main.rs, \"quoted\"]\ncategory: features\n---\n\n# T\n\nBody.\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(
+            entries[0].keywords,
+            vec!["feature/auth", "main.rs", "quoted"],
+            "got {:?}",
+            entries[0].keywords
+        );
+    }
+
+    #[test]
+    fn test_both_keyword_lines_read_a_slashed_keyword_the_same_way() {
+        // The frontmatter and per-entry lines are merged, so the two parsers agreeing
+        // is what keeps the merge from inventing keywords.
+        let md = "---\nkeywords: [feature/auth]\ncategory: exported\n---\n\n# Exported: feature/auth\n\n## Entry: auth flow\nkeywords: [feature/auth]\n\nbody\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].keywords,
+            vec!["feature/auth"],
+            "got {:?}",
+            entries[0].keywords
+        );
+    }
 
     #[test]
     fn test_parse_single_entry_with_frontmatter() {

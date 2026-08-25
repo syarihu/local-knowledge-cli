@@ -129,6 +129,30 @@ fn export_file_name(group: &str) -> String {
 ///
 /// The parent directory is deliberately left unsynced. An export is regenerable from the
 /// DB, so a rename lost to a power cut costs a re-run rather than data.
+/// Refuse a destination that is not a plain file inside `output_dir`.
+///
+/// The name is one segment by construction; checking it keeps that an invariant rather
+/// than a comment, so a future change to the naming cannot quietly reintroduce a path.
+/// A symlink is refused because `.knowledge/` travels with the repository — a link
+/// committed as `exported-auth.md -> ../README.md` is a request to write outside the
+/// store. (The store's *directory* being a symlink is the dotfiles case and stays
+/// allowed.) The refusal is for the user's sake rather than for safety: the write
+/// itself cannot follow a link.
+fn check_destination(output_dir: &Path, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if Path::new(filename).components().count() != 1 {
+        return Err(format!("refusing to export to a non-file name: {filename:?}").into());
+    }
+    let filepath = output_dir.join(filename);
+    if std::fs::symlink_metadata(&filepath).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!(
+            "{} is a symlink; refusing to write through it. Remove it and export again.",
+            filepath.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn write_atomically(
     path: &Path,
     contents: &str,
@@ -404,10 +428,16 @@ fn export_to_dir(
     // collision (2^-64): a clash is reported rather than silently overwriting one
     // group's file with another's. It compares under `file_system_key`, which does not
     // full-case-fold — see the note there for the gap that leaves.
+    //
+    // Every destination is checked here, before the first one is written: refusing
+    // half-way through leaves the earlier groups written and flipped to `shared` while
+    // the command reports failure, and that mixed state is worse than either outcome.
     {
         let mut by_key: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
         for group in groups.keys() {
-            let key = file_system_key(&export_file_name(group));
+            let filename = export_file_name(group);
+            check_destination(output_dir, &filename)?;
+            let key = file_system_key(&filename);
             if let Some(first) = by_key.insert(key, group) {
                 return Err(format!(
                     "keywords {first:?} and {group:?} would export to the same file. \
@@ -425,25 +455,12 @@ fn export_to_dir(
         sorted_entries.sort_by_key(|e| e.title.to_lowercase());
 
         let filename = export_file_name(group_name);
-        // The name is one segment by construction; this keeps that an invariant
-        // rather than a comment, so a future change to the naming can't quietly
-        // reintroduce a path.
-        if Path::new(&filename).components().count() != 1 {
-            return Err(format!("refusing to export to a non-file name: {filename:?}").into());
-        }
+        // Checked in the preflight above too. Repeated here because a link appearing in
+        // between would otherwise be replaced by a regular file — the target is safe
+        // either way, since a rename cannot write through a link, but a link the user
+        // put there deliberately should not vanish silently.
+        check_destination(output_dir, &filename)?;
         let filepath = output_dir.join(&filename);
-        // A symlink here would be followed, and `.knowledge/` travels with the repo —
-        // a link committed as `exported-auth.md -> ../README.md` would let an export
-        // truncate a file outside the store. The store's directory may well be a
-        // symlink (that is how a dotfiles setup works); an individual entry file being
-        // one is not something to write through.
-        if std::fs::symlink_metadata(&filepath).is_ok_and(|meta| meta.file_type().is_symlink()) {
-            return Err(format!(
-                "{} is a symlink; refusing to write through it. Remove it and export again.",
-                filepath.display()
-            )
-            .into());
-        }
 
         let mut all_kws: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for entry in &sorted_entries {

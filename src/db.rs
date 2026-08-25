@@ -563,7 +563,13 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
     if effective_version < 7 {
         let mut rows: Vec<(i64, String)> = Vec::new();
         {
-            let mut stmt = conn.prepare("SELECT entry_id, keyword FROM keywords")?;
+            // `ORDER BY entry_id, id` is load-bearing, not tidiness: the rewrite below
+            // re-inserts an entry's keywords in the order they are read, `get_keywords`
+            // returns them in insertion order, and `export` names a file after the first
+            // one. Reading in whatever order SQLite happens to return could therefore
+            // rename a store's files — the churn this whole change exists to avoid.
+            let mut stmt =
+                conn.prepare("SELECT entry_id, keyword FROM keywords ORDER BY entry_id, id")?;
             let mapped = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
             for row in mapped {
                 rows.push(row?);
@@ -577,8 +583,7 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         // so an interruption between the two would lose them outright — and the
         // version would still say 6, with nothing left to recover from.
         conn.execute_batch("SAVEPOINT migrate_keywords")?;
-        let result = (|| -> Result<bool, Box<dyn std::error::Error>> {
-            let mut changed = false;
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             // Rewrite only the entries whose set actually changes, so an already-clean
             // DB is left alone.
             for (entry_id, keywords) in per_entry {
@@ -596,14 +601,16 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
                         params![entry_id, kw],
                     )?;
                 }
-                changed = true;
             }
-            Ok(changed)
+            Ok(())
         })();
         match result {
-            Ok(changed) => {
+            Ok(()) => {
                 conn.execute_batch("RELEASE migrate_keywords")?;
-                migrated |= changed;
+                // The version moved, so a migration ran — whether or not any row needed
+                // rewriting. Reporting otherwise skips the backup cleanup and the notice
+                // for a DB that was in fact migrated, leaving its backup behind forever.
+                migrated = true;
             }
             Err(e) => {
                 conn.execute_batch("ROLLBACK TO migrate_keywords").ok();
@@ -2743,6 +2750,53 @@ mod tests {
         let (_conn, migrated_again) = open_db(tmp.path()).unwrap();
         assert!(!migrated_again, "a v6 DB must not migrate again");
 
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_migration_7_keeps_each_entry_s_keyword_order() {
+        // The rewrite deletes an entry's keywords and re-inserts them, and `get_keywords`
+        // returns insertion order — which `export` reads as the group, and therefore the
+        // file name. Reordering here would rename a store's files. The `ORDER BY` in the
+        // migration is what makes the read order defined; this test guards the invariant
+        // against a future rewrite (a sort, a different grouping) rather than proving
+        // SQLite would otherwise pick another order.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &[
+                "zebra".to_string(),
+                "apple".to_string(),
+                "mango".to_string(),
+            ],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        // Denormalize the middle one in place, so the migration has to rewrite the entry
+        // without disturbing the order around it.
+        conn.execute(
+            "UPDATE keywords SET keyword = 'APPLE' WHERE entry_id = ?1 AND keyword = 'apple'",
+            params![id],
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version = 6", [])
+            .unwrap();
+        drop(conn);
+
+        let (conn, migrated) = open_db(tmp.path()).unwrap();
+        assert!(migrated, "the version moved, so this counts as a migration");
+        assert_eq!(
+            get_keywords(&conn, id).unwrap(),
+            vec!["zebra", "apple", "mango"],
+            "the first keyword names the exported file"
+        );
+        drop(conn);
         cleanup_backups(tmp.path(), 0).ok();
     }
 

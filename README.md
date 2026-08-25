@@ -316,6 +316,8 @@ Rate limit is 100 requests per minute per API key...
 
 Per-entry metadata lines (`keywords:`, `uid:`, `status:`, `project:`, `superseded_by:`, `supersedes:`) sit directly under the `## Entry:` heading and are stripped from the stored content. Only that leading block counts, so a line like `project: demo/app` further down stays part of the content. `uid:` is the one exception: markdown written before this rule existed put it anywhere, and losing a uid would change an entry's identity on the next `sync`, so a uid-shaped value is still recognized below the block. `project:` may also be set once in the frontmatter to cover every entry in the file.
 
+A `keywords:` list is split on commas and nothing else, in the frontmatter and under an entry alike — so `keywords: [feature/auth, main.rs]` is two keywords, not four. (The frontmatter used to split on non-word characters as well, which turned `main.rs` into `main` and `rs`; the first `lk sync` after upgrading rewrites such entries to the keyword as written.)
+
 ### ADR (Architecture Decision Records)
 
 lk can be used to manage ADRs by leveraging its status and supersede features. Entries support a full decision lifecycle:
