@@ -33,11 +33,19 @@ fn export_file_name(group: &str) -> String {
     // A leading dot hides the file (and `.` / `..` are not names at all); Windows
     // drops trailing dots and spaces.
     let trimmed = folded.trim_matches(|c: char| c == '.' || c.is_whitespace());
-    let safe = if trimmed.is_empty() {
-        "general"
-    } else {
-        trimmed
-    };
+
+    // File systems cap a path component at 255 bytes, and a keyword is free text: a
+    // 300-character one failed the export outright with ENAMETOOLONG, the same way an
+    // unflattened separator did. Cut on a character boundary, well inside the cap — a
+    // truncated name differs from the keyword, so it picks up the digest below and
+    // stays distinct from anything else truncating to the same prefix.
+    const MAX_NAME_BYTES: usize = 120;
+    let mut end = trimmed.len().min(MAX_NAME_BYTES);
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    let capped = trimmed[..end].trim_matches(|c: char| c == '.' || c == '-' || c.is_whitespace());
+    let safe = if capped.is_empty() { "general" } else { capped };
 
     if safe == group {
         format!("exported-{safe}.md")
@@ -385,6 +393,33 @@ mod tests {
             );
             assert!(!name.contains('/') && !name.contains('\\'), "{name:?}");
         }
+    }
+
+    #[test]
+    fn test_export_file_name_stays_within_the_component_limit() {
+        // A long keyword used to fail the export with ENAMETOOLONG — the same failure
+        // mode as an unflattened separator, from equally ordinary input.
+        for group in [
+            "a".repeat(300),
+            "認".repeat(100), // 300 bytes in UTF-8
+            format!("{}/{}", "x".repeat(200), "y".repeat(200)),
+        ] {
+            let name = export_file_name(&group);
+            assert!(
+                name.len() <= 255,
+                "{} bytes for a {}-byte keyword: {name}",
+                name.len(),
+                group.len()
+            );
+            assert!(
+                name.starts_with("exported-") && name.ends_with(".md"),
+                "{name}"
+            );
+        }
+        // Two keywords sharing a prefix but truncated to the same letters stay apart.
+        let a = export_file_name(&"z".repeat(300));
+        let b = export_file_name(&format!("{}{}", "z".repeat(300), "-tail"));
+        assert_ne!(a, b);
     }
 
     #[test]
