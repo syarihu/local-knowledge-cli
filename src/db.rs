@@ -857,16 +857,33 @@ pub fn search_entries(
         }
 
         // Supplement with the unranked paths if needed. Keyword and LIKE hits both
-        // carry `rank = None`, so they are one pool of equally-scored candidates:
-        // deduping them per query would let whichever ran first claim the slots — and
-        // the titles — no matter which project they came from. Collect both, order the
-        // pool, then dedup. The extra LIKE query in the case where keyword hits alone
-        // would have filled `limit` is one bounded scan at this scale.
+        // carry `rank = None`, so with a project to prefer they have to be judged as
+        // one pool: deduping them per query would let whichever ran first claim the
+        // slots — and the titles — no matter which project they came from. With
+        // nothing to prefer there is nothing to reorder, so the old short-circuit
+        // stands and the LIKE scan is skipped when keyword hits already fill `limit`.
         if results.len() < limit {
             let words = split_query_words(query);
-            let mut unranked: Vec<Entry> = Vec::new();
 
-            {
+            let fill =
+                |rows: Vec<Entry>,
+                 results: &mut Vec<Entry>,
+                 seen_ids: &mut std::collections::HashSet<i64>,
+                 seen_titles: &mut std::collections::HashSet<String>| {
+                    for entry in rows {
+                        if !seen_ids.contains(&entry.id)
+                            && seen_titles.insert(entry.title.to_lowercase())
+                        {
+                            seen_ids.insert(entry.id);
+                            results.push(entry);
+                            if results.len() >= limit {
+                                break;
+                            }
+                        }
+                    }
+                };
+
+            let keyword_rows = {
                 let mut kw_sql = format!(
                     "SELECT DISTINCT {ENTRY_COLS_E} \
                      FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE ("
@@ -891,7 +908,7 @@ pub fn search_entries(
                     since,
                     project,
                 );
-                // Bounded over-fetch; the pool is deduped and cut to `limit` below.
+                // Bounded over-fetch; the rows are deduped and cut to `limit` below.
                 let prefer = prefer_project_key(&mut kw_params, prefer_project);
                 kw_sql.push_str(&format!(" ORDER BY {prefer}e.updated_at DESC LIMIT ?"));
                 kw_params.push(Box::new(fetch_limit));
@@ -900,14 +917,17 @@ pub fn search_entries(
                     kw_params.iter().map(|b| b.as_ref()).collect();
                 let mut stmt = conn.prepare(&kw_sql)?;
                 let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
+                let mut out = Vec::new();
                 for row in rows {
-                    unranked.push(row?);
+                    out.push(row?);
                 }
-            }
+                out
+            };
 
             // LIKE covers short queries (a 2-char CJK word) that trigram FTS cannot
-            // match, and content that no keyword names.
-            {
+            // match, and content that no keyword names. It is a `%word%` scan, so it
+            // runs only when it can change the answer.
+            let like_rows = || -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
                 let mut like_sql = format!("SELECT {ENTRY_COLS} FROM entries e WHERE (");
                 let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
                 for (i, word) in words.iter().enumerate() {
@@ -942,29 +962,32 @@ pub fn search_entries(
                     like_params.iter().map(|b| b.as_ref()).collect();
                 let mut stmt = conn.prepare(&like_sql)?;
                 let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
+                let mut out = Vec::new();
                 for row in rows {
-                    unranked.push(row?);
+                    out.push(row?);
                 }
-            }
+                Ok(out)
+            };
 
-            // One order over the whole pool. Without a project to prefer the pool
-            // keeps its arrival order — keyword hits, then LIKE hits — which is what
-            // it was before.
-            if let Some(here) = prefer_project {
-                let mine = |e: &Entry| e.project.as_deref() == Some(here);
-                unranked.sort_by(|a, b| {
-                    mine(b)
-                        .cmp(&mine(a))
-                        .then_with(|| b.updated_at.cmp(&a.updated_at))
-                });
-            }
-
-            for entry in unranked {
-                if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
-                    seen_ids.insert(entry.id);
-                    results.push(entry);
-                    if results.len() >= limit {
-                        break;
+            match prefer_project {
+                Some(here) => {
+                    let mut pool = keyword_rows;
+                    pool.extend(like_rows()?);
+                    // One order over the whole pool. The sort is stable, so rows the
+                    // preference cannot separate keep their arrival order: keyword
+                    // hits, then LIKE hits, exactly as before.
+                    let mine = |e: &Entry| e.project.as_deref() == Some(here);
+                    pool.sort_by(|a, b| {
+                        mine(b)
+                            .cmp(&mine(a))
+                            .then_with(|| b.updated_at.cmp(&a.updated_at))
+                    });
+                    fill(pool, &mut results, &mut seen_ids, &mut seen_titles);
+                }
+                None => {
+                    fill(keyword_rows, &mut results, &mut seen_ids, &mut seen_titles);
+                    if results.len() < limit {
+                        fill(like_rows()?, &mut results, &mut seen_ids, &mut seen_titles);
                     }
                 }
             }
@@ -2779,6 +2802,59 @@ mod tests {
         .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "buried preferred");
+    }
+
+    #[test]
+    fn test_no_preference_keeps_keyword_hits_ahead_of_like_hits() {
+        // With nothing to prefer, the unranked paths keep their old relationship:
+        // keyword hits fill the slots first, and a LIKE-only hit follows. This is what
+        // lets the LIKE scan be skipped entirely when keyword hits already fill
+        // `limit` — `lk export --query` searches with no preference and limit 100.
+        let (conn, _tmp) = setup_test_db();
+        let like_only = add_entry_full(
+            &conn,
+            "reachable by content",
+            "the 認証 flow lives here",
+            &["zzz".to_string()],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let by_keyword = add_entry_full(
+            &conn,
+            "reachable by keyword",
+            "unrelated body",
+            &["認証".to_string()],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // The keyword hit is the OLDER row, so its lead comes from the path order
+        // rather than from `updated_at`.
+        set_updated_at(&conn, by_keyword, "2020-01-01T00:00:00");
+        set_updated_at(&conn, like_only, "2030-01-01T00:00:00");
+
+        let hits =
+            search_entries(&conn, "認証", false, None, None, None, None, None, None, 1).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].id, by_keyword,
+            "a keyword hit still comes before a LIKE-only hit when there is no preference"
+        );
     }
 
     #[test]
