@@ -25,33 +25,39 @@ pub fn get_project_root() -> PathBuf {
 /// In a git worktree, returns the main worktree's root so all worktrees share one DB.
 /// In a normal repo or non-git project, returns the given project_root as-is.
 pub fn resolve_db_root(project_root: &Path) -> PathBuf {
-    let git_path = project_root.join(".git");
     // Normal repo: .git is a directory → use project_root
-    if git_path.is_dir() {
+    if project_root.join(".git").is_dir() {
         return project_root.to_path_buf();
     }
-    // Worktree: .git is a file containing "gitdir: <path>"
-    if git_path.is_file()
-        && let Ok(content) = std::fs::read_to_string(&git_path)
-        && let Some(gitdir) = content.trim().strip_prefix("gitdir: ")
+    // Worktree: share the main worktree's DB, but only when it actually holds one
+    if let Some(main_root) = main_worktree_root(project_root)
+        && main_root.join(".knowledge").exists()
     {
-        let gitdir_path = if Path::new(gitdir).is_absolute() {
-            PathBuf::from(gitdir)
-        } else {
-            project_root.join(gitdir)
-        };
-        // gitdir points to .git/worktrees/<name>
-        // Go up to .git, then up to main worktree root
-        if let Some(main_git) = gitdir_path.parent().and_then(|p| p.parent()) {
-            let main_root = main_git.parent().unwrap_or(main_git);
-            if let Ok(canonical) = std::fs::canonicalize(main_root)
-                && canonical.join(".knowledge").exists()
-            {
-                return canonical;
-            }
-        }
+        return main_root;
     }
     project_root.to_path_buf()
+}
+
+/// Resolve the main worktree's root for `project_root`, or `None` when it is not a
+/// linked worktree (a normal repo, or not git at all). In a worktree, `.git` is a
+/// file holding `gitdir: <path>` pointing at `.git/worktrees/<name>`, so walking up
+/// two levels reaches the main `.git` and its parent is the main worktree root.
+/// The returned path is canonicalized.
+pub fn main_worktree_root(project_root: &Path) -> Option<PathBuf> {
+    let git_path = project_root.join(".git");
+    if !git_path.is_file() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&git_path).ok()?;
+    let gitdir = content.trim().strip_prefix("gitdir: ")?;
+    let gitdir_path = if Path::new(gitdir).is_absolute() {
+        PathBuf::from(gitdir)
+    } else {
+        project_root.join(gitdir)
+    };
+    let main_git = gitdir_path.parent()?.parent()?;
+    let main_root = main_git.parent().unwrap_or(main_git);
+    std::fs::canonicalize(main_root).ok()
 }
 
 pub fn get_db_path() -> PathBuf {
@@ -108,6 +114,233 @@ pub fn project_db_exists() -> bool {
             .join(".claude")
             .join("knowledge.db")
             .is_file()
+}
+
+// ── Project key (recorded on new entries as `entries.project`) ───────
+
+/// Normalize a git remote URL — or a value already in slug form — to `owner/repo`.
+/// Handles the three shapes git hands out (`git@host:owner/repo.git`,
+/// `https://host/owner/repo.git`, `ssh://git@host/owner/repo`) so the same repo
+/// always yields the same key regardless of how the remote was cloned. Namespaces
+/// deeper than `owner/repo` (GitLab subgroups) are preserved. Returns `None` for a
+/// value that normalizes to nothing.
+pub fn normalize_project_key(raw: &str) -> Option<String> {
+    /// A filesystem path, whose parent directories are this machine's layout.
+    /// Windows shapes count too — a `C:\\...` drive path or a `\\\\server\\share` UNC
+    /// path leaks a directory layout exactly like a POSIX one does.
+    fn is_fs_path(s: &str) -> bool {
+        let b = s.as_bytes();
+        let windows_drive = b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/');
+        s.starts_with('/')
+            || s.starts_with('~')
+            || s.starts_with('.')
+            || windows_drive
+            // A backslash anywhere means a path: no slug ever contains one, so this
+            // also catches shapes the prefix checks miss (`\\\\server\\share`, or a
+            // scp-looking value whose path half uses Windows separators).
+            || s.contains('\\')
+    }
+    fn last_segment(s: &str) -> &str {
+        s.trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(s)
+    }
+
+    let raw = raw.trim();
+    // A key is written into markdown as a `project:` line, so a control character —
+    // a newline above all — could inject further metadata: `owner/repo` followed by
+    // a newline and `status: deprecated` would flip the entry's status on the next
+    // `sync`. Reject rather than sanitize; no legitimate key contains one.
+    if raw.chars().any(char::is_control) {
+        return None;
+    }
+    // URI schemes are case-insensitive (RFC 3986), so `FILE://` must not slip past
+    // the check below and get treated as a host-based URL.
+    let file_prefix = raw
+        .get(..7)
+        .filter(|p| p.eq_ignore_ascii_case("file://"))
+        .map(|_| &raw[7..]);
+    // `file://` addresses a filesystem path (its authority is empty or `localhost`),
+    // so it joins the path cases rather than the host-based URL case.
+    let (s, from_path) = if let Some(rest) = file_prefix {
+        (rest, true)
+    } else if let Some((_, rest)) = raw.split_once("://") {
+        // `scheme://[user@]host[:port]/path` — drop the authority, keep the path.
+        (
+            rest.split_once('/').map(|(_, path)| path).unwrap_or(""),
+            false,
+        )
+    } else {
+        match raw.split_once(':') {
+            // A Windows drive letter: the head is a single letter, which no hostname
+            // is. What follows is a path — including the drive-relative `C:repo`,
+            // whose drive letter must not survive into the key.
+            Some((head, path)) if head.len() == 1 && head.starts_with(char::is_alphabetic) => {
+                (path, true)
+            }
+            // scp-like `[user@]host:path`. The head is a host, so it holds no path
+            // separator; requiring a dot or `@` in it would drop the short hostnames
+            // git accepts (`localhost:owner/repo.git`, `myhost:repo.git`).
+            Some((head, path)) if !head.contains('/') && !head.contains('\\') => (path, false),
+            _ => (raw, false),
+        }
+    };
+    // Only the last segment of a path names the repo — the rest is machine-specific,
+    // which is exactly what a project key must not depend on. A URL's path keeps
+    // every segment so deeper namespaces (GitLab subgroups) survive. That also keeps
+    // a server path from a self-hosted remote (`ssh://host/home/alice/repo.git` →
+    // `home/alice/repo`): it is that repo's identity, and there is no signal telling
+    // it apart from `group/sub/repo`, so truncating would merge unrelated repos.
+    // `--project` overrides it for anyone who would rather not record the path.
+    let s = if from_path || is_fs_path(s) {
+        last_segment(s)
+    } else {
+        s
+    };
+    let s = s.trim_matches('/');
+    let s = s.strip_suffix(".git").unwrap_or(s).trim_matches('/');
+    if s.is_empty() || s == "." || s == ".." {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+/// The repo name of a project key: its last path segment. Used for display, so a
+/// slug reads as `local-knowledge-cli` rather than `syarihu/local-knowledge-cli`.
+pub fn project_repo_name(key: &str) -> &str {
+    key.rsplit('/').next().unwrap_or(key)
+}
+
+/// A per-repo override: `git config lk.project <owner/repo>`.
+///
+/// Unlike `LK_PROJECT` this persists, is shared by every worktree (they share one
+/// config), needs no `lk init`, and — because it belongs to the repo rather than to
+/// the environment — it is safe to honor on the MCP path too. It is what to reach
+/// for when the detected key is unwanted: a self-hosted remote's server path, or a
+/// fork whose knowledge should be filed under the upstream name.
+fn git_config_project(root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--get", "lk.project"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    normalize_project_key(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// `origin`'s remote URL for `root`, normalized to a slug. `None` when `root` is not
+/// a repo, has no `origin`, or git is unavailable.
+fn git_remote_slug(root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    normalize_project_key(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// The project key to record on entries added from `root`.
+/// Resolution order: `git config lk.project` → `origin`'s remote slug → the main
+/// worktree's directory name → `root`'s own directory name. `None` when none of
+/// those yields a usable key.
+/// (`LK_PROJECT` is honored by [`current_project_key`], deliberately not here.)
+///
+/// The remote slug is preferred because a linked worktree's directory name varies
+/// per branch (so one repo would otherwise scatter across keys) and because it
+/// carries the owner, keeping same-named repos in different orgs apart.
+pub fn project_key_for(root: &Path) -> Option<String> {
+    if let Some(configured) = git_config_project(root) {
+        return Some(configured);
+    }
+    if let Some(slug) = git_remote_slug(root) {
+        return Some(slug);
+    }
+    let dir = main_worktree_root(root);
+    let dir = dir.as_deref().unwrap_or(root);
+    // Through `normalize_project_key` too: a directory name may legally contain a
+    // newline, and it must not reach markdown unchecked.
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(normalize_project_key)
+}
+
+/// [`project_key_for`] against the current directory's project root, with
+/// `LK_PROJECT` taking precedence.
+///
+/// The environment override lives here rather than in `project_key_for` on purpose:
+/// it is a per-invocation escape hatch for the CLI, and a long-running MCP server
+/// that inherited the variable would otherwise stamp it onto every registered
+/// project's entries. For a lasting override, `git config lk.project` is the one to
+/// use — it belongs to the repo, so every surface honors it.
+pub fn current_project_key() -> Option<String> {
+    if let Ok(v) = std::env::var("LK_PROJECT")
+        && let Some(key) = normalize_project_key(&v)
+    {
+        return Some(key);
+    }
+    project_key_for(&get_project_root())
+}
+
+/// Resolve an explicit `--project` value to the form stored in `entries.project`.
+///
+/// A bare name is expanded to the current repo's full slug when it names that repo,
+/// so an explicit flag stores the same value auto-detection would have. When it
+/// can't be expanded the name is kept as given and the returned note explains why —
+/// bare and slug forms still match each other at query time, but the stored value is
+/// then less precise.
+pub fn resolve_project_arg(arg: &str) -> (Option<String>, Option<String>) {
+    let Some(key) = normalize_project_key(arg) else {
+        // Nothing usable left (e.g. `--project ///`). Fall back to what omitting the
+        // flag would have recorded, rather than silently recording nothing.
+        let fallback = current_project_key();
+        let outcome = if fallback.is_some() {
+            "falling back to the detected project"
+        } else {
+            "and nothing could be detected here, so no project is recorded"
+        };
+        return (
+            fallback,
+            // `{arg:?}` so a rejected control character is escaped rather than
+            // printed — a raw newline would let a crafted value fake extra output.
+            Some(format!("{arg:?} is not a usable project name; {outcome}")),
+        );
+    };
+    if key.contains('/') {
+        return (Some(key), None);
+    }
+    match current_project_key() {
+        Some(current) if current.contains('/') && project_repo_name(&current) == key => {
+            (Some(current), None)
+        }
+        // Don't name a cause: the current key may be another repo's slug, a bare
+        // directory name, or an `LK_PROJECT` override that hides the real remote.
+        // Naming a different repo is legitimate anyway (recording where knowledge
+        // came from), so this is a note about precision, not an error.
+        current => {
+            let here = current
+                .as_deref()
+                .map(|c| format!(" (here: {c})"))
+                .unwrap_or_default();
+            (
+                Some(key.clone()),
+                Some(format!(
+                    "'{key}' could not be expanded to a full owner/repo slug{here}, \
+                     so it is stored as-is"
+                )),
+            )
+        }
+    }
 }
 
 /// Load a category template from `.knowledge/templates/{category}.md`.
@@ -484,6 +717,222 @@ pub fn days_since(updated_at: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_project_key_accepts_every_remote_shape() {
+        // The same repo must yield one key no matter how the remote was cloned.
+        for raw in [
+            "git@github.com:syarihu/local-knowledge-cli.git",
+            "https://github.com/syarihu/local-knowledge-cli.git",
+            "https://github.com/syarihu/local-knowledge-cli",
+            "ssh://git@github.com/syarihu/local-knowledge-cli.git",
+            "git://github.com/syarihu/local-knowledge-cli.git",
+            "syarihu/local-knowledge-cli",
+        ] {
+            assert_eq!(
+                normalize_project_key(raw).as_deref(),
+                Some("syarihu/local-knowledge-cli"),
+                "failed for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_normalize_project_key_keeps_deeper_namespaces() {
+        // GitLab subgroups: keep every segment rather than flattening to owner/repo.
+        assert_eq!(
+            normalize_project_key("git@gitlab.com:group/sub/repo.git").as_deref(),
+            Some("group/sub/repo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_bare_name_and_empty() {
+        assert_eq!(
+            normalize_project_key("local-knowledge-cli").as_deref(),
+            Some("local-knowledge-cli")
+        );
+        // Nothing usable left after stripping.
+        assert_eq!(normalize_project_key("   "), None);
+        assert_eq!(normalize_project_key("https://github.com/"), None);
+    }
+
+    #[test]
+    fn test_normalize_project_key_local_path_remote_keeps_only_the_name() {
+        // A path remote must not bake this machine's directory layout into the key.
+        assert_eq!(
+            normalize_project_key("/Users/me/git/other-repo.git").as_deref(),
+            Some("other-repo")
+        );
+        assert_eq!(
+            normalize_project_key("../sibling-repo").as_deref(),
+            Some("sibling-repo")
+        );
+        assert_eq!(normalize_project_key("/"), None);
+    }
+
+    #[test]
+    fn test_normalize_project_key_file_url_keeps_only_the_name() {
+        // `git clone file:///path/repo` is a normal clone; its remote must not bake
+        // this machine's directory layout (or the username in it) into the key.
+        assert_eq!(
+            normalize_project_key("file:///Users/me/git/other-repo.git").as_deref(),
+            Some("other-repo")
+        );
+        assert_eq!(
+            normalize_project_key("file://localhost/Users/me/git/other-repo.git").as_deref(),
+            Some("other-repo")
+        );
+        // Same for an ssh remote pointing at an absolute path.
+        assert_eq!(
+            normalize_project_key("git@host:/srv/git/other-repo.git").as_deref(),
+            Some("other-repo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_windows_paths_keep_only_the_name() {
+        // `\` is a separator too: a Windows path leaks a directory layout (and the
+        // username in it) just like a POSIX one.
+        for raw in [
+            r"C:\Users\me\repo.git",
+            r"c:/Users/me/repo.git",
+            r"\\server\share\repo.git",
+            r"..\repo",
+            r"~\repo",
+        ] {
+            assert_eq!(
+                normalize_project_key(raw).as_deref(),
+                Some("repo"),
+                "failed for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_normalize_project_key_rejects_control_characters() {
+        // A newline would become a second metadata line once exported to markdown.
+        assert_eq!(
+            normalize_project_key("owner/repo\nstatus: deprecated"),
+            None
+        );
+        assert_eq!(normalize_project_key("owner/repo\r\n## Entry: fake"), None);
+        assert_eq!(normalize_project_key("owner\u{0}repo"), None);
+    }
+
+    #[test]
+    fn test_normalize_project_key_scp_with_single_segment_path() {
+        // `git@host:repo.git` is an ordinary remote; the host must not survive in the
+        // key just because the path has no `/`.
+        assert_eq!(
+            normalize_project_key("git@example.internal:repo.git").as_deref(),
+            Some("repo")
+        );
+        assert_eq!(
+            normalize_project_key("example.internal:repo.git").as_deref(),
+            Some("repo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_scp_with_short_hostname() {
+        // git accepts a host with no dot in it; the host must not survive in the key.
+        assert_eq!(
+            normalize_project_key("localhost:owner/repo.git").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            normalize_project_key("myhost:repo.git").as_deref(),
+            Some("repo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_drive_relative_windows_path() {
+        // `C:repo` is relative to the drive's current directory — still a path, and
+        // the drive letter is machine state that must not reach the key.
+        assert_eq!(normalize_project_key("C:repo").as_deref(), Some("repo"));
+        assert_eq!(
+            normalize_project_key(r"C:repos\thing.git").as_deref(),
+            Some("thing")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_ignores_scheme_case() {
+        // URI schemes are case-insensitive, and `file://` must always be treated as
+        // a path — otherwise the machine's directory layout lands in the key.
+        assert_eq!(
+            normalize_project_key("FILE:///Users/me/repo.git").as_deref(),
+            Some("repo")
+        );
+        assert_eq!(
+            normalize_project_key("HTTPS://github.com/syarihu/repo.git").as_deref(),
+            Some("syarihu/repo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_scp_shape_with_windows_separators() {
+        // A pathological but reachable mix: an scp-looking value whose path half uses
+        // `\`. No slug contains a backslash, so it must be read as a path.
+        assert_eq!(
+            normalize_project_key(r"git@host:owner\Users\me\repo.git").as_deref(),
+            Some("repo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_key_scp_without_user() {
+        // `host:owner/repo` is valid scp syntax; it must land on the same key as the
+        // usual `git@host:owner/repo` rather than keeping the host in the slug.
+        assert_eq!(
+            normalize_project_key("github.com:syarihu/local-knowledge-cli.git").as_deref(),
+            Some("syarihu/local-knowledge-cli")
+        );
+    }
+
+    #[test]
+    fn test_project_repo_name_is_last_segment() {
+        assert_eq!(
+            project_repo_name("syarihu/local-knowledge-cli"),
+            "local-knowledge-cli"
+        );
+        assert_eq!(project_repo_name("group/sub/repo"), "repo");
+        // A bare name is already the repo name.
+        assert_eq!(
+            project_repo_name("local-knowledge-cli"),
+            "local-knowledge-cli"
+        );
+    }
+
+    #[test]
+    fn test_main_worktree_root_none_outside_worktree() {
+        // A normal repo (.git is a directory) and a non-git dir are both "not a
+        // linked worktree", so DB/key resolution stays on the given root.
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(main_worktree_root(tmp.path()), None);
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        assert_eq!(main_worktree_root(tmp.path()), None);
+    }
+
+    #[test]
+    fn test_main_worktree_root_follows_gitdir_file() {
+        // Mirror git's layout: main/.git/worktrees/<name>, and the worktree's .git is
+        // a file pointing at it. The main worktree root is two levels up from there.
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        let wt_meta = main.join(".git").join("worktrees").join("feature");
+        std::fs::create_dir_all(&wt_meta).unwrap();
+        let wt = tmp.path().join("feature");
+        std::fs::create_dir(&wt).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wt_meta.display())).unwrap();
+
+        assert_eq!(
+            main_worktree_root(&wt),
+            Some(std::fs::canonicalize(&main).unwrap())
+        );
+    }
 
     #[test]
     fn test_canonicalize_or_falls_back_when_missing() {

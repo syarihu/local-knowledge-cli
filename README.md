@@ -113,6 +113,7 @@ Commands:
 - `--force` - Add even if an entry with the same (or an all-but-identical) title exists (for `add`). Rarely needed — nothing else is refused
 - `--allow-secrets` - Allow content that contains potential secrets (for `add`, `export`)
 - `--scope <scope>` - Knowledge store to use. `add`: `auto` (default — project if initialized, else user), `project`, or `user`. Targets (`get`/`edit`/`delete`/`supersede`): `project` or `user` (omit to auto-resolve). Reads (`search`/`list`/`stats`): `project`, `user`, or `all` (default, merged)
+- `--project <owner/repo>` - Project to attribute the entry to (for `add`). Defaults to the git remote slug of the current repo — see [Project attribution](#project-attribution)
 
 ### Keywords
 
@@ -193,6 +194,31 @@ How scope is selected:
 
 The `lk-knowledge` MCP tools mirror this: `search_knowledge` / `list_knowledge` / `get_stats` take a `scope` and gracefully skip an uninitialized project; `add_knowledge` takes a `scope` (default `auto`, same user-scope fallback); and `get_knowledge` / `edit_knowledge` / `supersede_knowledge` accept an id or uid string.
 
+#### Project attribution
+
+Every entry records the project it was added from, so a user-scope hit can say where it came from even when that project was never `lk init`ed:
+
+```console
+$ lk search "release flow" --scope user
+  [a1b2c3d4e5f6] Release checklist (context) @some-app
+```
+
+The recorded value is the repo's **git remote slug** (`owner/repo`), resolved in this order:
+
+1. `--project <name>` on `lk add`
+2. `LK_PROJECT` in the environment
+3. `git config lk.project` in the repo
+4. `origin`'s remote URL, normalized (`git@host:o/r.git`, `https://host/o/r.git` and `ssh://git@host/o/r` all become `o/r`)
+5. the main worktree's directory name, then the project root's
+
+`git config lk.project acme/thing` is the one to reach for when the detected key is wrong or unwanted — it persists, every worktree of the repo shares it, it needs no `lk init`, and because it belongs to the repo rather than the environment it is honored through MCP too. `--project` and `LK_PROJECT` stay one-off overrides for a single add or shell.
+
+The slug is preferred over a directory name because a linked worktree's directory changes per branch (one repo would otherwise scatter across several names) and because the owner keeps same-named repos in different orgs apart. A bare name passed to `--project` is expanded to the full slug when it names the current repo.
+
+A remote whose URL is a filesystem path (`file://`, a local clone, or an scp/ssh form with an absolute path) contributes only its last segment, so no local directory layout is stored. A self-hosted remote addressed by a server path — `ssh://host/home/alice/repo.git` — keeps that path as its key, because that path is the repo's identity and truncating it would merge unrelated repos; set `git config lk.project` in that repo to record something else instead.
+
+`lk get` and `--json` output always show the full slug. The human-readable `search` / `list` badge shows just the repo name, and only for entries recorded against a *different* project than the one you are standing in — so results from this repo stay unadorned while a hit carried in from elsewhere is marked. Entries added before this existed have no project recorded. The value round-trips through markdown as a `project:` line, so `lk sync` preserves it.
+
 #### User-scope markdown
 
 User-scope knowledge can be mirrored to markdown so it can be versioned and synced across machines — the same md⇄DB model as project scope, but stored globally instead of in a repo.
@@ -249,6 +275,7 @@ category: architecture
 
 ## Entry: Authentication Flow
 keywords: [auth, jwt]
+project: acme/api-server
 
 The API uses JWT tokens for authentication...
 
@@ -257,6 +284,8 @@ keywords: [api, rate-limit]
 
 Rate limit is 100 requests per minute per API key...
 ```
+
+Per-entry metadata lines (`keywords:`, `uid:`, `status:`, `project:`, `superseded_by:`, `supersedes:`) sit directly under the `## Entry:` heading and are stripped from the stored content. Only that leading block counts, so a line like `project: demo/app` further down stays part of the content. `uid:` is the one exception: markdown written before this rule existed put it anywhere, and losing a uid would change an entry's identity on the next `sync`, so a uid-shaped value is still recognized below the block. `project:` may also be set once in the frontmatter to cover every entry in the file.
 
 ### ADR (Architecture Decision Records)
 

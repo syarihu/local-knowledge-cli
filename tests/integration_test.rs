@@ -865,10 +865,32 @@ fn test_add_reports_possibly_related_but_still_adds() {
 
 /// Drive the MCP server over stdio with one JSON-RPC line and return the replies.
 fn mcp_request(project: &std::path::Path, request: &str) -> Vec<serde_json::Value> {
+    mcp_request_env(project, None, request)
+}
+
+/// [`mcp_request`] with `HOME` pointed at a scratch dir, so a test that touches the
+/// user-scope store gets its own instead of the developer's.
+fn mcp_request_with_home(
+    project: &std::path::Path,
+    home: &std::path::Path,
+    request: &str,
+) -> Vec<serde_json::Value> {
+    mcp_request_env(project, Some(home), request)
+}
+
+fn mcp_request_env(
+    project: &std::path::Path,
+    home: Option<&std::path::Path>,
+    request: &str,
+) -> Vec<serde_json::Value> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut child = lk_bin()
+    let mut cmd = lk_bin();
+    if let Some(home) = home {
+        cmd.env("HOME", home);
+    }
+    let mut child = cmd
         .args(["mcp", "--project", project.to_str().unwrap()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1663,6 +1685,419 @@ fn test_user_scope_export_writes_markdown() {
     let list = run(&["list", "--scope", "user", "--source", "shared", "--json"]);
     let s = String::from_utf8_lossy(&list.stdout);
     assert!(s.contains("user pref"), "entry should be shared now: {s}");
+}
+
+#[test]
+fn test_add_records_project_and_get_reports_it() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env_remove("LK_PROJECT")
+            .output()
+            .unwrap()
+    };
+
+    // An explicit owner/repo is stored verbatim, and `add --json` echoes it.
+    let add = run(&[
+        "add",
+        "project note",
+        "--keywords",
+        "origin",
+        "--content",
+        "recorded from elsewhere",
+        "--scope",
+        "user",
+        "--project",
+        "syarihu/other-repo",
+    ]);
+    assert!(add.status.success());
+    let added: serde_json::Value = serde_json::from_slice(
+        &run(&[
+            "add",
+            "project note two",
+            "--keywords",
+            "origin",
+            "--content",
+            "second",
+            "--scope",
+            "user",
+            "--project",
+            "syarihu/other-repo",
+            "--json",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(added["project"], "syarihu/other-repo");
+
+    // `get` reports the full slug; `search` shows the repo name on user-scope hits.
+    let get = run(&["get", added["uid"].as_str().unwrap(), "--json"]);
+    let entry: serde_json::Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(entry["project"], "syarihu/other-repo");
+
+    let search = run(&["search", "elsewhere", "--scope", "user"]);
+    let text = String::from_utf8_lossy(&search.stdout);
+    assert!(
+        text.contains("@other-repo"),
+        "search should badge user-scope hits with the repo name: {text}"
+    );
+}
+
+#[test]
+fn test_search_badges_only_other_projects() {
+    // The badge marks knowledge carried in from elsewhere. An entry recorded against
+    // the project you are standing in needs no badge — and one recorded against
+    // another repo gets it even in project scope, where `--project` can put it.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env("LK_PROJECT", "syarihu/here")
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+
+    assert!(
+        run(&["add", "from here", "-k", "badge", "-c", "local knowledge"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&[
+            "add",
+            "from elsewhere",
+            "-k",
+            "badge",
+            "-c",
+            "imported knowledge",
+            "--project",
+            "syarihu/elsewhere",
+        ])
+        .status
+        .success()
+    );
+
+    let out = run(&["search", "knowledge"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("@elsewhere"),
+        "another project's entry must be badged: {text}"
+    );
+    assert!(
+        !text.contains("@here"),
+        "the current project must not be badged: {text}"
+    );
+}
+
+#[test]
+fn test_git_config_lk_project_overrides_the_remote() {
+    // The lasting per-repo override: it beats the detected remote, and `LK_PROJECT`
+    // still beats it (one invocation should always be able to say otherwise).
+    let home = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(proj.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-q"]).status.success());
+    assert!(
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:syarihu/detected.git"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        git(&["config", "lk.project", "syarihu/configured"])
+            .status
+            .success()
+    );
+
+    let add = |extra_env: Option<(&str, &str)>, title: &str| {
+        let mut cmd = lk_bin();
+        cmd.args([
+            "add", title, "-k", "gitcfg", "-c", "body", "--scope", "user", "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .env_remove("LK_PROJECT");
+        if let Some((k, v)) = extra_env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success());
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+
+    assert_eq!(
+        add(None, "configured project")["project"],
+        "syarihu/configured",
+        "git config lk.project must win over the origin remote"
+    );
+    assert_eq!(
+        add(Some(("LK_PROJECT", "syarihu/from-env")), "env beats config")["project"],
+        "syarihu/from-env",
+        "a one-off LK_PROJECT must still win"
+    );
+}
+
+#[test]
+fn test_lk_project_env_overrides_detection() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let add = lk_bin()
+        .args([
+            "add",
+            "env note",
+            "--keywords",
+            "env",
+            "--content",
+            "from env",
+            "--scope",
+            "user",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .env("LK_PROJECT", "git@github.com:syarihu/from-env.git")
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    let out: serde_json::Value = serde_json::from_slice(&add.stdout).unwrap();
+    // The remote URL is normalized to a slug before it is stored.
+    assert_eq!(out["project"], "syarihu/from-env");
+}
+
+#[test]
+fn test_mcp_add_records_the_project_it_was_called_for() {
+    // The MCP write path resolves the project from the request's own project root
+    // (not the server's cwd, and deliberately not `LK_PROJECT`). Without this test the
+    // recording could be dropped from `add_knowledge` and everything still passed.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let expected = proj
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"mcp added note","content":"body","keywords":["mcpadd"],"scope":"user"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], true, "body: {body}");
+    // No git remote in a temp project, so the key falls back to the directory name.
+    assert_eq!(
+        out["recorded_project"], expected,
+        "the entry must be attributed to the requested project: {body}"
+    );
+
+    // And the value is really on the entry, not just in the reply.
+    let uid = out["uid"].as_str().unwrap();
+    let get = lk_bin()
+        .args(["get", uid, "--json"])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(entry["project"], expected);
+}
+
+#[test]
+fn test_project_flag_cannot_inject_markdown_metadata() {
+    // A newline in the value would become a second metadata line once exported, and
+    // the next sync would apply it (`status: deprecated` here). The value must be
+    // refused, leaving detection to fill the field.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let add = lk_bin()
+        .args([
+            "add",
+            "injection attempt",
+            "-k",
+            "inject",
+            "-c",
+            "body",
+            "--scope",
+            "user",
+            "--project",
+            "owner/repo\nstatus: deprecated",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .env_remove("LK_PROJECT")
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    let out: serde_json::Value = serde_json::from_slice(&add.stdout).unwrap();
+    let recorded = out["project"].as_str().unwrap_or_default();
+    assert!(
+        !recorded.contains('\n') && !recorded.contains("status:"),
+        "a control character must never reach the stored project: {recorded:?}"
+    );
+    assert_eq!(
+        out["status"], "active",
+        "the injected status must not apply"
+    );
+}
+
+#[test]
+fn test_mcp_get_keeps_the_entrys_project_distinct_from_the_target_project() {
+    // `get_knowledge`'s result IS the entry object, and the server decorates every
+    // result with a top-level `project` naming the project the request targeted.
+    // The entry's own project must survive that (it is the point of the column).
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let add = lk_bin()
+        .args([
+            "add",
+            "mcp origin note",
+            "--keywords",
+            "origin",
+            "--content",
+            "from another repo",
+            "--scope",
+            "user",
+            "--project",
+            "syarihu/other-repo",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    let added: serde_json::Value = serde_json::from_slice(&add.stdout).unwrap();
+    let uid = added["uid"].as_str().unwrap();
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"get_knowledge","arguments":{{"id":"{uid}"}}}}}}"#
+        ),
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let entry: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| {
+        panic!("get_knowledge did not return JSON ({e}): {body}");
+    });
+
+    assert_eq!(
+        entry["recorded_project"], "syarihu/other-repo",
+        "the entry's own project must survive result decoration: {body}"
+    );
+    // And the decorated key still names the targeted project, not the entry's.
+    assert_ne!(entry["project"], "syarihu/other-repo", "body: {body}");
+}
+
+#[test]
+fn test_user_scope_sync_preserves_project() {
+    // The regression this guards: `sync` deletes and re-inserts a file's entries, so
+    // a project not carried in the markdown would silently become NULL.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(proj.path())
+            .env("HOME", home.path())
+            .env("LK_PROJECT", "syarihu/recorded-here")
+            .output()
+            .unwrap()
+    };
+
+    assert!(
+        run(&[
+            "add",
+            "keep my project",
+            "--keywords",
+            "keep",
+            "--content",
+            "v1",
+            "--scope",
+            "user",
+        ])
+        .status
+        .success()
+    );
+    assert!(run(&["export", "--scope", "user"]).status.success());
+
+    let knowledge_dir = home.path().join(".config/lk/knowledge");
+    let md = std::fs::read_dir(&knowledge_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("exported-"))
+        })
+        .expect("expected an exported-*.md file");
+
+    let text = std::fs::read_to_string(&md).unwrap();
+    assert!(
+        text.contains("project: syarihu/recorded-here"),
+        "export must write the project into md: {text}"
+    );
+
+    // Change the file so sync re-imports it (hash-gated), then confirm the project survived.
+    std::fs::write(&md, text.replace("v1", "v2-edited")).unwrap();
+    let sync = run(&["sync", "--scope", "user", "--json"]);
+    assert!(
+        sync.status.success(),
+        "user sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let search = run(&["search", "v2-edited", "--scope", "user", "--json"]);
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&search.stdout).unwrap();
+    assert_eq!(results.len(), 1, "expected the re-imported entry");
+    assert_eq!(
+        results[0]["project"], "syarihu/recorded-here",
+        "sync dropped the project on re-import"
+    );
 }
 
 /// Editing the exported markdown and running `lk sync --scope user` imports the

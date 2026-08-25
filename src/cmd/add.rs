@@ -36,6 +36,7 @@ pub fn cmd_add(
     force: bool,
     allow_secrets: bool,
     scope: &str,
+    project: Option<&str>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate status up front so a bad value fails before any DB work.
@@ -64,6 +65,21 @@ pub fn cmd_add(
              Run `lk init` for project-scoped knowledge."
         );
     }
+    // Recorded on the entry so a user-scope hit still says where it came from.
+    // An explicit --project wins over detection; a bare name is expanded to the
+    // current repo's slug when it names it (see `resolve_project_arg`).
+    let project_key = match project {
+        Some(p) => {
+            let (key, note) = crate::util::resolve_project_arg(p);
+            if let Some(note) = note
+                && !json_output
+            {
+                eprintln!("Note: {note}");
+            }
+            key
+        }
+        None => crate::util::current_project_key(),
+    };
     let conn = match scope {
         super::Scope::Project => open_db_with_migrate()?,
         super::Scope::User => crate::util::open_or_create_user_db()?,
@@ -181,7 +197,19 @@ pub fn cmd_add(
         }
 
         let id = db::add_entry_full(
-            &conn, title, content, &kws, category, "local", None, None, None, status, None, None,
+            &conn,
+            title,
+            content,
+            &kws,
+            category,
+            "local",
+            None,
+            None,
+            None,
+            status,
+            None,
+            None,
+            project_key.as_deref(),
         )?;
         Ok((id, similar))
     })();
@@ -208,6 +236,7 @@ pub fn cmd_add(
                 &kws,
                 status.unwrap_or("active"),
                 scope,
+                project_key.as_deref(),
                 fell_back,
                 json_output,
                 &related,
@@ -252,6 +281,7 @@ fn print_success(
     kws: &[String],
     status: &str,
     scope: super::Scope,
+    project: Option<&str>,
     fell_back: bool,
     json_output: bool,
     possibly_related: &[serde_json::Value],
@@ -266,6 +296,9 @@ fn print_success(
             "status": status,
             "scope": scope.label(),
         });
+        if let Some(project) = project {
+            out["project"] = serde_json::json!(project);
+        }
         if fell_back {
             out["fell_back_to_user"] = serde_json::json!(true);
         }
@@ -288,5 +321,8 @@ fn print_success(
             super::Scope::Project => println!("Added entry #{entry_id}: {title}"),
         }
         println!("Keywords: {}", kws.join(", "));
+        if let Some(project) = project {
+            println!("Project: {project}");
+        }
     }
 }
