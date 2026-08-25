@@ -11,11 +11,23 @@ const ENTRY_COLS_E: &str = "e.id, e.title, e.content, e.category, e.source, e.so
 
 pub const VALID_STATUSES: &[&str] = &["active", "deprecated", "proposed", "accepted", "superseded"];
 
-/// Keywords as they are stored: lowercased, blank-free, and deduplicated.
+/// One keyword in the form it is stored in: NFC, lowercased, trimmed.
 ///
-/// Every insert path goes through this. Search lowercases the needle, so a keyword
-/// stored with capitals could never be found; and the table has no unique constraint,
-/// so `auth, AUTH` in one edit would otherwise become two rows for one keyword.
+/// NFC as well as case, because the same word typed two ways is one keyword to
+/// everybody except a byte comparison — and `export` names a file after it, where a
+/// decomposed spelling would either collide with the composed one or be pushed into a
+/// disambiguated name for no reason a user could see.
+pub fn normalize_keyword(kw: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    kw.trim().nfc().collect::<String>().to_lowercase()
+}
+
+/// Keywords as they are stored: normalized, blank-free, and deduplicated.
+///
+/// Every insert path goes through this. Search normalizes the needle the same way, so
+/// a keyword stored differently could never be found; and the table has no unique
+/// constraint, so `auth, AUTH` in one edit would otherwise become two rows for one
+/// keyword.
 pub fn normalize_keywords<I, S>(kws: I) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
@@ -23,7 +35,7 @@ where
 {
     let mut seen = std::collections::HashSet::new();
     kws.into_iter()
-        .map(|k| k.as_ref().trim().to_lowercase())
+        .map(|k| normalize_keyword(k.as_ref()))
         .filter(|k| !k.is_empty())
         .filter(|k| seen.insert(k.clone()))
         .collect()
@@ -815,7 +827,7 @@ pub fn search_entries(
             }
             let idx = i + 1;
             sql.push_str(&format!("k.keyword LIKE ?{idx}"));
-            param_values.push(Box::new(format!("%{}%", word.to_lowercase())));
+            param_values.push(Box::new(format!("%{}%", normalize_keyword(word))));
         }
         sql.push(')');
 
@@ -951,7 +963,7 @@ pub fn search_entries(
                     }
                     let idx = i + 1;
                     kw_sql.push_str(&format!("k.keyword LIKE ?{idx}"));
-                    kw_params.push(Box::new(format!("%{}%", word.to_lowercase())));
+                    kw_params.push(Box::new(format!("%{}%", normalize_keyword(word))));
                 }
                 kw_sql.push(')');
 
@@ -3204,6 +3216,22 @@ mod tests {
             .unwrap();
             assert!(hits.iter().all(|e| e.project.is_some()));
         }
+    }
+
+    #[test]
+    fn test_keywords_are_stored_in_one_normal_form() {
+        // The same word typed two ways is one keyword. Without this, an NFD spelling
+        // is unfindable by its NFC needle, and `export` would name a separate file
+        // after it.
+        let composed = "が";
+        let decomposed = "か\u{3099}";
+        assert_ne!(composed, decomposed, "the fixture must differ bytewise");
+        assert_eq!(normalize_keyword(decomposed), composed);
+        assert_eq!(
+            normalize_keywords([composed, decomposed, " が ", "GA"]),
+            vec!["が", "ga"],
+            "one row per keyword, whichever spelling arrived"
+        );
     }
 
     #[test]
