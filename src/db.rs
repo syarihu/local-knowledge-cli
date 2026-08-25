@@ -642,6 +642,27 @@ pub fn get_entry_by_uid(
     }
 }
 
+/// The `ORDER BY` key that puts the caller's project first, or an empty string when
+/// there is no project to prefer.
+///
+/// This belongs in SQL rather than in a sort of the rows that came back: `LIMIT`
+/// and the title dedup both discard candidates on the way out, so a preference
+/// applied afterwards can only reorder the survivors. Placed after `rank`, it never
+/// reorders hits the query could actually tell apart.
+fn prefer_project_key(
+    params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    prefer_project: Option<&str>,
+) -> String {
+    match prefer_project {
+        Some(here) => {
+            let idx = params.len() + 1;
+            params.push(Box::new(here.to_string()));
+            format!("CASE WHEN e.project = ?{idx} THEN 0 ELSE 1 END, ")
+        }
+        None => String::new(),
+    }
+}
+
 /// Append the optional `WHERE` fragments shared by the search paths and the
 /// ambiguity lookup, keeping one definition of what each filter means.
 fn append_filters(
@@ -700,10 +721,9 @@ pub fn search_entries(
     status: Option<&str>,
     since: Option<&str>,
     project: Option<&ProjectFilter>,
-    // The caller's current project. Among candidates the query could not tell apart,
-    // entries recorded against it are kept over the rest — applied here, inside the
-    // over-fetch window, because a caller that reorders afterwards can only reorder
-    // what `limit` already let through.
+    // The caller's current project: among rows the query ranked equally, those
+    // recorded against it sort first. Part of each `ORDER BY` (see
+    // `prefer_project_key`), so it survives `LIMIT` and the title dedup.
     prefer_project: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Entry>, Box<dyn std::error::Error>> {
@@ -752,7 +772,8 @@ pub fn search_entries(
             since,
             project,
         );
-        sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
+        let prefer = prefer_project_key(&mut param_values, prefer_project);
+        sql.push_str(&format!(" ORDER BY {prefer}e.updated_at DESC LIMIT ?"));
         param_values.push(Box::new(fetch_limit));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
@@ -766,9 +787,7 @@ pub fn search_entries(
             let entry = row?;
             if seen_titles.insert(entry.title.to_lowercase()) {
                 results.push(entry);
-                // No early break: `prefer_project` may promote a candidate from
-                // further down the window, which stopping at `limit` would discard.
-                if results.len() >= fetch_limit as usize {
+                if results.len() >= limit {
                     break;
                 }
             }
@@ -796,7 +815,10 @@ pub fn search_entries(
         // Bounded over-fetch: `fetch_limit` keeps SQLite's top-N optimization, and the
         // Rust-side dedup + early break below collects `limit` UNIQUE (id+title) rows,
         // so title-duplicates among the top matches don't crowd out unique candidates.
-        fts_sql.push_str(" ORDER BY rank, e.updated_at DESC LIMIT ?");
+        let prefer = prefer_project_key(&mut param_values, prefer_project);
+        fts_sql.push_str(&format!(
+            " ORDER BY rank, {prefer}e.updated_at DESC LIMIT ?"
+        ));
         param_values.push(Box::new(fetch_limit));
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
@@ -819,7 +841,7 @@ pub fn search_entries(
                         {
                             seen_ids.insert(entry.id);
                             results.push(entry);
-                            if results.len() >= fetch_limit as usize {
+                            if results.len() >= limit {
                                 break;
                             }
                         }
@@ -863,7 +885,8 @@ pub fn search_entries(
                 project,
             );
             // Bounded over-fetch; the loop below dedups and breaks at `limit`.
-            kw_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
+            let prefer = prefer_project_key(&mut kw_params, prefer_project);
+            kw_sql.push_str(&format!(" ORDER BY {prefer}e.updated_at DESC LIMIT ?"));
             kw_params.push(Box::new(fetch_limit));
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
@@ -875,7 +898,7 @@ pub fn search_entries(
                 if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
                     seen_ids.insert(entry.id);
                     results.push(entry);
-                    if results.len() >= fetch_limit as usize {
+                    if results.len() >= limit {
                         break;
                     }
                 }
@@ -912,7 +935,8 @@ pub fn search_entries(
                 project,
             );
             // Bounded over-fetch; the loop below dedups and breaks at `limit`.
-            like_sql.push_str(" ORDER BY e.updated_at DESC LIMIT ?");
+            let prefer = prefer_project_key(&mut like_params, prefer_project);
+            like_sql.push_str(&format!(" ORDER BY {prefer}e.updated_at DESC LIMIT ?"));
             like_params.push(Box::new(fetch_limit));
 
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
@@ -924,7 +948,7 @@ pub fn search_entries(
                 if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
                     seen_ids.insert(entry.id);
                     results.push(entry);
-                    if results.len() >= fetch_limit as usize {
+                    if results.len() >= limit {
                         break;
                     }
                 }
@@ -932,21 +956,9 @@ pub fn search_entries(
         }
     }
 
-    // Both branches dedup by title as rows arrive, collecting up to the over-fetch
-    // window. Prefer the caller's project among candidates the query ranked equally,
-    // then cut to `limit` — doing this here, rather than in the caller, is what lets
-    // a preferred entry outrank one the window would otherwise have handed back.
-    if let Some(here) = prefer_project {
-        results.sort_by(|a, b| {
-            let mine = |e: &Entry| e.project.as_deref() == Some(here);
-            let rank = |e: &Entry| e.rank.unwrap_or(f64::MAX);
-            rank(a)
-                .partial_cmp(&rank(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| mine(b).cmp(&mine(a)))
-        });
-    }
-    results.truncate(limit);
+    // Both branches dedup by title as rows arrive and stop at `limit`, so `results` is
+    // already title-unique and within the limit — and, because the preference is part
+    // of each query's `ORDER BY`, the rows that reach the dedup are the preferred ones.
     Ok(results)
 }
 
@@ -2680,6 +2692,144 @@ mod tests {
                 project,
             )
             .unwrap();
+        }
+    }
+
+    /// `add_entry_full` stamps "now", and every row a test inserts lands in the same
+    /// second — which lets `ORDER BY updated_at DESC` fall back to scan order and a
+    /// ranking test pass for the wrong reason. Pin the timestamp instead.
+    fn set_updated_at(conn: &Connection, id: i64, when: &str) {
+        conn.execute(
+            "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
+            params![when, id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_prefer_project_survives_the_over_fetch_window() {
+        // The preference is part of each query's ORDER BY, so it is not bounded by
+        // the over-fetch window: bury the preferred entry under more newer rows than
+        // the window holds and it still comes back with `limit = 1`.
+        let (conn, _tmp) = setup_test_db();
+        let preferred = add_entry_full(
+            &conn,
+            "buried preferred",
+            "shared body text",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/here"),
+        )
+        .unwrap();
+        // The oldest row, so `updated_at DESC` alone would hand it back last of all.
+        set_updated_at(&conn, preferred, "2020-01-01T00:00:00");
+        for i in 0..(SEARCH_DEDUP_MARGIN + 5) {
+            add_entry_full(
+                &conn,
+                &format!("newer elsewhere {i}"),
+                "shared body text",
+                &[],
+                "",
+                "local",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("syarihu/elsewhere"),
+            )
+            .unwrap();
+        }
+
+        let hits = search_entries(
+            &conn,
+            "shared",
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/here"),
+            1,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "buried preferred");
+    }
+
+    #[test]
+    fn test_prefer_project_wins_the_title_dedup() {
+        // Two entries share a title, so only one survives the dedup. The preferred
+        // one has to reach it first — deciding afterwards would be too late.
+        let (conn, _tmp) = setup_test_db();
+        let preferred = add_entry_full(
+            &conn,
+            "same title",
+            "shared body text",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/here"),
+        )
+        .unwrap();
+        let newer = add_entry_full(
+            &conn,
+            "same title",
+            "shared body text",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/elsewhere"),
+        )
+        .unwrap();
+        // The other project's copy is the newer one, so `updated_at DESC` alone would
+        // let it win the dedup — only the preference can change that.
+        set_updated_at(&conn, preferred, "2020-01-01T00:00:00");
+        set_updated_at(&conn, newer, "2030-01-01T00:00:00");
+
+        // All three query paths: keyword-only, ranked FTS, and the CJK/short-query
+        // LIKE fallback.
+        for (query, keyword_only) in [("shared", true), ("shared", false), ("dy", false)] {
+            let hits = search_entries(
+                &conn,
+                query,
+                keyword_only,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("syarihu/here"),
+                1,
+            )
+            .unwrap();
+            assert_eq!(hits.len(), 1, "query {query:?}");
+            assert_eq!(
+                hits[0].project.as_deref(),
+                Some("syarihu/here"),
+                "the preferred entry must survive the title dedup (query {query:?})"
+            );
         }
     }
 
