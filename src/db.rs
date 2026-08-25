@@ -856,95 +856,110 @@ pub fn search_entries(
             }
         }
 
-        // Supplement with keyword search if needed
+        // Supplement with the unranked paths if needed. Keyword and LIKE hits both
+        // carry `rank = None`, so they are one pool of equally-scored candidates:
+        // deduping them per query would let whichever ran first claim the slots — and
+        // the titles — no matter which project they came from. Collect both, order the
+        // pool, then dedup. The extra LIKE query in the case where keyword hits alone
+        // would have filled `limit` is one bounded scan at this scale.
         if results.len() < limit {
             let words = split_query_words(query);
-            let mut kw_sql = format!(
-                "SELECT DISTINCT {ENTRY_COLS_E} \
-                 FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE ("
-            );
+            let mut unranked: Vec<Entry> = Vec::new();
 
-            let mut kw_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-            for (i, word) in words.iter().enumerate() {
-                if i > 0 {
-                    kw_sql.push_str(" OR ");
-                }
-                let idx = i + 1;
-                kw_sql.push_str(&format!("k.keyword LIKE ?{idx}"));
-                kw_params.push(Box::new(format!("%{}%", word.to_lowercase())));
-            }
-            kw_sql.push(')');
-
-            append_filters(
-                &mut kw_sql,
-                &mut kw_params,
-                category,
-                source,
-                status,
-                since,
-                project,
-            );
-            // Bounded over-fetch; the loop below dedups and breaks at `limit`.
-            let prefer = prefer_project_key(&mut kw_params, prefer_project);
-            kw_sql.push_str(&format!(" ORDER BY {prefer}e.updated_at DESC LIMIT ?"));
-            kw_params.push(Box::new(fetch_limit));
-
-            let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-                kw_params.iter().map(|b| b.as_ref()).collect();
-            let mut stmt = conn.prepare(&kw_sql)?;
-            let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
-            for row in rows {
-                let entry = row?;
-                if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
-                    seen_ids.insert(entry.id);
-                    results.push(entry);
-                    if results.len() >= limit {
-                        break;
+            {
+                let mut kw_sql = format!(
+                    "SELECT DISTINCT {ENTRY_COLS_E} \
+                     FROM entries e JOIN keywords k ON e.id = k.entry_id WHERE ("
+                );
+                let mut kw_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+                for (i, word) in words.iter().enumerate() {
+                    if i > 0 {
+                        kw_sql.push_str(" OR ");
                     }
+                    let idx = i + 1;
+                    kw_sql.push_str(&format!("k.keyword LIKE ?{idx}"));
+                    kw_params.push(Box::new(format!("%{}%", word.to_lowercase())));
+                }
+                kw_sql.push(')');
+
+                append_filters(
+                    &mut kw_sql,
+                    &mut kw_params,
+                    category,
+                    source,
+                    status,
+                    since,
+                    project,
+                );
+                // Bounded over-fetch; the pool is deduped and cut to `limit` below.
+                let prefer = prefer_project_key(&mut kw_params, prefer_project);
+                kw_sql.push_str(&format!(" ORDER BY {prefer}e.updated_at DESC LIMIT ?"));
+                kw_params.push(Box::new(fetch_limit));
+
+                let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                    kw_params.iter().map(|b| b.as_ref()).collect();
+                let mut stmt = conn.prepare(&kw_sql)?;
+                let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
+                for row in rows {
+                    unranked.push(row?);
                 }
             }
-        }
 
-        // LIKE fallback for short queries (e.g. 2-char CJK words) that trigram FTS cannot match
-        if results.len() < limit {
-            let words = split_query_words(query);
-            let mut like_sql = format!("SELECT {ENTRY_COLS} FROM entries e WHERE (");
-            let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-            for (i, word) in words.iter().enumerate() {
-                if i > 0 {
-                    like_sql.push_str(" OR ");
+            // LIKE covers short queries (a 2-char CJK word) that trigram FTS cannot
+            // match, and content that no keyword names.
+            {
+                let mut like_sql = format!("SELECT {ENTRY_COLS} FROM entries e WHERE (");
+                let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+                for (i, word) in words.iter().enumerate() {
+                    if i > 0 {
+                        like_sql.push_str(" OR ");
+                    }
+                    let idx = i * 2 + 1;
+                    like_sql.push_str(&format!(
+                        "e.title LIKE ?{idx} OR e.content LIKE ?{}",
+                        idx + 1
+                    ));
+                    let pattern = format!("%{word}%");
+                    like_params.push(Box::new(pattern.clone()));
+                    like_params.push(Box::new(pattern));
                 }
-                let idx = i * 2 + 1;
-                like_sql.push_str(&format!(
-                    "e.title LIKE ?{idx} OR e.content LIKE ?{}",
-                    idx + 1
-                ));
-                let pattern = format!("%{word}%");
-                like_params.push(Box::new(pattern.clone()));
-                like_params.push(Box::new(pattern));
+                like_sql.push(')');
+
+                append_filters(
+                    &mut like_sql,
+                    &mut like_params,
+                    category,
+                    source,
+                    status,
+                    since,
+                    project,
+                );
+                let prefer = prefer_project_key(&mut like_params, prefer_project);
+                like_sql.push_str(&format!(" ORDER BY {prefer}e.updated_at DESC LIMIT ?"));
+                like_params.push(Box::new(fetch_limit));
+
+                let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                    like_params.iter().map(|b| b.as_ref()).collect();
+                let mut stmt = conn.prepare(&like_sql)?;
+                let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
+                for row in rows {
+                    unranked.push(row?);
+                }
             }
-            like_sql.push(')');
 
-            append_filters(
-                &mut like_sql,
-                &mut like_params,
-                category,
-                source,
-                status,
-                since,
-                project,
-            );
-            // Bounded over-fetch; the loop below dedups and breaks at `limit`.
-            let prefer = prefer_project_key(&mut like_params, prefer_project);
-            like_sql.push_str(&format!(" ORDER BY {prefer}e.updated_at DESC LIMIT ?"));
-            like_params.push(Box::new(fetch_limit));
+            // One order over the whole pool. Without a project to prefer the pool
+            // keeps its arrival order — keyword hits, then LIKE hits — which is what
+            // it was before.
+            if let Some(here) = prefer_project {
+                let mine = |e: &Entry| e.project.as_deref() == Some(here);
+                unranked.sort_by(|a, b| {
+                    mine(b)
+                        .cmp(&mine(a))
+                        .then_with(|| b.updated_at.cmp(&a.updated_at))
+                });
+            }
 
-            let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-                like_params.iter().map(|b| b.as_ref()).collect();
-            let mut stmt = conn.prepare(&like_sql)?;
-            let rows = stmt.query_map(params_ref.as_slice(), row_to_entry)?;
-            for row in rows {
-                let entry = row?;
+            for entry in unranked {
                 if !seen_ids.contains(&entry.id) && seen_titles.insert(entry.title.to_lowercase()) {
                     seen_ids.insert(entry.id);
                     results.push(entry);
@@ -2767,6 +2782,71 @@ mod tests {
     }
 
     #[test]
+    fn test_prefer_project_wins_across_the_unranked_paths() {
+        // The keyword hit and the LIKE hit are both unranked, so they compete on equal
+        // footing. The other project's row is reachable by keyword and is newer; the
+        // preferred row is only reachable by content. Deduping per query would let the
+        // keyword pass take the single slot before the LIKE pass ever ran.
+        let (conn, _tmp) = setup_test_db();
+        let preferred = add_entry_full(
+            &conn,
+            "unranked preferred",
+            "the 認証 flow lives here",
+            &["zzz".to_string()],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/here"),
+        )
+        .unwrap();
+        let newer = add_entry_full(
+            &conn,
+            "unranked elsewhere",
+            "unrelated body",
+            &["認証".to_string()],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/elsewhere"),
+        )
+        .unwrap();
+        set_updated_at(&conn, preferred, "2020-01-01T00:00:00");
+        set_updated_at(&conn, newer, "2030-01-01T00:00:00");
+
+        // Two CJK characters: too short for the trigram index, so this is the
+        // keyword-vs-LIKE case rather than a ranked search.
+        let hits = search_entries(
+            &conn,
+            "認証",
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/here"),
+            1,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].project.as_deref(),
+            Some("syarihu/here"),
+            "the preferred entry must win against a keyword hit from another project"
+        );
+    }
+
+    #[test]
     fn test_prefer_project_wins_the_title_dedup() {
         // Two entries share a title, so only one survives the dedup. The preferred
         // one has to reach it first — deciding afterwards would be too late.
@@ -2775,7 +2855,7 @@ mod tests {
             &conn,
             "same title",
             "shared body text",
-            &[],
+            &["zzz".to_string()],
             "",
             "local",
             None,
@@ -2791,7 +2871,7 @@ mod tests {
             &conn,
             "same title",
             "shared body text",
-            &[],
+            &["zzz".to_string()],
             "",
             "local",
             None,
@@ -2808,9 +2888,12 @@ mod tests {
         set_updated_at(&conn, preferred, "2020-01-01T00:00:00");
         set_updated_at(&conn, newer, "2030-01-01T00:00:00");
 
-        // All three query paths: keyword-only, ranked FTS, and the CJK/short-query
-        // LIKE fallback.
-        for (query, keyword_only) in [("shared", true), ("shared", false), ("dy", false)] {
+        // All three query paths: keyword-only, ranked FTS, and the short-query LIKE
+        // fallback. `zzz` is the only keyword on either entry, so a query of "dy"
+        // cannot match through keywords and has to reach the LIKE path — with the
+        // auto-extracted keywords an empty list would have produced, it would have
+        // matched `%dy%` against "body" and quietly tested the keyword path twice.
+        for (query, keyword_only) in [("zzz", true), ("shared", false), ("dy", false)] {
             let hits = search_entries(
                 &conn,
                 query,
