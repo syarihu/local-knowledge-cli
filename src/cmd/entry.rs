@@ -29,6 +29,7 @@ pub fn cmd_get(
             "stale": stale,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
+            "project": entry.project,
         });
         if stale && let Some(d) = days {
             out["days_since_update"] = serde_json::json!(d);
@@ -72,6 +73,9 @@ pub fn cmd_get(
         }
         println!("UID: {}", entry.uid);
         println!("Keywords: {}", kws.join(", "));
+        if let Some(ref project) = entry.project {
+            println!("Project: {project}");
+        }
         if let Some(ref sf) = entry.source_file {
             println!("Source: {sf}");
         }

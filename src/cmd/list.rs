@@ -72,6 +72,9 @@ pub fn cmd_list(
                     "status": e.status,
                     "updated_at": e.updated_at,
                 });
+                if let Some(ref project) = e.project {
+                    obj["project"] = serde_json::json!(project);
+                }
                 if let Some(ref sb) = e.superseded_by {
                     obj["superseded_by"] = serde_json::json!(sb);
                 }
@@ -82,6 +85,13 @@ pub fn cmd_list(
     } else if tagged.is_empty() {
         println!("No entries found.");
     } else {
+        // See `cmd_search`: the badge follows the recorded value, not the scope, and
+        // is suppressed for the project we are standing in.
+        let here = tagged
+            .iter()
+            .any(|(_, e)| e.project.is_some())
+            .then(crate::util::current_project_key)
+            .flatten();
         for (label, e) in &tagged {
             let status_badge = if e.status != "active" {
                 format!(" [{}]", e.status.to_uppercase())
@@ -94,9 +104,15 @@ pub fn cmd_list(
             } else {
                 e.id.to_string()
             };
+            let project_disp = match e.project.as_deref() {
+                Some(p) if Some(p) != here.as_deref() => {
+                    format!(" @{}", crate::util::project_repo_name(p))
+                }
+                _ => String::new(),
+            };
             println!(
-                "  [{}] {} ({}/{}){} - {}",
-                id_disp, e.title, e.category, e.source, status_badge, e.updated_at
+                "  [{}] {} ({}/{}){}{} - {}",
+                id_disp, e.title, e.category, e.source, project_disp, status_badge, e.updated_at
             );
         }
         if limit.is_some() || offset > 0 {

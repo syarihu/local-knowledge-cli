@@ -224,6 +224,11 @@ fn export_to_dir(
             if entry.status != "active" {
                 lines.push(format!("status: {}", entry.status));
             }
+            // Carried through md so a `sync` (which deletes and re-inserts the
+            // file's entries) doesn't drop the recorded project.
+            if let Some(ref project) = entry.project {
+                lines.push(format!("project: {project}"));
+            }
             if let Some(ref sb) = entry.superseded_by {
                 lines.push(format!("superseded_by: {sb}"));
             }

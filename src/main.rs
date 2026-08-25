@@ -54,6 +54,9 @@ enum Commands {
         /// Knowledge scope: "auto" (default — project if initialized, else user), "project", or "user" (global ~/.config/lk/knowledge.db)
         #[arg(long, default_value = "auto")]
         scope: String,
+        /// Project this entry belongs to, as "owner/repo" (default: detected from the git remote). A bare repo name is expanded to the full slug when it names the current repo
+        #[arg(long)]
+        project: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -517,6 +520,7 @@ fn main() {
             force,
             allow_secrets,
             scope,
+            project,
             json,
         } => cmd::cmd_add(
             &title,
@@ -527,6 +531,7 @@ fn main() {
             force,
             allow_secrets,
             &scope,
+            project.as_deref(),
             json,
         ),
         Commands::Search {

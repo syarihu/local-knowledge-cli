@@ -313,7 +313,7 @@ fn status_enum() -> Value {
 fn tool_def_search(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "search_knowledge",
-        "description": "Search the project's knowledge base for design decisions, architecture notes, feature specs, bug investigation records, and other institutional knowledge. Use this BEFORE making significant code changes to check if there are relevant decisions or context already documented. Supports full-text search and keyword-based search. Returns matching entries with relevance scores.",
+        "description": "Search the project's knowledge base for design decisions, architecture notes, feature specs, bug investigation records, and other institutional knowledge. Use this BEFORE making significant code changes to check if there are relevant decisions or context already documented. Supports full-text search and keyword-based search. Returns matching entries with relevance scores. A result's `project` field is the repo it was saved from (`owner/repo`), which is how a user-scope hit says where it came from — not the project this request targeted.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -360,7 +360,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
 fn tool_def_add(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "add_knowledge",
-        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Duplicate handling: an entry whose title matches an existing one — or is all but identical to it — is rejected (`added: false` with `similar_entries`); edit that entry instead with edit_knowledge, or pass force=true to add it anyway. Nothing else is rejected: the add succeeds (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call edit_knowledge on those unless one genuinely covers the same topic.",
+        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Duplicate handling: an entry whose title matches an existing one — or is all but identical to it — is rejected (`added: false` with `similar_entries`); edit that entry instead with edit_knowledge, or pass force=true to add it anyway. Nothing else is rejected: the add succeeds (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call edit_knowledge on those unless one genuinely covers the same topic. The reply's `recorded_project` is the repo the entry was attributed to (`owner/repo`) — that is how a user-scope entry says where it came from; a top-level `project` names the project this request targeted.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -409,7 +409,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
 fn tool_def_list(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "list_knowledge",
-        "description": "Browse all knowledge entries in the project's knowledge base. Use this to get an overview of what knowledge is available, or to find entries by source ('shared' = team knowledge from .knowledge/ markdown files, 'local' = entries added via CLI or MCP). Supports filtering by category, status, and pagination.",
+        "description": "Browse all knowledge entries in the project's knowledge base. Use this to get an overview of what knowledge is available, or to find entries by source ('shared' = team knowledge from .knowledge/ markdown files, 'local' = entries added via CLI or MCP). Supports filtering by category, status, and pagination. Each listed entry carries `project`, the repo it was saved from.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -451,7 +451,7 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
 fn tool_def_get(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "get_knowledge",
-        "description": "Retrieve the full content of a specific knowledge entry by id or uid. Use this after searching or listing to read the complete details of an entry, including its full markdown content, keywords, and metadata.",
+        "description": "Retrieve the full content of a specific knowledge entry by id or uid. Use this after searching or listing to read the complete details of an entry, including its full markdown content, keywords, and metadata. Because this result IS the entry, the repo it was saved from is reported as `recorded_project` here (it is `project` on entries nested inside search/list results); the top-level `project` names the project this request targeted.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -596,6 +596,11 @@ fn entry_to_json(e: &db::Entry, kws: &[String], config: &Config) -> Value {
         "created_at": e.created_at,
         "updated_at": e.updated_at,
     });
+    // Where the entry was added from. Distinct from the top-level `project` that
+    // `decorate_result` adds, which names the project this request targeted.
+    if let Some(ref project) = e.project {
+        obj["project"] = json!(project);
+    }
     if let Some(ref sb) = e.superseded_by {
         obj["superseded_by"] = json!(sb);
     }
@@ -985,6 +990,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 return Ok(decorate_result(out, &project_name));
             }
 
+            let recorded_project = util::project_key_for(&project_root);
             let id = db::add_entry_full(
                 &conn,
                 title,
@@ -998,6 +1004,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 status,
                 None,
                 None,
+                recorded_project.as_deref(),
             )
             .map_err(|e| format!("add error: {e}"))?;
 
@@ -1016,6 +1023,12 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 "status": status.unwrap_or("active"),
                 "scope": effective_scope,
             });
+            // Not "project": `decorate_result` claims that key on this same object
+            // for the project this request targeted. This is what got recorded ON the
+            // entry — the repo slug it will be attributed to.
+            if let Some(ref recorded) = recorded_project {
+                out["recorded_project"] = json!(recorded);
+            }
             if fell_back {
                 out["note"] = json!(
                     "Project not initialized; saved to user scope (global). Run `lk init` for project scope."
@@ -1088,7 +1101,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 .skip(offset)
                 .take(limit)
                 .map(|(label, e, kws)| {
-                    json!({
+                    let mut obj = json!({
                         "id": e.id,
                         "uid": e.uid,
                         "title": e.title,
@@ -1098,7 +1111,11 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                         "status": e.status,
                         "keywords": kws,
                         "updated_at": e.updated_at,
-                    })
+                    });
+                    if let Some(ref project) = e.project {
+                        obj["project"] = json!(project);
+                    }
+                    obj
                 })
                 .collect();
 
@@ -1123,6 +1140,16 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let kws = db::get_keywords(&conn, entry.id).unwrap_or_default();
             let mut obj = entry_to_json(&entry, &kws, &config);
             obj["scope"] = json!(label);
+            // This result IS the entry object, and `decorate_result` claims "project"
+            // on it for the project this request targeted — which would overwrite the
+            // entry's own. Move it aside under the same name `add_knowledge` uses.
+            // (search/list are unaffected: their entries are nested in an array.)
+            if let Some(recorded) = obj.get("project").cloned() {
+                obj["recorded_project"] = recorded;
+                if let Some(map) = obj.as_object_mut() {
+                    map.remove("project");
+                }
+            }
 
             Ok(decorate_result(obj, &project_name))
         }

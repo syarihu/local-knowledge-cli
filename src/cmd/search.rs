@@ -82,6 +82,9 @@ pub fn cmd_search(
                     "status": r.status,
                     "stale": stale,
                 });
+                if let Some(ref project) = r.project {
+                    obj["project"] = serde_json::json!(project);
+                }
                 if stale && let Some(d) = days {
                     obj["days_since_update"] = serde_json::json!(d);
                 }
@@ -107,6 +110,15 @@ pub fn cmd_search(
             "No results found. Try: use fewer keywords, try synonyms, or search in both English and Japanese."
         );
     } else {
+        // Badge a hit whose recorded project is not the one we are standing in. A
+        // project-scope hit can carry another repo's project too (via `--project`, or
+        // md synced from elsewhere), so the badge follows the value, not the scope.
+        // Resolved once per command because it shells out to git.
+        let here = items
+            .iter()
+            .any(|(_, _, r, _)| r.project.is_some())
+            .then(crate::util::current_project_key)
+            .flatten();
         for (_, label, r, kws) in &items {
             let snippet = truncate_str(&r.content, 80);
             let days = days_since(&r.updated_at);
@@ -119,21 +131,31 @@ pub fn cmd_search(
             } else {
                 r.id.to_string()
             };
+            let project_disp = match r.project.as_deref() {
+                Some(p) if Some(p) != here.as_deref() => {
+                    format!(" @{}", crate::util::project_repo_name(p))
+                }
+                _ => String::new(),
+            };
             if r.status == "deprecated" {
                 print!(
-                    "  \u{26a0} [{}] {} ({}) [DEPRECATED]",
-                    id_disp, r.title, r.category
+                    "  \u{26a0} [{}] {} ({}){} [DEPRECATED]",
+                    id_disp, r.title, r.category, project_disp
                 );
             } else if stale {
                 print!(
-                    "  \u{26a0} [{}] {} ({}) [STALE: {} days since update]",
+                    "  \u{26a0} [{}] {} ({}){} [STALE: {} days since update]",
                     id_disp,
                     r.title,
                     r.category,
+                    project_disp,
                     days.unwrap_or(0)
                 );
             } else {
-                print!("  [{}] {} ({})", id_disp, r.title, r.category);
+                print!(
+                    "  [{}] {} ({}){}",
+                    id_disp, r.title, r.category, project_disp
+                );
             }
             println!();
             println!("       Keywords: {}", kws.join(", "));

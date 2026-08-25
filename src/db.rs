@@ -6,8 +6,8 @@ use crate::keywords;
 use crate::similarity;
 use crate::util::now_iso;
 
-const ENTRY_COLS: &str = "id, title, content, category, source, source_file, file_hash, status, uid, superseded_by, supersedes, created_at, updated_at";
-const ENTRY_COLS_E: &str = "e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.uid, e.superseded_by, e.supersedes, e.created_at, e.updated_at";
+const ENTRY_COLS: &str = "id, title, content, category, source, source_file, file_hash, status, uid, superseded_by, supersedes, created_at, updated_at, project";
+const ENTRY_COLS_E: &str = "e.id, e.title, e.content, e.category, e.source, e.source_file, e.file_hash, e.status, e.uid, e.superseded_by, e.supersedes, e.created_at, e.updated_at, e.project";
 
 pub const VALID_STATUSES: &[&str] = &["active", "deprecated", "proposed", "accepted", "superseded"];
 
@@ -36,6 +36,9 @@ pub struct Entry {
     pub supersedes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Project the entry was added from, as a git remote slug (`owner/repo`) or a
+    /// directory name. `None` for entries added before the column existed.
+    pub project: Option<String>,
     pub rank: Option<f64>,
 }
 
@@ -47,7 +50,7 @@ pub struct DbStats {
 }
 
 /// Current schema version. Increment when adding new migrations.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     if let Some(parent) = db_path.parent() {
@@ -77,7 +80,8 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
             superseded_by TEXT,
             supersedes  TEXT,
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            project     TEXT
         );
 
         CREATE TABLE IF NOT EXISTS keywords (
@@ -93,6 +97,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>>
         CREATE INDEX IF NOT EXISTS idx_entries_source_file ON entries(source_file);
         CREATE INDEX IF NOT EXISTS idx_entries_source_status ON entries(source, status);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_uid ON entries(uid) WHERE uid != '';
+        CREATE INDEX IF NOT EXISTS idx_entries_project ON entries(project);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
             title,
@@ -241,10 +246,12 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         let schema: String = conn
             .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")?
             .query_row([], |row| row.get(0))?;
-        if schema.contains("uid") {
-            // Has all columns including uid — schema version 5
+        if schema.contains("project") {
+            // Has all columns including project — current schema
             set_schema_version(conn, SCHEMA_VERSION)?;
             return Ok(false);
+        } else if schema.contains("uid") {
+            5 // Has uid but not project — needs migration 6
         } else if schema.contains("status") {
             4 // Has status but not uid — needs migration 5
         } else if schema.contains("source ") {
@@ -433,6 +440,25 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         migrated = true;
     }
 
+    // Migration 6: Add project column (version 5 -> 6). Existing rows keep NULL —
+    // the project an entry was added from can't be recovered after the fact.
+    if effective_version < 6 {
+        // Re-entrant on purpose: `migrate` is not one transaction, so a crash between
+        // the ALTER and the version bump below would otherwise leave a DB that says
+        // "version 5" but already has the column — and every later open would fail
+        // for good with "duplicate column name: project".
+        let has_project: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('entries') WHERE name = 'project'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_project {
+            conn.execute_batch("ALTER TABLE entries ADD COLUMN project TEXT;")?;
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_entries_project ON entries(project);")?;
+        migrated = true;
+    }
+
     set_schema_version(conn, SCHEMA_VERSION)?;
     Ok(migrated)
 }
@@ -488,6 +514,7 @@ pub fn add_entry(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -505,6 +532,7 @@ pub fn add_entry_full(
     status: Option<&str>,
     superseded_by: Option<&str>,
     supersedes: Option<&str>,
+    project: Option<&str>,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let now = now_iso();
     let uid = uid
@@ -523,8 +551,8 @@ pub fn add_entry_full(
     };
 
     conn.execute(
-        "INSERT INTO entries (title, content, category, source, source_file, file_hash, uid, status, superseded_by, supersedes, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![title, content, category, source, source_file, file_hash, uid, status, superseded_by, supersedes, now, now],
+        "INSERT INTO entries (title, content, category, source, source_file, file_hash, uid, status, superseded_by, supersedes, created_at, updated_at, project) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![title, content, category, source, source_file, file_hash, uid, status, superseded_by, supersedes, now, now, project],
     )?;
     let entry_id = conn.last_insert_rowid();
 
@@ -1359,13 +1387,14 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
         supersedes: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
+        project: row.get(13)?,
         rank: None,
     })
 }
 
-/// Build Entry from a row with rank at column index 13
+/// Build Entry from a row with rank at column index 14
 fn row_to_entry_with_rank(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
-    let raw_rank: f64 = row.get(13)?;
+    let raw_rank: f64 = row.get(14)?;
     let score = 1.0 / (1.0 + raw_rank.abs());
     Ok(Entry {
         id: row.get(0)?,
@@ -1381,6 +1410,7 @@ fn row_to_entry_with_rank(row: &rusqlite::Row) -> rusqlite::Result<Entry> {
         supersedes: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
+        project: row.get(13)?,
         rank: Some(score),
     })
 }
@@ -1807,6 +1837,7 @@ mod tests {
             Some("proposed"),
             None,
             None,
+            None,
         )
         .unwrap();
         add_entry_full(
@@ -1820,6 +1851,7 @@ mod tests {
             None,
             None,
             Some("accepted"),
+            None,
             None,
             None,
         )
@@ -2225,6 +2257,157 @@ mod tests {
 
         // Verify schema version was set
         assert_eq!(get_schema_version(&conn), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_migration_v5_adds_project_column() {
+        // A v5-shaped DB (uid/supersedes present, project absent) with no
+        // schema_version row. The legacy detector must report 5 here — if it treats
+        // "has uid" as current, migration 6 never runs and the column never appears.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'local',
+                source_file TEXT,
+                file_hash TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                uid TEXT NOT NULL DEFAULT '',
+                superseded_by TEXT,
+                supersedes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+                keyword TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE entries_fts USING fts5(
+                title, content, content='entries', content_rowid='id', tokenize='trigram'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entries (title, content, uid) VALUES ('Legacy', 'Body', 'a1b2c3d4e5f6')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let (conn, migrated) = open_db(tmp.path()).unwrap();
+        assert!(migrated, "a v5 DB must run migration 6");
+        assert_eq!(get_schema_version(&conn), SCHEMA_VERSION);
+
+        // The pre-existing row survives; its project is unknowable, so NULL.
+        let legacy = get_entry(&conn, 1).unwrap().unwrap();
+        assert_eq!(legacy.title, "Legacy");
+        assert!(legacy.project.is_none());
+
+        // And the new column is writable/readable end to end.
+        let id = add_entry_full(
+            &conn,
+            "Fresh",
+            "Body",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/local-knowledge-cli"),
+        )
+        .unwrap();
+        assert_eq!(
+            get_entry(&conn, id).unwrap().unwrap().project.as_deref(),
+            Some("syarihu/local-knowledge-cli")
+        );
+        drop(conn);
+
+        // Re-opening an already-migrated DB is a no-op.
+        let (_conn, migrated_again) = open_db(tmp.path()).unwrap();
+        assert!(!migrated_again, "a v6 DB must not migrate again");
+
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_migration_6_survives_partial_application() {
+        // Simulate a crash between migration 6's ALTER and the version bump: the
+        // column exists while schema_version still says 5. Opening must recover
+        // instead of failing forever with "duplicate column name: project".
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        conn.execute("UPDATE schema_version SET version = 5", [])
+            .unwrap();
+        drop(conn);
+
+        let (conn, migrated) = open_db(tmp.path()).unwrap();
+        assert!(migrated, "the version bump must be re-applied");
+        assert_eq!(get_schema_version(&conn), SCHEMA_VERSION);
+        // The column is still usable — nothing was dropped or duplicated.
+        let id = add_entry_full(
+            &conn,
+            "T",
+            "B",
+            &[],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("o/r"),
+        )
+        .unwrap();
+        assert_eq!(
+            get_entry(&conn, id).unwrap().unwrap().project.as_deref(),
+            Some("o/r")
+        );
+        drop(conn);
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_search_returns_project() {
+        // The ranked FTS path reads `rank` by column index, so appending `project` to
+        // ENTRY_COLS shifts it. A wrong index fails here (type error or bad score).
+        let (conn, _tmp) = setup_test_db();
+        add_entry_full(
+            &conn,
+            "Auth migration notes",
+            "How the auth migration went",
+            &["auth".to_string()],
+            "",
+            "local",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("syarihu/other-repo"),
+        )
+        .unwrap();
+
+        let r = search_entries(&conn, "migration", false, None, None, None, None, 5).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].project.as_deref(), Some("syarihu/other-repo"));
+        assert!(
+            r[0].rank.is_some(),
+            "must come from the ranked FTS path, where the rank column index matters"
+        );
     }
 
     #[test]

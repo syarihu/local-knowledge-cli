@@ -376,6 +376,12 @@ pub fn import_md_file(
     let entries = markdown::parse_md_entries(&text);
     let mut count = 0;
     for entry in entries {
+        // Hand-written md can hold a remote URL; normalize it the way `--project`
+        // does so one repo never splits into a URL key and a slug key.
+        let project = entry
+            .project
+            .as_deref()
+            .and_then(crate::util::normalize_project_key);
         let supersedes = if entry.supersedes.is_empty() {
             None
         } else {
@@ -397,6 +403,7 @@ pub fn import_md_file(
                 .filter(|s| crate::db::is_valid_status(s)),
             entry.superseded_by.as_deref(),
             supersedes.as_deref(),
+            project.as_deref(),
         );
         match result {
             Ok(_) => count += 1,
