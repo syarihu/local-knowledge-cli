@@ -80,6 +80,9 @@ enum Commands {
         /// Only return entries updated since this date (ISO 8601, e.g., 2026-01-01 or 2026-01-01T09:00:00)
         #[arg(long)]
         since: Option<String>,
+        /// Filter by the project an entry was recorded against: "owner/repo", a bare repo name (matches any owner), or "." for the current project
+        #[arg(long)]
+        project: Option<String>,
         /// Max results
         #[arg(short, long, default_value = "5")]
         limit: usize,
@@ -123,6 +126,9 @@ enum Commands {
         /// Set superseded-by id-or-uid in the same scope (use 0 to clear)
         #[arg(long)]
         superseded_by: Option<String>,
+        /// Set the project this entry is attributed to ("owner/repo"; pass "" to clear)
+        #[arg(long)]
+        project: Option<String>,
         /// Reset updated_at timestamp to now (mark as freshly reviewed)
         #[arg(long)]
         touch: bool,
@@ -180,6 +186,9 @@ enum Commands {
         /// Filter by status (e.g., "accepted", "proposed", "superseded")
         #[arg(long)]
         status: Option<String>,
+        /// Filter by the project an entry was recorded against: "owner/repo", a bare repo name (matches any owner), or "." for the current project
+        #[arg(long)]
+        project: Option<String>,
         /// Max results (default: unlimited)
         #[arg(short, long)]
         limit: Option<usize>,
@@ -541,6 +550,7 @@ fn main() {
             source,
             status,
             since,
+            project,
             limit,
             full,
             scope,
@@ -552,6 +562,7 @@ fn main() {
             source.as_deref(),
             status.as_deref(),
             since.as_deref(),
+            project.as_deref(),
             limit,
             full,
             Some(&scope),
@@ -567,6 +578,7 @@ fn main() {
             content,
             status,
             superseded_by,
+            project,
             touch,
             scope,
             json,
@@ -578,6 +590,7 @@ fn main() {
                 content.as_deref(),
                 status.as_deref(),
                 superseded_by.as_deref(),
+                project.as_deref(),
                 touch,
                 sc,
                 json,
@@ -602,6 +615,7 @@ fn main() {
             category,
             source,
             status,
+            project,
             limit,
             offset,
             scope,
@@ -610,6 +624,7 @@ fn main() {
             category.as_deref(),
             source.as_deref(),
             status.as_deref(),
+            project.as_deref(),
             limit,
             offset,
             Some(&scope),

@@ -113,7 +113,7 @@ Commands:
 - `--force` - Add even if an entry with the same (or an all-but-identical) title exists (for `add`). Rarely needed — nothing else is refused
 - `--allow-secrets` - Allow content that contains potential secrets (for `add`, `export`)
 - `--scope <scope>` - Knowledge store to use. `add`: `auto` (default — project if initialized, else user), `project`, or `user`. Targets (`get`/`edit`/`delete`/`supersede`): `project` or `user` (omit to auto-resolve). Reads (`search`/`list`/`stats`): `project`, `user`, or `all` (default, merged)
-- `--project <owner/repo>` - Project to attribute the entry to (for `add`). Defaults to the git remote slug of the current repo — see [Project attribution](#project-attribution)
+- `--project <owner/repo>` - Project to attribute the entry to (for `add`, `edit`; pass `""` to `edit` to clear it). Defaults to the git remote slug of the current repo. For `search` / `list` it filters instead: `owner/repo` matches exactly, a bare repo name matches any owner, and `.` means the current project — see [Project attribution](#project-attribution)
 
 ### Keywords
 
@@ -216,6 +216,19 @@ The recorded value is the repo's **git remote slug** (`owner/repo`), resolved in
 The slug is preferred over a directory name because a linked worktree's directory changes per branch (one repo would otherwise scatter across several names) and because the owner keeps same-named repos in different orgs apart. A bare name passed to `--project` is expanded to the full slug when it names the current repo.
 
 A remote whose URL is a filesystem path (`file://`, a local clone, or an scp/ssh form with an absolute path) contributes only its last segment, so no local directory layout is stored. A self-hosted remote addressed by a server path — `ssh://host/home/alice/repo.git` — keeps that path as its key, because that path is the repo's identity and truncating it would merge unrelated repos; set `git config lk.project` in that repo to record something else instead.
+
+Filter by it with `--project`:
+
+```bash
+lk search "release" --project syarihu/some-app   # exactly that repo
+lk search "release" --project some-app           # any owner's some-app
+lk search "release" --project .                  # the repo you are standing in
+lk list --project some-app --scope user
+```
+
+A full slug matches exactly, so `hoge/app` never answers with `fuga/app` — that is what the owner in the key is for. A bare name matches on the last segment, which finds the slug and any bare value recorded where no remote was known; when it spans more than one owner, the command says so on stderr instead of quietly merging them. An unusable value is an error rather than an empty result, since "no results" reads as "nothing recorded". Entries with no project recorded never match a filter.
+
+`lk edit <id-or-uid> --project owner/repo` fills in an entry added before the column existed, and `--project ""` clears it.
 
 `lk get` and `--json` output always show the full slug. The human-readable `search` / `list` badge shows just the repo name, and only for entries recorded against a *different* project than the one you are standing in — so results from this repo stay unadorned while a hit carried in from elsewhere is marked. Entries added before this existed have no project recorded. The value round-trips through markdown as a `project:` line, so `lk sync` preserves it.
 

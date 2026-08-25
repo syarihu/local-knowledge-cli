@@ -197,6 +197,46 @@ pub fn read_connections(
     Ok(conns)
 }
 
+/// Parse a `--project` filter value, erroring rather than silently matching nothing.
+/// `.` means the project of the current directory.
+pub fn parse_project_filter(
+    value: &str,
+) -> Result<crate::db::ProjectFilter, Box<dyn std::error::Error>> {
+    crate::db::ProjectFilter::parse(value).ok_or_else(|| {
+        if value.trim() == "." {
+            "No project could be detected here, so `--project .` matches nothing.".into()
+        } else {
+            let msg: Box<dyn std::error::Error> =
+                format!("Invalid --project {value:?} (expected owner/repo, a repo name, or `.`)")
+                    .into();
+            msg
+        }
+    })
+}
+
+/// Note when a bare `--project` name matched entries from more than one slug, so a
+/// hit from `fuga/app` is never quietly read as one from `hoge/app`. Full slugs are
+/// exact by construction, so only the bare form can be ambiguous.
+pub fn warn_if_bare_name_spans_projects<'a>(
+    filter: Option<&crate::db::ProjectFilter>,
+    projects: impl Iterator<Item = Option<&'a str>>,
+    json_output: bool,
+) {
+    let Some(crate::db::ProjectFilter::BareName(name)) = filter else {
+        return;
+    };
+    let mut seen: Vec<&str> = projects.flatten().collect();
+    seen.sort_unstable();
+    seen.dedup();
+    if seen.len() > 1 && !json_output {
+        eprintln!(
+            "Note: '{name}' matched {} projects: {}. Pass the full owner/repo to narrow it.",
+            seen.len(),
+            seen.join(", ")
+        );
+    }
+}
+
 /// Log a command invocation to .knowledge/command.log (fire-and-forget).
 /// Enabled by config `command_log = true` or env `LK_COMMAND_LOG=1` / `LK_SEARCH_LOG=1`.
 fn log_command(cmd: &str, meta: &[(&str, &str)]) {

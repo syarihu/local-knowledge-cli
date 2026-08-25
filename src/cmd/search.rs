@@ -9,6 +9,7 @@ pub fn cmd_search(
     source: Option<&str>,
     status: Option<&str>,
     since: Option<&str>,
+    project: Option<&str>,
     limit: usize,
     full: bool,
     scope: Option<&str>,
@@ -25,6 +26,12 @@ pub fn cmd_search(
         )
         .into());
     }
+    // Resolve `--project` once. An unusable value would otherwise filter to nothing
+    // and look like "no results", so it errors instead.
+    let project_filter = match project {
+        Some(p) => Some(super::parse_project_filter(p)?),
+        None => None,
+    };
     let conns = super::read_connections(scope)?;
     let config = crate::config::Config::load(&get_knowledge_dir());
 
@@ -40,6 +47,7 @@ pub fn cmd_search(
             source,
             status,
             since,
+            project_filter.as_ref(),
             limit,
         )?;
         for r in results {
@@ -62,6 +70,11 @@ pub fn cmd_search(
 
     let result_count = items.len().to_string();
     super::log_command("search", &[("query", query), ("results", &result_count)]);
+    super::warn_if_bare_name_spans_projects(
+        project_filter.as_ref(),
+        items.iter().map(|(_, _, r, _)| r.project.as_deref()),
+        json_output,
+    );
 
     if json_output {
         let output: Vec<serde_json::Value> = items
