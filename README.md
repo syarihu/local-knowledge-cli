@@ -226,7 +226,7 @@ lk search "release" --project .                  # the repo you are standing in
 lk list --project some-app --scope user
 ```
 
-A full slug matches exactly, so `hoge/app` never answers with `fuga/app` — that is what the owner in the key is for. A bare name matches on the last segment, which finds the slug and any bare value recorded where no remote was known; when it spans more than one owner, the command says so on stderr instead of quietly merging them. An unusable value is an error rather than an empty result, since "no results" reads as "nothing recorded". Entries with no project recorded never match a filter.
+A full slug matches exactly, so `hoge/app` never answers with `fuga/app` — that is what the owner in the key is for. A bare name matches on the *last* segment, so it finds `syarihu/some-app`, a deeper `group/sub/some-app`, and any bare value recorded where no remote was known. When a bare name matches more than one recorded value the command says so on stderr instead of quietly merging them — asked of the store, so a small `--limit` cannot hide the ambiguity. An unusable value is an error rather than an empty result, since "no results" reads as "nothing recorded". Entries with no project recorded never match a filter.
 
 `lk edit <id-or-uid> --project owner/repo` fills in an entry added before the column existed, and `--project ""` clears it.
 

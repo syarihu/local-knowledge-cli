@@ -214,23 +214,37 @@ pub fn parse_project_filter(
     })
 }
 
-/// Note when a bare `--project` name matched entries from more than one slug, so a
-/// hit from `fuga/app` is never quietly read as one from `hoge/app`. Full slugs are
-/// exact by construction, so only the bare form can be ambiguous.
-pub fn warn_if_bare_name_spans_projects<'a>(
+/// Note when a bare `--project` name is ambiguous, so a hit from `fuga/app` is
+/// never quietly read as one from `hoge/app`. Full slugs are exact by construction,
+/// so only the bare form can be ambiguous.
+///
+/// The question is asked of the stores, not of the results: with `--limit 1` a page
+/// can only ever show one project, which is precisely when the warning matters most.
+pub fn warn_if_bare_name_is_ambiguous(
+    conns: &[(Connection, &'static str)],
     filter: Option<&crate::db::ProjectFilter>,
-    projects: impl Iterator<Item = Option<&'a str>>,
     json_output: bool,
 ) {
-    let Some(crate::db::ProjectFilter::BareName(name)) = filter else {
+    let Some(filter @ crate::db::ProjectFilter::BareName(name)) = filter else {
         return;
     };
-    let mut seen: Vec<&str> = projects.flatten().collect();
+    if json_output {
+        return;
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for (conn, _) in conns {
+        // Three is enough to say "more than one" and name a couple of them.
+        if let Ok(found) = crate::db::distinct_projects_for(conn, filter, 3) {
+            seen.extend(found);
+        }
+    }
     seen.sort_unstable();
     seen.dedup();
-    if seen.len() > 1 && !json_output {
+    if seen.len() > 1 {
+        // "values", not "projects": `app` and `hoge/app` may well be the same repo
+        // recorded twice, once before a remote was known.
         eprintln!(
-            "Note: '{name}' matched {} projects: {}. Pass the full owner/repo to narrow it.",
+            "Note: '{name}' matches {} recorded project values: {}. Pass the full owner/repo to narrow it.",
             seen.len(),
             seen.join(", ")
         );

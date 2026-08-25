@@ -56,11 +56,7 @@ pub fn cmd_list(
         }
     }
 
-    super::warn_if_bare_name_spans_projects(
-        project_filter.as_ref(),
-        tagged.iter().map(|(_, e)| e.project.as_deref()),
-        json_output,
-    );
+    super::warn_if_bare_name_is_ambiguous(&conns, project_filter.as_ref(), json_output);
 
     // Re-sort the merged set by updated_at DESC so pagination is globally correct
     // (each DB returns its own updated_at DESC; concatenation alone would not be).

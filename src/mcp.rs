@@ -589,13 +589,25 @@ fn tool_def_list_projects() -> Value {
 /// Read the `project_filter` argument. Named apart from `project`, which selects
 /// the registered project a request targets; this one filters by the project an
 /// entry was recorded against.
-fn parse_project_filter_param(params: &Value) -> Result<Option<db::ProjectFilter>, String> {
-    let Some(raw) = params["project_filter"].as_str() else {
-        return Ok(None);
-    };
-    db::ProjectFilter::parse(raw).map(Some).ok_or_else(|| {
-        format!("Invalid project_filter '{raw}' (expected owner/repo, a repo name, or '.')")
-    })
+fn parse_project_filter_param(
+    params: &Value,
+    project_root: &Path,
+) -> Result<Option<db::ProjectFilter>, String> {
+    match &params["project_filter"] {
+        Value::Null => Ok(None),
+        // `.` follows the project this request targets, not the server's working
+        // directory: one process serves several registered projects.
+        Value::String(raw) => db::ProjectFilter::parse_for(raw, Some(project_root))
+            .map(Some)
+            .ok_or_else(|| {
+                format!("Invalid project_filter '{raw}' (expected owner/repo, a repo name, or '.')")
+            }),
+        // Present but not a string is a client bug. Reading it as "absent" would
+        // widen the search to everything — the opposite of what was asked.
+        other => Err(format!(
+            "Invalid project_filter: expected a string, got {other}"
+        )),
+    }
 }
 
 fn entry_to_json(e: &db::Entry, kws: &[String], config: &Config) -> Value {
@@ -830,7 +842,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let limit = params["limit"].as_u64().unwrap_or(5) as usize;
             let scope = params["scope"].as_str();
             // Not "project": that parameter names which registered project to search.
-            let project_filter = parse_project_filter_param(params)?;
+            let project_filter = parse_project_filter_param(params, &project_root)?;
 
             // Validate status if provided
             if let Some(st) = status
@@ -1079,7 +1091,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let limit = params["limit"].as_u64().unwrap_or(20) as usize;
             let offset = params["offset"].as_u64().unwrap_or(0) as usize;
             let scope = params["scope"].as_str();
-            let project_filter = parse_project_filter_param(params)?;
+            let project_filter = parse_project_filter_param(params, &project_root)?;
 
             // Validate status so a typo errors instead of silently returning [].
             if let Some(st) = status

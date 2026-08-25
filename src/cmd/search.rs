@@ -70,11 +70,7 @@ pub fn cmd_search(
 
     let result_count = items.len().to_string();
     super::log_command("search", &[("query", query), ("results", &result_count)]);
-    super::warn_if_bare_name_spans_projects(
-        project_filter.as_ref(),
-        items.iter().map(|(_, _, r, _)| r.project.as_deref()),
-        json_output,
-    );
+    super::warn_if_bare_name_is_ambiguous(&conns, project_filter.as_ref(), json_output);
 
     if json_output {
         let output: Vec<serde_json::Value> = items

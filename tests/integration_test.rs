@@ -1901,8 +1901,26 @@ fn test_bare_project_filter_warns_when_it_spans_owners() {
     let out = run(&["search", "shared", "--scope", "user", "--project", "app"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("matched 2 projects") && stderr.contains("fuga/app"),
+        stderr.contains("matches 2 recorded project values") && stderr.contains("fuga/app"),
         "an ambiguous bare name must say so: {stderr}"
+    );
+
+    // The case the warning exists for: a page that can only show one project. The
+    // check asks the store, so the limit cannot hide the ambiguity.
+    let out = run(&[
+        "search",
+        "shared",
+        "--scope",
+        "user",
+        "--project",
+        "app",
+        "--limit",
+        "1",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("matches 2 recorded project values"),
+        "--limit 1 must still warn: {stderr}"
     );
 
     // An exact slug is unambiguous by construction, so it stays quiet.
@@ -2062,6 +2080,30 @@ fn test_edit_project_sets_and_clears() {
     assert!(
         entry["project"].is_null(),
         "project should be cleared: {entry}"
+    );
+}
+
+#[test]
+fn test_mcp_project_filter_rejects_a_non_string_value() {
+    // Reading a malformed filter as "absent" would widen the search to everything —
+    // the opposite of what was asked.
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    let _run = setup_project_filter_fixture(&home, &proj);
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_knowledge","arguments":{"query":"shared","scope":"user","project_filter":123}}}"#,
+    );
+    let text = format!("{replies:?}");
+    assert!(
+        text.contains("project_filter"),
+        "a non-string filter must be refused: {text}"
+    );
+    assert!(
+        !text.contains("hoge/app") || text.contains("expected a string"),
+        "it must not fall back to an unfiltered search: {text}"
     );
 }
 

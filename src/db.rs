@@ -29,11 +29,21 @@ pub enum ProjectFilter {
 
 impl ProjectFilter {
     /// Build from a user-supplied value, normalizing it the way a recorded key is.
-    /// `.` means the project of the current directory. `None` when nothing usable
-    /// is left (or, for `.`, when no project can be detected here).
+    /// `.` means the current directory's project — see [`ProjectFilter::parse_for`]
+    /// when the request targets a project other than the process's own directory.
     pub fn parse(value: &str) -> Option<Self> {
+        Self::parse_for(value, None)
+    }
+
+    /// [`ProjectFilter::parse`] with an explicit root for `.`. The MCP server serves
+    /// several registered projects from one process, so resolving `.` against its
+    /// working directory would filter by the wrong repo entirely.
+    pub fn parse_for(value: &str, root: Option<&std::path::Path>) -> Option<Self> {
         let key = if value.trim() == "." {
-            crate::util::current_project_key()?
+            match root {
+                Some(root) => crate::util::project_key_for(root)?,
+                None => crate::util::current_project_key()?,
+            }
         } else {
             crate::util::normalize_project_key(value)?
         };
@@ -61,9 +71,9 @@ impl ProjectFilter {
         };
         match self {
             ProjectFilter::Exact(k) => project == k,
-            ProjectFilter::BareName(k) => {
-                project == k || project.split_once('/').map(|(_, rest)| rest) == Some(k.as_str())
-            }
+            // The LAST segment, not everything after the first `/`: a deeper
+            // namespace (`group/sub/repo`) must still answer to `repo`.
+            ProjectFilter::BareName(k) => project.rsplit('/').next() == Some(k.as_str()),
         }
     }
 }
@@ -632,6 +642,54 @@ pub fn get_entry_by_uid(
     }
 }
 
+/// Append the optional `WHERE` fragments shared by the search paths and the
+/// ambiguity lookup, keeping one definition of what each filter means.
+fn append_filters(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    category: Option<&str>,
+    source: Option<&str>,
+    status: Option<&str>,
+    since: Option<&str>,
+    project: Option<&ProjectFilter>,
+) {
+    if let Some(cat) = category {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND e.category = ?{idx}"));
+        params.push(Box::new(cat.to_string()));
+    }
+    if let Some(src) = source {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND e.source = ?{idx}"));
+        params.push(Box::new(src.to_string()));
+    }
+    if let Some(st) = status {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND e.status = ?{idx}"));
+        params.push(Box::new(st.to_string()));
+    }
+    if let Some(s) = since {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND e.updated_at >= ?{idx}"));
+        params.push(Box::new(s.to_string()));
+    }
+    if let Some(pf) = project {
+        let idx = params.len() + 1;
+        match pf {
+            ProjectFilter::Exact(_) => sql.push_str(&format!(" AND e.project = ?{idx}")),
+            // Last segment of `e.project`: `rtrim` strips every trailing
+            // non-slash character, leaving the prefix through the last `/`, which
+            // `replace` then removes. A value with no `/` comes back whole (SQLite
+            // returns X unchanged for an empty search string), so one expression
+            // covers a slug, a deeper namespace, and a bare value alike.
+            ProjectFilter::BareName(_) => sql.push_str(&format!(
+                " AND replace(e.project, rtrim(e.project, replace(e.project, '/', '')), '') = ?{idx}"
+            )),
+        }
+        params.push(Box::new(pf.key().to_string()));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn search_entries(
     conn: &Connection,
@@ -662,50 +720,6 @@ pub fn search_entries(
     let fetch_limit: i64 =
         i64::try_from(limit.saturating_add(SEARCH_DEDUP_MARGIN)).unwrap_or(i64::MAX);
     let mut results = Vec::new();
-
-    // Helper to append optional filters and return next param index
-    fn append_filters(
-        sql: &mut String,
-        params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
-        category: Option<&str>,
-        source: Option<&str>,
-        status: Option<&str>,
-        since: Option<&str>,
-        project: Option<&ProjectFilter>,
-    ) {
-        if let Some(cat) = category {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND e.category = ?{idx}"));
-            params.push(Box::new(cat.to_string()));
-        }
-        if let Some(src) = source {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND e.source = ?{idx}"));
-            params.push(Box::new(src.to_string()));
-        }
-        if let Some(st) = status {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND e.status = ?{idx}"));
-            params.push(Box::new(st.to_string()));
-        }
-        if let Some(s) = since {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND e.updated_at >= ?{idx}"));
-            params.push(Box::new(s.to_string()));
-        }
-        if let Some(pf) = project {
-            let idx = params.len() + 1;
-            match pf {
-                ProjectFilter::Exact(_) => sql.push_str(&format!(" AND e.project = ?{idx}")),
-                // `instr` returns 0 when there is no `/`, and `substr(x, 1)` is the
-                // whole string — so one expression covers a slug and a bare value.
-                ProjectFilter::BareName(_) => sql.push_str(&format!(
-                    " AND (e.project = ?{idx} OR substr(e.project, instr(e.project, '/') + 1) = ?{idx})"
-                )),
-            }
-            params.push(Box::new(pf.key().to_string()));
-        }
-    }
 
     if keyword_only {
         let words = split_query_words(query);
@@ -914,6 +928,33 @@ pub fn search_entries(
     // Both branches dedup by title as rows arrive and stop at `limit`, so `results` is
     // already title-unique and within the limit — no final pass needed.
     Ok(results)
+}
+
+/// The distinct recorded projects a filter matches, capped at `limit`.
+///
+/// Asked of the store rather than of a page of results: a `--limit 1` search would
+/// otherwise never notice that a bare name spans two owners, which is exactly the
+/// case the warning exists for.
+pub fn distinct_projects_for(
+    conn: &Connection,
+    filter: &ProjectFilter,
+    limit: usize,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut sql =
+        "SELECT DISTINCT e.project FROM entries e WHERE e.project IS NOT NULL".to_string();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    append_filters(&mut sql, &mut params, None, None, None, None, Some(filter));
+    sql.push_str(" ORDER BY e.project LIMIT ?");
+    params.push(Box::new(i64::try_from(limit).unwrap_or(i64::MAX)));
+
+    let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_ref.as_slice(), |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 pub fn get_entry(conn: &Connection, id: i64) -> Result<Option<Entry>, Box<dyn std::error::Error>> {
@@ -2514,6 +2555,8 @@ mod tests {
             Some("fuga/app"),
             Some("app"),
             Some("syarihu/local-knowledge-cli"),
+            // A GitLab-style subgroup: `repo` must still find it.
+            Some("group/sub/repo"),
             None,
         ] {
             add_entry_full(
@@ -2577,6 +2620,52 @@ mod tests {
     }
 
     #[test]
+    fn test_bare_name_matches_the_last_segment_of_a_deep_namespace() {
+        // SQL/Rust agreement alone can't catch a shared misreading of the rule, so
+        // pin the rule itself: `repo` finds `group/sub/repo`, `sub` does not.
+        let (conn, _tmp) = setup_test_db();
+        seed_projects(&conn);
+
+        let hit = ProjectFilter::BareName("repo".to_string());
+        assert!(hit.matches(Some("group/sub/repo")));
+        let found = search_entries(
+            &conn,
+            "shared",
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some(&hit),
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .filter_map(|e| e.project.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["group/sub/repo"]
+        );
+
+        let miss = ProjectFilter::BareName("sub".to_string());
+        assert!(!miss.matches(Some("group/sub/repo")));
+        let found = search_entries(
+            &conn,
+            "shared",
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some(&miss),
+            10,
+        )
+        .unwrap();
+        assert!(found.is_empty(), "a middle segment is not the repo name");
+    }
+
+    #[test]
     fn test_project_filter_sql_and_rust_agree() {
         // `search` filters in SQL (it must, for LIMIT to mean anything) while `list`
         // filters in Rust with `matches`. If the two ever drift, one command silently
@@ -2591,6 +2680,9 @@ mod tests {
             ProjectFilter::Exact("syarihu/local-knowledge-cli".to_string()),
             ProjectFilter::BareName("app".to_string()),
             ProjectFilter::BareName("local-knowledge-cli".to_string()),
+            ProjectFilter::BareName("repo".to_string()),
+            ProjectFilter::BareName("sub".to_string()),
+            ProjectFilter::Exact("group/sub/repo".to_string()),
             ProjectFilter::BareName("nothing".to_string()),
         ] {
             let mut via_sql: Vec<String> = search_entries(
