@@ -1219,8 +1219,7 @@ pub fn update_entry(
         })() {
             Ok(()) => conn.execute_batch("RELEASE update_keywords")?,
             Err(e) => {
-                // Released for the same reason as every other rollback here: `ROLLBACK
-                // TO` alone keeps the savepoint and its transaction open.
+                // Released for the reason migration 7's rollback spells out.
                 conn.execute_batch("ROLLBACK TO update_keywords; RELEASE update_keywords;")
                     .ok();
                 return Err(e);
@@ -2845,10 +2844,9 @@ mod tests {
 
     #[test]
     fn test_a_failed_keyword_rewrite_leaves_no_transaction_open() {
-        // `ROLLBACK TO` undoes the work but keeps the savepoint — and with it the
-        // transaction the savepoint opened. Unreleased, the connection this error is
-        // returned with still holds the write lock, so whatever touches the database
-        // next waits on a migration that already failed.
+        // Unreleased, the savepoint's transaction stays open and the connection this
+        // error is returned with still holds the write lock — so whatever touches the
+        // database next waits on a migration that already failed.
         let tmp = NamedTempFile::new().unwrap();
         let conn = init_db(tmp.path()).unwrap();
         let id = add_entry(
@@ -2891,8 +2889,7 @@ mod tests {
 
     #[test]
     fn test_a_failed_keyword_update_leaves_no_transaction_open() {
-        // Same savepoint, same omission: `lk edit --keywords` is the everyday path, and
-        // a connection left mid-transaction blocks every write after it.
+        // The same omission on `lk edit --keywords`, the everyday path into it.
         let (conn, _tmp) = setup_test_db();
         let id = add_entry(
             &conn,

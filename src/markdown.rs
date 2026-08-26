@@ -367,10 +367,7 @@ mod tests {
 
     #[test]
     fn test_frontmatter_keywords_are_comma_separated_not_tokenized() {
-        // The frontmatter used to tokenize on word characters, so `feature/auth` and
-        // `main.rs` each arrived as two keywords while the per-entry parser kept them
-        // whole. `export` writes both lines, so a round trip grew one keyword into
-        // three and then renamed the file, since the first keyword names it.
+        // The two keywords the old word-character tokenizer split, plus a quoted one.
         let md = "---\nkeywords: [feature/auth, main.rs, \"quoted\"]\ncategory: features\n---\n\n# T\n\nBody.\n";
         let entries = parse_md_entries(md);
         assert_eq!(
@@ -383,9 +380,7 @@ mod tests {
 
     #[test]
     fn test_only_a_matched_pair_of_quotes_is_stripped() {
-        // A keyword is free text, and an apostrophe is part of it. `trim_matches` took
-        // every quote at either end, so `users'` came back from an export/`sync` round
-        // trip as `users` — a different keyword, under a different file name.
+        // An unmatched quote at either end, a matched pair, and a lone quote.
         let md = "---\nkeywords: [users', 'quoted, \"paired\", ']\ncategory: features\n---\n\n# T\n\nBody.\n";
         let entries = parse_md_entries(md);
         assert_eq!(

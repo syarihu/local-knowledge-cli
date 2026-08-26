@@ -74,20 +74,15 @@ fn looks_disambiguated(base: &str) -> bool {
 ///
 /// Lowercase first, compose second — the order `db::normalize_keyword` uses, and for
 /// the same reason: lowercasing can break composition, so composing first leaves a key
-/// that is not NFC after all. `H` with a combining macron below has no precomposed
-/// uppercase form, so it survives NFC as two characters and lowercases to `h` + the
-/// mark, while the `ẖ` a keyword normalizes to is one — two keys for the one file a
-/// case-folding file system would give them. That is exactly the collision this key
-/// exists to catch, and it reaches here through a name already on disk, which nothing
-/// normalized on the way in.
+/// that is not NFC after all. Names reach here straight off the disk, where nothing
+/// normalized them (see `test_the_key_composes_after_lowercasing`).
 ///
 /// `to_lowercase` is not full case folding, so a directory carrying ext4's `casefold`
-/// attribute would still see `ß` and `ss` as one name — and neither this key nor the
-/// check in `cmd_export` can tell. Everything that follows from ordinary use of this
-/// tool — case variants, and the NFC/NFD spellings macOS folds — is covered. That
-/// last gap stays open knowingly: closing it means carrying a full case-folding table
-/// for a directory flag almost nobody sets, and keywords are normalized on the way in
-/// (`db::normalize_keyword`), so a pair like `ß`/`ss` has to be deliberate.
+/// attribute would still see `ß` and `ss` as one name, and this key cannot tell. The
+/// gap stays open knowingly: closing it means carrying a full case-folding table for a
+/// directory flag almost nobody sets, and keywords are normalized on the way in, so
+/// such a pair has to be deliberate. Case variants and the NFC/NFD spellings macOS
+/// folds — everything ordinary use produces — are covered.
 fn file_system_key(name: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     name.to_lowercase().nfc().collect()
@@ -124,8 +119,7 @@ fn export_file_name(group: &str) -> String {
 /// committed as `exported-auth.md -> ../README.md` is a request to write outside the
 /// store. (The store's *directory* being a symlink is the dotfiles case and stays
 /// allowed.) The refusal is for the user's sake rather than for safety: the write
-/// itself cannot follow a link. Anything else that is not a plain file is refused for
-/// the preflight's sake — see the match below.
+/// itself cannot follow a link.
 fn check_destination(output_dir: &Path, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
     if Path::new(filename).components().count() != 1 {
         return Err(format!("refusing to export to a non-file name: {filename:?}").into());
@@ -138,16 +132,13 @@ fn check_destination(output_dir: &Path, filename: &str) -> Result<(), Box<dyn st
         )
         .into()),
         // A directory (or a fifo, a socket, a device) is refused here rather than left
-        // to fail at the `rename`: that failure lands after the earlier groups are
-        // written and flipped to `shared`, which is the mixed state this preflight
-        // exists to prevent.
+        // to fail at the `rename`, which is too late to keep the export whole.
         Ok(meta) if !meta.is_file() => Err(format!(
             "{} is not a plain file; refusing to replace it. Move it and export again.",
             filepath.display()
         )
         .into()),
         Ok(_) => Ok(()),
-        // Nothing there is the normal case for a first export.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         // Anything else (a permission problem on the directory, say) would make the
         // check above vacuous, so it stops the export instead of passing silently.
@@ -157,13 +148,10 @@ fn check_destination(output_dir: &Path, filename: &str) -> Result<(), Box<dyn st
 
 /// The name one attempt at a temp file uses.
 ///
-/// Both the nonce and the attempt index, because they cover different failures. The
-/// nonce is what keeps a temp left behind by a kill or a power cut from sitting on the
-/// one name a later run with the same pid is bound to retry — every export from that pid
-/// would fail. The index is what keeps sixteen retries sixteen names: a clock too coarse
-/// to advance inside the loop, or one that cannot be read at all (the `unwrap_or(0)`
-/// below), hands every attempt the same nonce, and then a single stale file is once again
-/// enough to fail them all.
+/// Both parts earn their place. The nonce keeps a temp left behind by a kill or a power
+/// cut off the one name a later run with the same pid is bound to retry. The attempt
+/// index keeps sixteen retries sixteen names, for the clock too coarse to advance inside
+/// the loop — or unreadable, and stuck at `unwrap_or(0)` — that hands them one nonce.
 fn temp_file_name(pid: u32, nonce: u32, attempt: u32) -> String {
     format!(".lk-export-{pid}-{nonce:08x}-{attempt:x}.tmp")
 }
@@ -208,19 +196,17 @@ fn create_temp_file(
 /// Write `contents` to `path` by creating a fresh file beside it and renaming over it.
 ///
 /// Not `std::fs::write`: that follows a symlink and truncates a hard link's shared
-/// inode, and `.knowledge/` travels with the repository — a link committed as
-/// `exported-auth.md -> ../README.md`, or a hard link to it, was enough to damage a
-/// file outside the store. It also leaves a half-written file if it fails midway. A
-/// rename replaces the directory entry itself, atomically, and cannot be raced into
-/// following a link.
+/// inode, either of which was enough to damage a file outside the store (see
+/// `check_destination` for how one gets there), and it leaves a half-written file if it
+/// fails midway. A rename replaces the directory entry itself, atomically, and cannot be
+/// raced into following a link.
 ///
-/// An `owner_only` file is 0600 from the moment it exists, rather than tightened after
-/// the rename: user-scope knowledge is private, and a mode fixed up afterwards leaves
-/// the contents readable while they are being written and readable for good if the
-/// process dies in between. Otherwise the new file is created with the mode of the file
-/// it replaces, or `0666` for a new one — as `std::fs::write` would, so the caller's
-/// umask still applies. Restoring a replaced file's mode is an explicit
-/// `set_permissions`, since umask must not narrow it.
+/// An `owner_only` file is 0600 from the moment it exists, not tightened after the
+/// rename: a mode fixed up afterwards leaves private knowledge readable while it is
+/// being written, and readable for good if the process dies in between. Otherwise the
+/// file is created with the mode of the one it replaces, or `0666` for a new one — as
+/// `std::fs::write` would, so the caller's umask still applies. Restoring a replaced
+/// mode is an explicit `set_permissions`, since umask must not narrow it.
 ///
 /// Only the usual rwx bits survive a replacement: setuid/setgid/sticky are dropped, and
 /// the file is a new inode, so ACLs and xattrs are not carried over either.
@@ -467,22 +453,21 @@ fn export_to_dir(
         groups.entry(group).or_default().push(entry);
     }
 
-    // Names are a pure function of the keyword, so this only guards against a digest
-    // collision (2^-64): a clash is reported rather than silently overwriting one
-    // group's file with another's. It compares under `file_system_key`, which does not
-    // full-case-fold — see the note there for the gap that leaves.
+    // Every destination is checked before the first one is written: refusing half-way
+    // through leaves the earlier groups written and flipped to `shared` while the command
+    // reports failure, and that mixed state is worse than either outcome.
     //
-    // Every destination is checked here, before the first one is written: refusing
-    // half-way through leaves the earlier groups written and flipped to `shared` while
-    // the command reports failure, and that mixed state is worse than either outcome.
+    // Between the selected groups a name is a pure function of the keyword, so the only
+    // clash left is a digest collision (2^-64) — reported rather than silently taking one
+    // group's file for another's. Keys compare under `file_system_key`; see the note
+    // there for the folding it does not do.
     {
-        // The store's existing files count too, not just the selected groups. A pre-v7
-        // export left `exported-AUTH.md` owning its entries, and migration 7 lowercased
-        // that keyword without renaming the file — so a later `auth` export plans
-        // `exported-auth.md`, which is the same directory entry on a file system that
-        // ignores case. Replacing it makes the next `sync` see the old path as gone and
-        // delete every entry it owned. Only a name that *differs* is refused:
-        // re-exporting a group over its own file is the ordinary case.
+        // The store's existing files can clash too. A pre-v7 export left
+        // `exported-AUTH.md` owning its entries and migration 7 lowercased that keyword
+        // without renaming the file, so an `auth` export now plans the same directory
+        // entry on a file system that ignores case — and replacing it makes the next
+        // `sync` see the old path as gone and delete every entry it owned. Only a name
+        // that *differs* is refused: re-exporting a group over its own file is ordinary.
         let mut owned: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         if flip_to_shared {
             for rel_path in db::get_shared_file_hashes(conn)?.into_keys() {
@@ -544,14 +529,12 @@ fn export_to_dir(
             all_kws.extend(kws);
         }
 
-        // The group keyword heads the file-level list, and the rest follow in sorted
-        // order. Not cosmetic: a re-imported entry's keywords are seeded from this list
-        // (`extract_entry_metadata`), so whatever sits at its head becomes the entry's
-        // first keyword — and the first keyword names the file. Sorted alone, an entry
-        // keyworded `zebra, apple` came back as `apple, zebra` after an edit and a
-        // `sync`, and the next export renamed `exported-zebra.md` to `exported-apple.md`.
-        // A group with no keyword at all (the `general` fallback) is left out rather than
-        // injected, so the round trip cannot invent a keyword either.
+        // The group keyword heads the list, the rest follow sorted. A re-imported entry's
+        // keywords are seeded from this list (`extract_entry_metadata`), so its head
+        // becomes the entry's first keyword — and that names the file. Sorted alone, the
+        // name moved on every edit-and-`sync`. A group with no keyword at all (the
+        // `general` fallback) is left out rather than injected, so the round trip cannot
+        // invent a keyword either.
         let mut ordered: Vec<String> = Vec::with_capacity(all_kws.len());
         if all_kws.contains(group_name) {
             ordered.push(group_name.clone());
@@ -799,12 +782,10 @@ mod tests {
 
     #[test]
     fn test_the_key_composes_after_lowercasing() {
-        // The other order leaves a key that is not NFC: `H` with a combining macron
-        // below has no precomposed uppercase form, so it survives NFC as two characters
-        // and only lowercasing brings it to the one `ẖ` is. A name already on disk goes
-        // through this key without having been normalized anywhere, so the two
-        // spellings have to meet — a file system that folds case and normalization gives
-        // them one file.
+        // `H` with a combining macron below has no precomposed uppercase form, so it
+        // survives NFC as two characters and only lowercasing brings it to the single
+        // `ẖ` a keyword normalizes to. Composing first leaves the two spellings as two
+        // keys, and a file system that folds case and normalization gives them one file.
         assert_eq!(
             file_system_key("exported-H\u{0331}.md"),
             file_system_key("exported-\u{1E96}.md"),
