@@ -204,18 +204,18 @@ pub fn idf(df: usize, n: usize) -> f64 {
 
 /// IDF-weighted Jaccard similarity of two keyword sets.
 ///
-/// `df` maps lowercased keyword to the number of entries holding it, and `n` is
-/// the total entry count; both come from the DB. Keywords above
-/// [`DF_RATIO_CAP`] are excluded from numerator and denominator alike, so a pile
-/// of near-universal tags neither creates nor dilutes a match.
+/// `df` maps a keyword as the DB stores it — normalized, see `db::normalize_keyword` —
+/// to the number of entries holding it, and `n` is the total entry count; both come from
+/// the DB. Keywords above [`DF_RATIO_CAP`] are excluded from numerator and denominator
+/// alike, so a pile of near-universal tags neither creates nor dilutes a match.
 pub fn kw_sim(a: &[String], b: &[String], df: &HashMap<String, usize>, n: usize) -> f64 {
-    let lower = |ks: &[String]| -> HashSet<String> {
+    let normalized = |ks: &[String]| -> HashSet<String> {
         // The same normalization the keywords are stored under: lowercasing alone
         // would read a decomposed spelling as a different keyword and report no
         // overlap where a user sees the same word.
         ks.iter().map(|k| crate::db::normalize_keyword(k)).collect()
     };
-    let (sa, sb) = (lower(a), lower(b));
+    let (sa, sb) = (normalized(a), normalized(b));
     if sa.is_empty() || sb.is_empty() {
         return 0.0;
     }

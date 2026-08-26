@@ -288,7 +288,7 @@ Commit `.lk-version` to keep the team on a compatible version.
 
 ### Exported file names
 
-`lk export` groups entries by their first keyword and writes one file per group, named `exported-<keyword>.md`. Keywords are free text, so a name that cannot be a file name is flattened: path separators and the characters file systems reject fold to `-`, and a keyword that had to be changed carries a short digest of the original, so `feature/auth` and a literal `feature-auth` never land on the same file. Ordinary keywords keep the name they have always had.
+`lk export` groups entries by their first keyword and writes one file per group, named `exported-<keyword>.md`. Keywords are free text, so a name that cannot be a file name is flattened: path separators and the characters file systems reject fold to `-`. A keyword that is not already exactly what a file system would store then carries a short digest of the original, so `feature/auth` and a literal `feature-auth` never land on the same file. So does a keyword that itself ends in something digest-shaped, which would otherwise take a disambiguated name's place. Ordinary keywords keep the name they have always had.
 
 ### Markdown Format
 
