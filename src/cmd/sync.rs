@@ -622,7 +622,12 @@ mod tests {
         )
         .unwrap();
         add_shared(&conn, "First entry", rel, "stale-hash");
-        add_shared(&conn, "Second entry", rel, &markdown::file_hash(&path).unwrap());
+        add_shared(
+            &conn,
+            "Second entry",
+            rel,
+            &markdown::file_hash(&path).unwrap(),
+        );
 
         let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
         assert_eq!(stats.restored, 1);
