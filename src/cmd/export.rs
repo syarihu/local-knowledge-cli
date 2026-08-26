@@ -146,6 +146,60 @@ fn check_destination(output_dir: &Path, filename: &str) -> Result<(), Box<dyn st
     }
 }
 
+/// The `source_file` a group's file will answer to, derived before the file is written.
+///
+/// `export` needs the path early: the merge that keeps a file's existing entries has to
+/// ask who already lives there, and asking after the write is too late. Canonicalizing
+/// the *directory* and joining the name yields what canonicalizing the written file
+/// would — `check_destination` has already refused a symlink at this name — so the stored
+/// path stays relative and portable even when the store is reached through a symlink (the
+/// dotfiles case). That is what keeps `export` and `sync` (which canonicalizes via
+/// walkdir) agreeing on one `source_file`, and the md→DB round trip stable.
+fn destination_rel_path(output_dir: &Path, root: &Path, filename: &str) -> String {
+    let path = crate::util::canonicalize_or(output_dir).join(filename);
+    path.strip_prefix(root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+/// Refuse a destination the store cannot vouch for.
+///
+/// The file may hold knowledge this export is not carrying: a file shared from another
+/// machine and pulled in, or one written by hand. Until a `sync` reads it the markdown is
+/// its only copy, and the write replaces the file whole — so an unrecognized destination
+/// stops the export instead of taking the name over.
+///
+/// Recognized means matching *any* hash recorded for the path, not one canonical hash. No
+/// recorded hash is the pulled-in file (nothing points at it yet). Two are the wreckage of
+/// an export that rewrote a file without all of its entries, and the file matching one of
+/// them means this run is about to repair it — insisting on a single hash would refuse
+/// that repair, and `sync` cannot re-import a divergent file either without dropping the
+/// entries it no longer lists.
+fn check_destination_is_recognized(
+    recorded: &std::collections::HashMap<String, Vec<String>>,
+    rel_path: &str,
+    filepath: &Path,
+    group: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !filepath.is_file() {
+        return Ok(());
+    }
+    let on_disk = markdown::file_hash(filepath)?;
+    if recorded
+        .get(rel_path)
+        .is_some_and(|hashes| hashes.contains(&on_disk))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "{} already exists and is not the copy this store recorded, so exporting {group:?} \
+         would replace knowledge that lives only in that file. Run `lk sync` to take it in \
+         first, then export again.",
+        filepath.display()
+    )
+    .into())
+}
+
 /// The name one attempt at a temp file uses.
 ///
 /// Both parts earn their place. The nonce keeps a temp left behind by a kill or a power
@@ -461,6 +515,15 @@ fn export_to_dir(
     // clash left is a digest collision (2^-64) — reported rather than silently taking one
     // group's file for another's. Keys compare under `file_system_key`; see the note
     // there for the folding it does not do.
+    // Empty for a dump-only export: nothing records a `source_file` under a custom dir, so
+    // neither the clash check nor the recognized-destination check has anything to say
+    // there — and a dump must stay repeatable, which a check with no records to match
+    // against would forbid on the second run.
+    let recorded = if flip_to_shared {
+        db::get_shared_file_hashes(conn)?
+    } else {
+        std::collections::HashMap::new()
+    };
     {
         // The store's existing files can clash too. A pre-v7 export left
         // `exported-AUTH.md` owning its entries and migration 7 lowercased that keyword
@@ -469,20 +532,18 @@ fn export_to_dir(
         // `sync` see the old path as gone and delete every entry it owned. Only a name
         // that *differs* is refused: re-exporting a group over its own file is ordinary.
         let mut owned: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        if flip_to_shared {
-            for rel_path in db::get_shared_file_hashes(conn)?.into_keys() {
-                let path = root.join(&rel_path);
-                // Only files sitting directly in this directory can collide; a same-named
-                // file in a subdirectory of the store is a different directory entry.
-                if !path
-                    .parent()
-                    .is_some_and(|parent| crate::util::paths_equivalent(parent, output_dir))
-                {
-                    continue;
-                }
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    owned.insert(file_system_key(name), name.to_string());
-                }
+        for rel_path in recorded.keys() {
+            let path = root.join(rel_path);
+            // Only files sitting directly in this directory can collide; a same-named
+            // file in a subdirectory of the store is a different directory entry.
+            if !path
+                .parent()
+                .is_some_and(|parent| crate::util::paths_equivalent(parent, output_dir))
+            {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                owned.insert(file_system_key(name), name.to_string());
             }
         }
 
@@ -506,15 +567,20 @@ fn export_to_dir(
                 )
                 .into());
             }
+
+            if flip_to_shared {
+                check_destination_is_recognized(
+                    &recorded,
+                    &destination_rel_path(output_dir, root, &filename),
+                    &output_dir.join(&filename),
+                    group,
+                )?;
+            }
         }
     }
 
     let mut total = 0;
     for (group_name, group_entries) in &groups {
-        // Sort entries within each group by title for stable output
-        let mut sorted_entries: Vec<&db::Entry> = group_entries.iter().collect();
-        sorted_entries.sort_by_key(|e| e.title.to_lowercase());
-
         let filename = export_file_name(group_name);
         // Checked in the preflight above too. Repeated here because a link appearing in
         // between would otherwise be replaced by a regular file — the target is safe
@@ -522,6 +588,43 @@ fn export_to_dir(
         // put there deliberately should not vanish silently.
         check_destination(output_dir, &filename)?;
         let filepath = output_dir.join(&filename);
+        let rel_path = destination_rel_path(output_dir, root, &filename);
+        // Both checks above ran in the preflight too, and both run again here for the same
+        // reason: this is the last moment before the file is replaced, and the preflight
+        // may be several groups old by now. It shortens the window in which a file that
+        // arrived (a `git pull`, an editor saving) is taken over, though it cannot close
+        // it — `export` holds no lock over the store.
+        if flip_to_shared {
+            check_destination_is_recognized(&recorded, &rel_path, &filepath, group_name)?;
+        }
+
+        // The entries this file already holds. A group is built from `local` entries, but
+        // the file it is written to also answers for the entries an earlier run shared
+        // *here* — and for a shared entry the markdown is not a copy, it is where the entry
+        // lives (`sync` deletes the rows a file no longer lists). Rebuilding the file from
+        // the group alone drops their lines, and the deletion follows the next time the
+        // file changes. So they are read back and written out with the group.
+        //
+        // Found by path, not by keyword: the path is what `sync` deletes by, so an entry
+        // whose keywords have since moved on still belongs to this file. The id filter is
+        // for a future where a shared entry can also be selected — today the selection is
+        // `local` only, which makes the two sets disjoint.
+        let selected_ids: std::collections::HashSet<i64> =
+            group_entries.iter().map(|e| e.id).collect();
+        let already_here: Vec<db::Entry> = if flip_to_shared {
+            db::list_entries_by_source_file(conn, &rel_path)?
+                .into_iter()
+                .filter(|e| e.source == "shared" && !selected_ids.contains(&e.id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Sort entries within each group by title for stable output. The merged-in ones
+        // sort among the rest: where a line sits must not depend on which run wrote it.
+        let mut sorted_entries: Vec<&db::Entry> =
+            group_entries.iter().chain(already_here.iter()).collect();
+        sorted_entries.sort_by_key(|e| e.title.to_lowercase());
 
         let mut all_kws: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for entry in &sorted_entries {
@@ -588,18 +691,21 @@ fn export_to_dir(
         // managed store. A dump-only export (user-scope `--dir`) leaves entries `local`
         // so a later `sync --scope user` (which never sees this dir) can't delete them.
         if flip_to_shared {
-            // Compute the stored source_file from the canonicalized path so it matches
-            // what `sync`/`import_md_file` derive from walkdir (which canonicalizes).
-            // Without this, a symlinked knowledge dir (the dotfiles use case) would make
-            // export and sync disagree on the path, breaking the md→DB round-trip.
-            let canonical = std::fs::canonicalize(&filepath).unwrap_or_else(|_| filepath.clone());
-            let rel_path = canonical
-                .strip_prefix(root)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| canonical.to_string_lossy().to_string());
-
             let fhash = markdown::file_hash(&filepath)?;
             let now = now_iso();
+            // Derived from the file now that it exists, rather than reusing the path built
+            // before the write. The two agree — a link at this name was refused — but the
+            // stored `source_file` has to be the one `sync` will derive from walkdir, and
+            // this is that one by construction; the pre-write path is only ever a
+            // prediction of it.
+            let rel_path = std::fs::canonicalize(&filepath)
+                .map(|canonical| {
+                    canonical
+                        .strip_prefix(root)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| canonical.to_string_lossy().to_string())
+                })
+                .unwrap_or(rel_path);
             // Every entry in the file flips together, or none of them does. Half of them
             // left `local` is a state the store cannot recover from: the next export
             // rebuilds this file from the `local` ones alone, and `sync` then deletes the
@@ -608,6 +714,15 @@ fn export_to_dir(
             let flipped = (|| -> Result<(), Box<dyn std::error::Error>> {
                 for entry in group_entries {
                     db::update_entry_to_shared(conn, entry.id, &rel_path, &fhash, &now)?;
+                }
+                // The merged-in entries are already shared under this path; what moved is
+                // the hash of the file they answer to. Inside the savepoint for the same
+                // reason it covers the flip: the group stamped with the new hash while the
+                // merged-in ones keep the old one is precisely the split state this
+                // rewrite exists to end, and it is the state `sync` can no longer read
+                // past.
+                for entry in &already_here {
+                    db::set_entry_file(conn, entry.id, &rel_path, &fhash)?;
                 }
                 Ok(())
             })();
@@ -627,6 +742,12 @@ fn export_to_dir(
             group_entries.len(),
             filepath.display()
         );
+        if !already_here.is_empty() {
+            println!(
+                "    (rewrote {} already shared in that file)",
+                already_here.len()
+            );
+        }
     }
 
     println!("\nExported {total} entries total.");
@@ -644,6 +765,177 @@ pub fn cmd_import(path: &std::path::Path) -> Result<(), Box<dyn std::error::Erro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store laid out the way the project scope expects: a root, a `.knowledge/` inside
+    /// it, and the DB in there. Returned whole because the TempDir must outlive the test.
+    fn store() -> (tempfile::TempDir, rusqlite::Connection, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let kdir = dir.path().join(".knowledge");
+        std::fs::create_dir_all(&kdir).unwrap();
+        let conn = crate::db::init_db(&kdir.join("knowledge.db")).unwrap();
+        (dir, conn, kdir)
+    }
+
+    fn add_local(conn: &rusqlite::Connection, title: &str, keyword: &str) {
+        crate::db::add_entry(
+            conn,
+            title,
+            "body",
+            &[keyword.to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    fn export(conn: &rusqlite::Connection, kdir: &Path, root: &Path) -> Result<(), String> {
+        export_to_dir(conn, kdir, root, None, None, true, false, false, true)
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn test_re_export_keeps_the_entries_the_file_already_holds() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        add_local(&conn, "First entry", "auth");
+        export(&conn, &kdir, root).unwrap();
+        add_local(&conn, "Second entry", "auth");
+        export(&conn, &kdir, root).unwrap();
+
+        // The second export rebuilds the file from its own group, but the file is also the
+        // only home of what the first export shared into it.
+        let path = kdir.join("exported-auth.md");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("## Entry: First entry"), "{text}");
+        assert!(text.contains("## Entry: Second entry"), "{text}");
+
+        // One hash for the file, and it is the file's own — the divergence that used to
+        // let the store pass as clean while an entry was already stranded.
+        let recorded = crate::db::get_shared_file_hashes(&conn).unwrap();
+        let hashes = recorded
+            .get(".knowledge/exported-auth.md")
+            .expect("the path is recorded");
+        assert_eq!(hashes.len(), 1, "{hashes:?}");
+        assert_eq!(hashes[0], markdown::file_hash(&path).unwrap());
+
+        let stats = crate::cmd::sync::sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        assert_eq!(stats.unchanged, 1);
+        assert_eq!(
+            (stats.added, stats.updated, stats.removed, stats.restored),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn test_a_dump_only_export_may_write_the_same_dir_again() {
+        let (dir, conn, _kdir) = store();
+        let root = dir.path();
+        let dump = root.join("outside");
+        std::fs::create_dir_all(&dump).unwrap();
+        add_local(&conn, "Dumped", "auth");
+
+        // A dump leaves its entries `local`, so nothing ever records a `source_file` under
+        // this dir — which is why the recognized-destination check is gated on the flip.
+        // Ungated it would read the first dump's own output as a file no row vouches for
+        // and refuse every run after the first.
+        for _ in 0..2 {
+            export_to_dir(&conn, &dump, root, None, None, true, false, false, false).unwrap();
+        }
+        let text = std::fs::read_to_string(dump.join("exported-auth.md")).unwrap();
+        assert!(text.contains("## Entry: Dumped"), "{text}");
+        assert_eq!(
+            crate::db::list_entries_by_source(&conn, "local")
+                .unwrap()
+                .len(),
+            1,
+            "a dump must not flip its entries to shared"
+        );
+    }
+
+    #[test]
+    fn test_export_refuses_a_destination_the_store_has_not_read() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        // A file pulled in with the repository: knowledge that exists only here until a
+        // sync reads it.
+        let path = kdir.join("exported-auth.md");
+        let pulled = "---\nkeywords: [auth]\ncategory: exported\n---\n\n# Exported: auth\n\n\
+                      ## Entry: Teammate knowledge\nkeywords: [auth]\n\nonly this file holds it\n";
+        std::fs::write(&path, pulled).unwrap();
+
+        add_local(&conn, "Mine", "auth");
+        let err = export(&conn, &kdir, root).unwrap_err();
+        assert!(err.contains("lk sync"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            pulled,
+            "the refused export must not have touched the file"
+        );
+
+        // Taking it in is all the refusal asks for; then both belong to the file.
+        crate::cmd::sync::sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        export(&conn, &kdir, root).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("Teammate knowledge"), "{text}");
+        assert!(text.contains("## Entry: Mine"), "{text}");
+    }
+
+    #[test]
+    fn test_export_repairs_a_file_whose_entries_disagree_on_the_hash() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+        let rel = ".knowledge/exported-auth.md";
+
+        // The wreckage an older lk left: the file lists Second, while First still answers
+        // to the path with the hash of the version that carried it.
+        let path = kdir.join("exported-auth.md");
+        std::fs::write(
+            &path,
+            "---\nkeywords: [auth]\ncategory: exported\n---\n\n# Exported: auth\n\n\
+             ## Entry: Second entry\nkeywords: [auth]\n\nsecond body\n",
+        )
+        .unwrap();
+        let fresh = markdown::file_hash(&path).unwrap();
+        let kws = ["auth".to_string()];
+        crate::db::add_entry(
+            &conn,
+            "First entry",
+            "first body",
+            &kws,
+            "",
+            "shared",
+            Some(rel),
+            Some("stale-hash"),
+        )
+        .unwrap();
+        crate::db::add_entry(
+            &conn,
+            "Second entry",
+            "second body",
+            &kws,
+            "",
+            "shared",
+            Some(rel),
+            Some(&fresh),
+        )
+        .unwrap();
+
+        // A local entry in the same group is what brings the export here at all; the merge
+        // then picks up both of the file's own entries.
+        add_local(&conn, "Third entry", "auth");
+        export(&conn, &kdir, root).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        for title in ["First entry", "Second entry", "Third entry"] {
+            assert!(text.contains(&format!("## Entry: {title}")), "{text}");
+        }
+        let recorded = crate::db::get_shared_file_hashes(&conn).unwrap();
+        assert_eq!(recorded.get(rel).map(|h| h.len()), Some(1));
+    }
 
     #[test]
     fn test_export_file_name_leaves_canonical_keywords_alone() {
