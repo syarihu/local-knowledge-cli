@@ -1223,6 +1223,152 @@ fn test_a_symlink_in_a_later_group_stops_the_whole_export() {
     );
 }
 
+/// The file name comes from an entry's first keyword, and a re-imported entry's
+/// keywords are seeded from the file-level list — so that list's head decides the name
+/// on the next export. Sorted alphabetically, an entry keyworded `zebra, apple` came
+/// back as `apple, zebra` and its file was renamed out from under `sync`.
+#[test]
+fn test_an_edited_export_keeps_its_file_name_after_a_sync() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    // `add` stores keywords sorted; `edit` keeps the order it is given, which is how a
+    // store ends up with a first keyword that is not the alphabetically first one.
+    // `apple` sorts first, so a sorted file-level list would put it at the head.
+    assert!(
+        run(&["add", "striped", "-k", "placeholder", "-c", "body"])
+            .status
+            .success()
+    );
+    assert!(run(&["edit", "1", "-k", "zebra,apple"]).status.success());
+    assert!(run(&["export"]).status.success());
+
+    let md = dir.path().join(".knowledge/exported-zebra.md");
+    assert!(md.exists(), "named after the first keyword");
+    let written = std::fs::read_to_string(&md).unwrap();
+    assert!(
+        written.contains("keywords: [zebra, apple]"),
+        "the group keyword heads the file-level list: {written}"
+    );
+
+    // Edit the body so `sync` re-imports instead of matching on the hash.
+    let text = std::fs::read_to_string(&md).unwrap();
+    std::fs::write(&md, text.replace("body", "body edited")).unwrap();
+    assert!(run(&["sync"]).status.success());
+
+    // The entry is `shared` now, so there is nothing left to export; what decides the
+    // next export's file name is the order the re-import stored. Read it straight from
+    // the table, in insertion order — that is the order `get_keywords` returns and the
+    // first of them is the group.
+    let conn = rusqlite::Connection::open(dir.path().join(".knowledge/knowledge.db")).unwrap();
+    let kws: Vec<String> = conn
+        .prepare("SELECT keyword FROM keywords ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        kws.first().map(String::as_str),
+        Some("zebra"),
+        "the group keyword must stay first: {kws:?}"
+    );
+    assert!(
+        kws.iter().any(|k| k == "apple"),
+        "and the rest must survive: {kws:?}"
+    );
+}
+
+/// A destination that is not a plain file has to be refused in the preflight, not by
+/// the `rename` at the end: by then the earlier groups are written and flipped to
+/// `shared`, and the command reports a failure it already half-applied.
+#[test]
+fn test_a_directory_in_a_later_group_stops_the_whole_export() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    // Groups are visited in alphabetical order, so `aaa` would be written first.
+    assert!(
+        run(&["add", "first", "-k", "aaa", "-c", "one"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["add", "second", "-k", "zzz", "-c", "two"])
+            .status
+            .success()
+    );
+    std::fs::create_dir(dir.path().join(".knowledge/exported-zzz.md")).unwrap();
+
+    let out = run(&["export"]);
+    assert!(!out.status.success(), "export must refuse");
+    assert!(
+        !dir.path().join(".knowledge/exported-aaa.md").exists(),
+        "the earlier group must not have been written"
+    );
+}
+
+/// The store's existing files collide too. A pre-v7 export left `exported-AUTH.md`
+/// owning its entries and migration 7 lowercased the keyword without renaming the file,
+/// so an `auth` export plans the same directory entry on a file system that ignores
+/// case — and replacing it makes the next `sync` delete everything that file owned.
+#[test]
+fn test_export_refuses_a_name_a_shared_file_already_owns() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+
+    let legacy = dir.path().join(".knowledge/exported-AUTH.md");
+    std::fs::write(
+        &legacy,
+        "---\nkeywords: [auth]\ncategory: exported\n---\n\n# Exported: AUTH\n\n## Entry: old one\nkeywords: [auth]\n\nkept\n",
+    )
+    .unwrap();
+    assert!(run(&["sync"]).status.success());
+
+    assert!(
+        run(&["add", "new one", "-k", "auth", "-c", "fresh"])
+            .status
+            .success()
+    );
+    let out = run(&["export"]);
+    assert!(
+        !out.status.success(),
+        "export must refuse: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("exported-AUTH.md"),
+        "the message must name the file in the way: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&legacy).unwrap().contains("kept"),
+        "the existing file must be untouched"
+    );
+}
+
 #[test]
 fn test_keyword_normalization_survives_every_path() {
     // Keywords are stored NFC and lowercased on every path, and the needles are

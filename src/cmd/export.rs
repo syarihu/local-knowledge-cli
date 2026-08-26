@@ -115,20 +115,35 @@ fn export_file_name(group: &str) -> String {
 /// committed as `exported-auth.md -> ../README.md` is a request to write outside the
 /// store. (The store's *directory* being a symlink is the dotfiles case and stays
 /// allowed.) The refusal is for the user's sake rather than for safety: the write
-/// itself cannot follow a link.
+/// itself cannot follow a link. Anything else that is not a plain file is refused for
+/// the preflight's sake — see the match below.
 fn check_destination(output_dir: &Path, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
     if Path::new(filename).components().count() != 1 {
         return Err(format!("refusing to export to a non-file name: {filename:?}").into());
     }
     let filepath = output_dir.join(filename);
-    if std::fs::symlink_metadata(&filepath).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err(format!(
+    match std::fs::symlink_metadata(&filepath) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
             "{} is a symlink; refusing to write through it. Remove it and export again.",
             filepath.display()
         )
-        .into());
+        .into()),
+        // A directory (or a fifo, a socket, a device) is refused here rather than left
+        // to fail at the `rename`: that failure lands after the earlier groups are
+        // written and flipped to `shared`, which is the mixed state this preflight
+        // exists to prevent.
+        Ok(meta) if !meta.is_file() => Err(format!(
+            "{} is not a plain file; refusing to replace it. Move it and export again.",
+            filepath.display()
+        )
+        .into()),
+        Ok(_) => Ok(()),
+        // Nothing there is the normal case for a first export.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        // Anything else (a permission problem on the directory, say) would make the
+        // check above vacuous, so it stops the export instead of passing silently.
+        Err(e) => Err(format!("could not inspect {}: {e}", filepath.display()).into()),
     }
-    Ok(())
 }
 
 /// Create a file in `dir` that nobody else holds, at `mode` before the umask narrows it.
@@ -441,15 +456,48 @@ fn export_to_dir(
     // half-way through leaves the earlier groups written and flipped to `shared` while
     // the command reports failure, and that mixed state is worse than either outcome.
     {
+        // The store's existing files count too, not just the selected groups. A pre-v7
+        // export left `exported-AUTH.md` owning its entries, and migration 7 lowercased
+        // that keyword without renaming the file — so a later `auth` export plans
+        // `exported-auth.md`, which is the same directory entry on a file system that
+        // ignores case. Replacing it makes the next `sync` see the old path as gone and
+        // delete every entry it owned. Only a name that *differs* is refused:
+        // re-exporting a group over its own file is the ordinary case.
+        let mut owned: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if flip_to_shared {
+            for rel_path in db::get_shared_file_hashes(conn)?.into_keys() {
+                let path = root.join(&rel_path);
+                // Only files sitting directly in this directory can collide; a same-named
+                // file in a subdirectory of the store is a different directory entry.
+                if !path
+                    .parent()
+                    .is_some_and(|parent| crate::util::paths_equivalent(parent, output_dir))
+                {
+                    continue;
+                }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    owned.insert(file_system_key(name), name.to_string());
+                }
+            }
+        }
+
         let mut by_key: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
         for group in groups.keys() {
             let filename = export_file_name(group);
             check_destination(output_dir, &filename)?;
             let key = file_system_key(&filename);
-            if let Some(first) = by_key.insert(key, group) {
+            if let Some(first) = by_key.insert(key.clone(), group) {
                 return Err(format!(
                     "keywords {first:?} and {group:?} would export to the same file. \
                      Rename one of them."
+                )
+                .into());
+            }
+            if let Some(existing) = owned.get(&key).filter(|name| *name != &filename) {
+                return Err(format!(
+                    "keyword {group:?} would export to {filename}, which this file system \
+                     sees as the same file as {existing} — and that file already holds \
+                     shared entries. Rename it (or the keyword) and export again."
                 )
                 .into());
             }
@@ -476,12 +524,23 @@ fn export_to_dir(
             all_kws.extend(kws);
         }
 
+        // The group keyword heads the file-level list, and the rest follow in sorted
+        // order. Not cosmetic: a re-imported entry's keywords are seeded from this list
+        // (`extract_entry_metadata`), so whatever sits at its head becomes the entry's
+        // first keyword — and the first keyword names the file. Sorted alone, an entry
+        // keyworded `zebra, apple` came back as `apple, zebra` after an edit and a
+        // `sync`, and the next export renamed `exported-zebra.md` to `exported-apple.md`.
+        // A group with no keyword at all (the `general` fallback) is left out rather than
+        // injected, so the round trip cannot invent a keyword either.
+        let mut ordered: Vec<String> = Vec::with_capacity(all_kws.len());
+        if all_kws.contains(group_name) {
+            ordered.push(group_name.clone());
+        }
+        ordered.extend(all_kws.iter().filter(|kw| *kw != group_name).cloned());
+
         let mut lines = Vec::new();
         lines.push("---".to_string());
-        lines.push(format!(
-            "keywords: [{}]",
-            all_kws.iter().cloned().collect::<Vec<_>>().join(", ")
-        ));
+        lines.push(format!("keywords: [{}]", ordered.join(", ")));
         lines.push("category: exported".to_string());
         lines.push("---\n".to_string());
         lines.push(format!("# Exported: {group_name}\n"));

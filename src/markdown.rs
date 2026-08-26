@@ -206,10 +206,24 @@ fn parse_keyword_list(value: &str) -> Vec<String> {
         .unwrap_or(value);
     inner
         .split(',')
-        .map(|kw| kw.trim().trim_matches('"').trim_matches('\'').trim())
+        .map(|kw| unquote(kw.trim()))
         .filter(|kw| !kw.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Strip one matched pair of surrounding quotes, and nothing else.
+///
+/// `trim_matches` took every quote at either end, so a keyword is not free text after
+/// all: `users'` came back as `users` from an export/`sync` round trip, and `'quoted`
+/// as `quoted`. A quote only delimits when there is one at each end.
+fn unquote(value: &str) -> &str {
+    for q in ['"', '\''] {
+        if let Some(inner) = value.strip_prefix(q).and_then(|v| v.strip_suffix(q)) {
+            return inner.trim();
+        }
+    }
+    value
 }
 
 /// Whether `line` is a metadata line that actually carries a value.
@@ -362,6 +376,21 @@ mod tests {
         assert_eq!(
             entries[0].keywords,
             vec!["feature/auth", "main.rs", "quoted"],
+            "got {:?}",
+            entries[0].keywords
+        );
+    }
+
+    #[test]
+    fn test_only_a_matched_pair_of_quotes_is_stripped() {
+        // A keyword is free text, and an apostrophe is part of it. `trim_matches` took
+        // every quote at either end, so `users'` came back from an export/`sync` round
+        // trip as `users` — a different keyword, under a different file name.
+        let md = "---\nkeywords: [users', 'quoted, \"paired\", ']\ncategory: features\n---\n\n# T\n\nBody.\n";
+        let entries = parse_md_entries(md);
+        assert_eq!(
+            entries[0].keywords,
+            vec!["users'", "'quoted", "paired", "'"],
             "got {:?}",
             entries[0].keywords
         );
