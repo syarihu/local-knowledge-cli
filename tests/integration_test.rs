@@ -863,6 +863,641 @@ fn test_add_reports_possibly_related_but_still_adds() {
     );
 }
 
+#[test]
+fn test_export_keyword_cannot_write_outside_the_store() {
+    // A keyword becomes the exported file's name, so `x/../../README` used to resolve
+    // out of `.knowledge/` and overwrite whatever it landed on.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    std::fs::write(dir.path().join("README.md"), "the project's own readme").unwrap();
+    // The traversal needs this directory to exist for `..` to resolve through it.
+    std::fs::create_dir_all(dir.path().join(".knowledge/exported-x")).unwrap();
+
+    assert!(
+        run(&[
+            "add",
+            "innocent looking entry",
+            "-k",
+            "x/../../README",
+            "-c",
+            "overwritten?",
+        ])
+        .status
+        .success()
+    );
+    let out = run(&["export"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+        "the project's own readme",
+        "export must not write outside .knowledge/"
+    );
+    // It still exported — into the store, under a flattened name.
+    let written: Vec<String> = std::fs::read_dir(dir.path().join(".knowledge"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("exported-"))
+        .collect();
+    assert_eq!(written.len(), 1, "files: {written:?}");
+    // Flattened, and inside the store — the `..` survives only as literal text.
+    assert!(!written[0].contains('/'), "{written:?}");
+}
+
+// Gated on the whole function: on Windows there would be no link to refuse, and the
+// assertions below would fail rather than skip.
+#[cfg(unix)]
+#[test]
+fn test_export_refuses_to_write_through_a_symlink() {
+    // `.knowledge/` travels with the repository, so a link committed as
+    // `exported-auth.md -> ../README.md` would let an export truncate a file outside
+    // the store — the lexical one-segment check cannot see that.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    std::fs::write(dir.path().join("README.md"), "the project's own readme").unwrap();
+    assert!(
+        run(&["add", "auth entry", "-k", "auth", "-c", "how login works"])
+            .status
+            .success()
+    );
+
+    std::os::unix::fs::symlink(
+        "../README.md",
+        dir.path().join(".knowledge/exported-auth.md"),
+    )
+    .unwrap();
+
+    let out = run(&["export"]);
+    assert!(!out.status.success(), "export must refuse the symlink");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("symlink"),
+        "and say why: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+        "the project's own readme",
+        "the link target must be untouched"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_export_does_not_truncate_a_hard_linked_target() {
+    // A hard link is not a symlink, so no check catches it: a plain write would
+    // truncate the inode `README.md` also points at. Writing a fresh file and renaming
+    // it over the entry replaces the directory entry instead.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    std::fs::write(dir.path().join("README.md"), "the project's own readme").unwrap();
+    assert!(
+        run(&["add", "auth entry", "-k", "auth", "-c", "how login works"])
+            .status
+            .success()
+    );
+    std::fs::hard_link(
+        dir.path().join("README.md"),
+        dir.path().join(".knowledge/exported-auth.md"),
+    )
+    .unwrap();
+
+    let out = run(&["export"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+        "the project's own readme",
+        "the hard link's other name must be untouched"
+    );
+    let exported = std::fs::read_to_string(dir.path().join(".knowledge/exported-auth.md")).unwrap();
+    assert!(exported.contains("how login works"), "{exported}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_export_keeps_the_files_permissions() {
+    // The atomic replace writes a temp file (created 0600) and renames it, and a
+    // rename keeps the source's mode — so without care, replacing a committed
+    // `.knowledge/*.md` would quietly make it owner-only.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    assert!(
+        run(&["add", "perm entry", "-k", "perm", "-c", "one"])
+            .status
+            .success()
+    );
+    assert!(run(&["export"]).status.success());
+
+    let path = dir.path().join(".knowledge/exported-perm.md");
+    // Compared against a sibling written the ordinary way rather than a fixed 0644: the
+    // export is created `0666 & !umask` like any plain write, and the child `lk`
+    // inherits this process's umask, so this holds however the suite is run.
+    let probe = dir.path().join(".knowledge/.umask-probe");
+    std::fs::write(&probe, "").unwrap();
+    let expected = std::fs::metadata(&probe).unwrap().permissions().mode() & 0o777;
+    std::fs::remove_file(&probe).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, expected,
+        "a fresh project-scope export should get the mode a plain write would"
+    );
+
+    // An existing file keeps whatever mode it had.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    assert!(
+        run(&["add", "perm entry two", "-k", "perm", "-c", "two"])
+            .status
+            .success()
+    );
+    assert!(run(&["export"]).status.success());
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o640, "replacing a file must not change its mode");
+}
+
+/// `feature/auth` is the keyword this whole change exists for — it used to make
+/// `export` fail outright. Exporting it is only half the job: the markdown has to read
+/// back as the same single keyword, or the next export names the file after a fragment
+/// and abandons the one it wrote before.
+#[test]
+fn test_a_slashed_keyword_survives_an_export_sync_round_trip() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    assert!(
+        run(&["add", "auth flow", "-k", "feature/auth", "-c", "body"])
+            .status
+            .success()
+    );
+    assert!(run(&["export"]).status.success());
+
+    let exported = || -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir.path().join(".knowledge"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.starts_with("exported-"))
+            .collect();
+        names.sort();
+        names
+    };
+    let first = exported();
+    assert_eq!(first.len(), 1, "one exported file: {first:?}");
+
+    // Edit the body so `sync` re-imports the file instead of matching on its hash.
+    let md = dir.path().join(".knowledge").join(&first[0]);
+    let text = std::fs::read_to_string(&md).unwrap();
+    std::fs::write(&md, text.replace("body", "body edited")).unwrap();
+    assert!(run(&["sync"]).status.success());
+
+    // One keyword — not the three (`feature`, `auth`, `feature/auth`) that a frontmatter
+    // parser splitting on word characters used to merge with the per-entry line.
+    let kws: serde_json::Value =
+        serde_json::from_slice(&run(&["keywords", "--json"]).stdout).unwrap();
+    let names: Vec<&str> = kws
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| {
+            k.get("keyword")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(names, vec!["feature/auth"], "keywords after sync: {kws:?}");
+
+    // ...so a second export lands on the same file rather than orphaning the first.
+    assert!(run(&["export"]).status.success());
+    assert_eq!(exported(), first, "re-export must not rename the file");
+}
+
+/// Every entry in an exported file flips to `shared` together. If only some do, the next
+/// export rebuilds the file from the ones still `local`, and `sync` then deletes the
+/// `shared` rows pointing at it — losing the entries that did flip.
+#[test]
+fn test_the_flip_to_shared_is_all_or_nothing() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    // Same first keyword, so both land in one file.
+    assert!(
+        run(&["add", "first", "-k", "grp", "-c", "one"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["add", "second", "-k", "grp", "-c", "two"])
+            .status
+            .success()
+    );
+
+    // Let the second entry's flip fail, after the first one's has already been applied.
+    let db = dir.path().join(".knowledge/knowledge.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_second BEFORE UPDATE ON entries WHEN new.id = 2
+             BEGIN SELECT RAISE(ABORT, 'no'); END;",
+        )
+        .unwrap();
+    }
+
+    let out = run(&["export"]);
+    assert!(!out.status.success(), "export must report the failure");
+
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("DROP TRIGGER refuse_second").unwrap();
+        let sources: Vec<String> = conn
+            .prepare("SELECT source FROM entries ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            sources,
+            vec!["local", "local"],
+            "a half-applied flip must roll back"
+        );
+    }
+}
+
+/// A refusal must happen before the first file is written. Exporting group by group and
+/// failing part-way leaves the earlier groups written and flipped to `shared` while the
+/// command reports failure — a state neither outcome asked for.
+#[cfg(unix)]
+#[test]
+fn test_a_symlink_in_a_later_group_stops_the_whole_export() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    // Groups are visited in alphabetical order, so `aaa` would be written first.
+    assert!(
+        run(&["add", "first", "-k", "aaa", "-c", "one"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["add", "second", "-k", "zzz", "-c", "two"])
+            .status
+            .success()
+    );
+
+    let victim = dir.path().join("victim.md");
+    std::fs::write(&victim, "do not touch\n").unwrap();
+    std::os::unix::fs::symlink(&victim, dir.path().join(".knowledge/exported-zzz.md")).unwrap();
+
+    let out = run(&["export"]);
+    assert!(!out.status.success(), "export must refuse");
+    assert!(
+        !dir.path().join(".knowledge/exported-aaa.md").exists(),
+        "the earlier group must not have been written"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&victim).unwrap(),
+        "do not touch\n",
+        "the symlink target must be untouched"
+    );
+}
+
+/// The file name comes from an entry's first keyword, and a re-imported entry's
+/// keywords are seeded from the file-level list — so that list's head decides the name
+/// on the next export. Sorted alphabetically, an entry keyworded `zebra, apple` came
+/// back as `apple, zebra` and its file was renamed out from under `sync`.
+#[test]
+fn test_an_edited_export_keeps_its_file_name_after_a_sync() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    // `add` stores keywords sorted; `edit` keeps the order it is given, which is how a
+    // store ends up with a first keyword that is not the alphabetically first one.
+    // `apple` sorts first, so a sorted file-level list would put it at the head.
+    assert!(
+        run(&["add", "striped", "-k", "placeholder", "-c", "body"])
+            .status
+            .success()
+    );
+    assert!(run(&["edit", "1", "-k", "zebra,apple"]).status.success());
+    assert!(run(&["export"]).status.success());
+
+    let md = dir.path().join(".knowledge/exported-zebra.md");
+    assert!(md.exists(), "named after the first keyword");
+    let written = std::fs::read_to_string(&md).unwrap();
+    assert!(
+        written.contains("keywords: [zebra, apple]"),
+        "the group keyword heads the file-level list: {written}"
+    );
+
+    // Edit the body so `sync` re-imports instead of matching on the hash.
+    let text = std::fs::read_to_string(&md).unwrap();
+    std::fs::write(&md, text.replace("body", "body edited")).unwrap();
+    assert!(run(&["sync"]).status.success());
+
+    // The entry is `shared` now, so there is nothing left to export; what decides the
+    // next export's file name is the order the re-import stored. Read it straight from
+    // the table, in insertion order — that is the order `get_keywords` returns and the
+    // first of them is the group.
+    let conn = rusqlite::Connection::open(dir.path().join(".knowledge/knowledge.db")).unwrap();
+    let kws: Vec<String> = conn
+        .prepare("SELECT keyword FROM keywords ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        kws.first().map(String::as_str),
+        Some("zebra"),
+        "the group keyword must stay first: {kws:?}"
+    );
+    assert!(
+        kws.iter().any(|k| k == "apple"),
+        "and the rest must survive: {kws:?}"
+    );
+}
+
+/// A destination that is not a plain file has to be refused in the preflight, not by
+/// the `rename` at the end: by then the earlier groups are written and flipped to
+/// `shared`, and the command reports a failure it already half-applied.
+#[test]
+fn test_a_directory_in_a_later_group_stops_the_whole_export() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    // Groups are visited in alphabetical order, so `aaa` would be written first.
+    assert!(
+        run(&["add", "first", "-k", "aaa", "-c", "one"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["add", "second", "-k", "zzz", "-c", "two"])
+            .status
+            .success()
+    );
+    std::fs::create_dir(dir.path().join(".knowledge/exported-zzz.md")).unwrap();
+
+    let out = run(&["export"]);
+    assert!(!out.status.success(), "export must refuse");
+    assert!(
+        !dir.path().join(".knowledge/exported-aaa.md").exists(),
+        "the earlier group must not have been written"
+    );
+}
+
+/// The store's existing files collide too. A pre-v7 export left `exported-AUTH.md`
+/// owning its entries and migration 7 lowercased the keyword without renaming the file,
+/// so an `auth` export plans the same directory entry on a file system that ignores
+/// case — and replacing it makes the next `sync` delete everything that file owned.
+#[test]
+fn test_export_refuses_a_name_a_shared_file_already_owns() {
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+
+    let legacy = dir.path().join(".knowledge/exported-AUTH.md");
+    std::fs::write(
+        &legacy,
+        "---\nkeywords: [auth]\ncategory: exported\n---\n\n# Exported: AUTH\n\n## Entry: old one\nkeywords: [auth]\n\nkept\n",
+    )
+    .unwrap();
+    assert!(run(&["sync"]).status.success());
+
+    assert!(
+        run(&["add", "new one", "-k", "auth", "-c", "fresh"])
+            .status
+            .success()
+    );
+    let out = run(&["export"]);
+    assert!(
+        !out.status.success(),
+        "export must refuse: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("exported-AUTH.md"),
+        "the message must name the file in the way: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&legacy).unwrap().contains("kept"),
+        "the existing file must be untouched"
+    );
+}
+
+#[test]
+fn test_keyword_normalization_survives_every_path() {
+    // Keywords are stored NFC and lowercased on every path, and the needles are
+    // normalized the same way — so a decomposed query finds a composed keyword and
+    // vice versa. Reverting the normalization in any one path fails this.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+
+    let composed = "が";
+    let decomposed = "か\u{3099}";
+    let stored = |id: &str| -> Vec<String> {
+        let get: serde_json::Value =
+            serde_json::from_slice(&run(&["get", id, "--json"]).stdout).unwrap();
+        get["keywords"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // `add` on its own, asserted before anything replaces the keywords — so reverting
+    // the normalization in `add_entry_full` alone fails here.
+    assert!(
+        run(&["add", "nfc entry", "-k", decomposed, "-c", "body"])
+            .status
+            .success()
+    );
+    assert_eq!(stored("1"), vec![composed], "add stored: {:?}", stored("1"));
+
+    // `edit` on a second entry, so the two paths are pinned independently.
+    assert!(
+        run(&[
+            "add",
+            "nfc entry two",
+            "-k",
+            "placeholder",
+            "-c",
+            "body two"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        run(&["edit", "2", "-k", &format!("{decomposed},GA,{composed}")])
+            .status
+            .success()
+    );
+    assert_eq!(
+        stored("2"),
+        vec![composed.to_string(), "ga".to_string()],
+        "edit stored: {:?}",
+        stored("2")
+    );
+
+    // Both spellings of the needle find it, through the keyword-only path.
+    for needle in [composed, decomposed] {
+        let out = run(&[
+            "search",
+            needle,
+            "--keyword-only",
+            "--scope",
+            "project",
+            "--json",
+        ]);
+        let hits: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(hits.len(), 2, "needle {needle:?} found: {hits:?}");
+    }
+}
+
+#[test]
+fn test_export_round_trips_a_keyword_with_a_slash() {
+    // `feature/auth` is an ordinary keyword to write, and it used to fail the whole
+    // export with "No such file or directory" — the flattened name has to survive a
+    // `sync` back as well, since that is how the md store stays the source of truth.
+    let dir = setup_temp_project();
+    let run = |args: &[&str]| {
+        lk_bin()
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    assert!(
+        run(&[
+            "add",
+            "auth flow",
+            "-k",
+            "feature/auth",
+            "-c",
+            "how login works"
+        ])
+        .status
+        .success()
+    );
+
+    let out = run(&["export"]);
+    assert!(
+        out.status.success(),
+        "export failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sync = run(&["sync", "--json"]);
+    assert!(
+        sync.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let search = run(&["search", "login", "--scope", "project", "--json"]);
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&search.stdout).unwrap();
+    assert_eq!(
+        hits.len(),
+        1,
+        "the entry must survive the round trip: {hits:?}"
+    );
+    assert_eq!(hits[0]["source"], "shared", "{hits:?}");
+}
+
 /// Pin `updated_at` on entries picked out by title.
 ///
 /// Entries added moments apart share a timestamp (`updated_at` has second

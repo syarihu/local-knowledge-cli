@@ -286,6 +286,10 @@ Warning: This project requires lk >= 0.8.0, but you have 0.7.2. Run `lk update` 
 
 Commit `.lk-version` to keep the team on a compatible version.
 
+### Exported file names
+
+`lk export` groups entries by their first keyword and writes one file per group, named `exported-<keyword>.md`. Keywords are free text, so a name that cannot be a file name is flattened: path separators and the characters file systems reject fold to `-`. A keyword that is not already exactly what a file system would store then carries a short digest of the original, so `feature/auth` and a literal `feature-auth` never land on the same file. So does a keyword that itself ends in something digest-shaped, which would otherwise take a disambiguated name's place. Ordinary keywords keep the name they have always had.
+
 ### Markdown Format
 
 Knowledge markdown files use YAML frontmatter and `## Entry:` headings:
@@ -311,6 +315,8 @@ Rate limit is 100 requests per minute per API key...
 ```
 
 Per-entry metadata lines (`keywords:`, `uid:`, `status:`, `project:`, `superseded_by:`, `supersedes:`) sit directly under the `## Entry:` heading and are stripped from the stored content. Only that leading block counts, so a line like `project: demo/app` further down stays part of the content. `uid:` is the one exception: markdown written before this rule existed put it anywhere, and losing a uid would change an entry's identity on the next `sync`, so a uid-shaped value is still recognized below the block. `project:` may also be set once in the frontmatter to cover every entry in the file.
+
+A `keywords:` list is split on commas and nothing else, in the frontmatter and under an entry alike — so `keywords: [feature/auth, main.rs]` is two keywords, not four. (The frontmatter used to split on non-word characters as well, which turned `main.rs` into `main` and `rs`. A file already imported that way keeps the split keywords until the file itself changes — `sync` skips a file whose contents are unchanged, so upgrading alone does not reparse it — and the first `sync` after an edit rewrites those entries to the keyword as written.)
 
 ### ADR (Architecture Decision Records)
 

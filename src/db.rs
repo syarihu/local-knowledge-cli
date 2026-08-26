@@ -11,6 +11,40 @@ const ENTRY_COLS_E: &str = "e.id, e.title, e.content, e.category, e.source, e.so
 
 pub const VALID_STATUSES: &[&str] = &["active", "deprecated", "proposed", "accepted", "superseded"];
 
+/// One keyword in the form it is stored in: NFC, lowercased, trimmed.
+///
+/// NFC as well as case, because the same word typed two ways is one keyword to
+/// everybody except a byte comparison — and `export` names a file after it, where a
+/// decomposed spelling would either collide with the composed one or be pushed into a
+/// disambiguated name for no reason a user could see.
+pub fn normalize_keyword(kw: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    // Lowercase first, compose second: lowercasing can break composition. `H` with a
+    // combining macron below lowercases to `h` + the mark, which is no longer NFC —
+    // composing afterwards lands it on `ẖ`, the same value the precomposed spelling
+    // normalizes to.
+    kw.trim().to_lowercase().nfc().collect()
+}
+
+/// Keywords as they are stored: normalized, blank-free, and deduplicated.
+///
+/// Every insert path goes through this. Search normalizes the needle the same way, so
+/// a keyword stored differently could never be found; and the table has no unique
+/// constraint, so `auth, AUTH` in one edit would otherwise become two rows for one
+/// keyword.
+pub fn normalize_keywords<I, S>(kws: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut seen = std::collections::HashSet::new();
+    kws.into_iter()
+        .map(|k| normalize_keyword(k.as_ref()))
+        .filter(|k| !k.is_empty())
+        .filter(|k| seen.insert(k.clone()))
+        .collect()
+}
+
 pub fn is_valid_status(s: &str) -> bool {
     VALID_STATUSES.contains(&s)
 }
@@ -113,7 +147,7 @@ pub struct DbStats {
 }
 
 /// Current schema version. Increment when adding new migrations.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub fn init_db(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     if let Some(parent) = db_path.parent() {
@@ -310,9 +344,9 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
             .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")?
             .query_row([], |row| row.get(0))?;
         if schema.contains("project") {
-            // Has all columns including project — current schema
-            set_schema_version(conn, SCHEMA_VERSION)?;
-            return Ok(false);
+            // Has every column, but the keyword normalization of migration 7 is not
+            // visible in the schema, so let that migration decide.
+            6
         } else if schema.contains("uid") {
             5 // Has uid but not project — needs migration 6
         } else if schema.contains("status") {
@@ -522,6 +556,73 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
         migrated = true;
     }
 
+    // Migration 7: normalize stored keywords (version 6 -> 7). `lk edit --keywords`
+    // used to store them verbatim, and keyword search lowercases the needle, so those
+    // rows could never be found. SQLite's `lower()` is ASCII-only, so the folding has
+    // to happen in Rust.
+    if effective_version < 7 {
+        let mut rows: Vec<(i64, String)> = Vec::new();
+        {
+            // `ORDER BY entry_id, id` is load-bearing, not tidiness: the rewrite below
+            // re-inserts an entry's keywords in the order they are read, `get_keywords`
+            // returns them in insertion order, and `export` names a file after the first
+            // one. Reading in whatever order SQLite happens to return could therefore
+            // rename a store's files — the churn this whole change exists to avoid.
+            let mut stmt =
+                conn.prepare("SELECT entry_id, keyword FROM keywords ORDER BY entry_id, id")?;
+            let mapped = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            for row in mapped {
+                rows.push(row?);
+            }
+        }
+        let mut per_entry: HashMap<i64, Vec<String>> = HashMap::new();
+        for (entry_id, keyword) in rows {
+            per_entry.entry(entry_id).or_default().push(keyword);
+        }
+        // In one savepoint: this deletes an entry's keywords before re-inserting them,
+        // so an interruption between the two would lose them outright — and the
+        // version would still say 6, with nothing left to recover from.
+        conn.execute_batch("SAVEPOINT migrate_keywords")?;
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            // Rewrite only the entries whose set actually changes, so an already-clean
+            // DB is left alone.
+            for (entry_id, keywords) in per_entry {
+                let normalized = normalize_keywords(&keywords);
+                if normalized == keywords {
+                    continue;
+                }
+                conn.execute(
+                    "DELETE FROM keywords WHERE entry_id = ?1",
+                    params![entry_id],
+                )?;
+                for kw in normalized {
+                    conn.execute(
+                        "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
+                        params![entry_id, kw],
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute_batch("RELEASE migrate_keywords")?;
+                // The version moved, so a migration ran — whether or not any row needed
+                // rewriting. Reporting otherwise skips the backup cleanup and the notice
+                // for a DB that was in fact migrated, leaving its backup behind forever.
+                migrated = true;
+            }
+            Err(e) => {
+                // `ROLLBACK TO` leaves the savepoint — and so the transaction it opened
+                // — active. Releasing it is what ends the transaction, so the connection
+                // this error is returned with is not left holding a write lock.
+                conn.execute_batch("ROLLBACK TO migrate_keywords; RELEASE migrate_keywords;")
+                    .ok();
+                return Err(e);
+            }
+        }
+    }
+
     set_schema_version(conn, SCHEMA_VERSION)?;
     Ok(migrated)
 }
@@ -619,10 +720,10 @@ pub fn add_entry_full(
     )?;
     let entry_id = conn.last_insert_rowid();
 
-    for kw in final_kws {
+    for kw in normalize_keywords(final_kws) {
         conn.execute(
             "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
-            params![entry_id, kw.to_lowercase()],
+            params![entry_id, kw],
         )?;
     }
 
@@ -759,7 +860,7 @@ pub fn search_entries(
             }
             let idx = i + 1;
             sql.push_str(&format!("k.keyword LIKE ?{idx}"));
-            param_values.push(Box::new(format!("%{}%", word.to_lowercase())));
+            param_values.push(Box::new(format!("%{}%", normalize_keyword(word))));
         }
         sql.push(')');
 
@@ -895,7 +996,7 @@ pub fn search_entries(
                     }
                     let idx = i + 1;
                     kw_sql.push_str(&format!("k.keyword LIKE ?{idx}"));
-                    kw_params.push(Box::new(format!("%{}%", word.to_lowercase())));
+                    kw_params.push(Box::new(format!("%{}%", normalize_keyword(word))));
                 }
                 kw_sql.push(')');
 
@@ -1104,7 +1205,7 @@ pub fn update_entry(
         conn.execute_batch("SAVEPOINT update_keywords")?;
         match (|| -> Result<(), Box<dyn std::error::Error>> {
             conn.execute("DELETE FROM keywords WHERE entry_id = ?1", params![id])?;
-            for kw in kws {
+            for kw in &normalize_keywords(kws) {
                 conn.execute(
                     "INSERT INTO keywords (entry_id, keyword) VALUES (?1, ?2)",
                     params![id, kw],
@@ -1118,7 +1219,9 @@ pub fn update_entry(
         })() {
             Ok(()) => conn.execute_batch("RELEASE update_keywords")?,
             Err(e) => {
-                conn.execute_batch("ROLLBACK TO update_keywords").ok();
+                // Released for the reason migration 7's rollback spells out.
+                conn.execute_batch("ROLLBACK TO update_keywords; RELEASE update_keywords;")
+                    .ok();
                 return Err(e);
             }
         }
@@ -1134,14 +1237,7 @@ pub fn replace_keywords(
     entry_id: i64,
     kws: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Dedup after lowercasing — the keywords table has no unique constraint,
-    // so case-variants in the input would otherwise become duplicate rows.
-    let mut seen = std::collections::HashSet::new();
-    let unique_kws: Vec<String> = kws
-        .iter()
-        .map(|k| k.to_lowercase())
-        .filter(|k| seen.insert(k.clone()))
-        .collect();
+    let unique_kws = normalize_keywords(kws);
     conn.execute_batch("SAVEPOINT replace_keywords")?;
     match (|| -> Result<(), Box<dyn std::error::Error>> {
         conn.execute(
@@ -2664,6 +2760,225 @@ mod tests {
     }
 
     #[test]
+    fn test_migration_7_keeps_each_entry_s_keyword_order() {
+        // The rewrite deletes an entry's keywords and re-inserts them, and `get_keywords`
+        // returns insertion order — which `export` reads as the group, and therefore the
+        // file name. Reordering here would rename a store's files.
+        //
+        // `reverse_unordered_selects` is SQLite's own way of exposing this: it flips the
+        // order of any query whose order is not pinned, which is exactly what an
+        // unspecified order is allowed to do. So `migrate` runs on a connection with it
+        // on, and this test fails without the `ORDER BY`.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &[
+                "zebra".to_string(),
+                "apple".to_string(),
+                "mango".to_string(),
+            ],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        // Denormalize the middle one in place, so the migration has to rewrite the entry
+        // without disturbing the order around it.
+        conn.execute(
+            "UPDATE keywords SET keyword = 'APPLE' WHERE entry_id = ?1 AND keyword = 'apple'",
+            params![id],
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version = 6", [])
+            .unwrap();
+        drop(conn);
+
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("PRAGMA reverse_unordered_selects = ON")
+            .unwrap();
+        assert!(migrate(tmp.path(), &conn).unwrap(), "the version moved");
+        assert_eq!(
+            get_keywords(&conn, id).unwrap(),
+            vec!["zebra", "apple", "mango"],
+            "the first keyword names the exported file"
+        );
+        drop(conn);
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_migration_7_reports_itself_even_with_nothing_to_rewrite() {
+        // A v6 DB whose keywords are already normalized still gets its version moved to
+        // 7, so it was migrated. Reporting otherwise skips the backup cleanup and the
+        // notice — and the backup taken on the way in is then never trimmed.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        add_entry(
+            &conn,
+            "T",
+            "body",
+            &["already-normal".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version = 6", [])
+            .unwrap();
+        drop(conn);
+
+        let (conn, migrated) = open_db(tmp.path()).unwrap();
+        assert!(
+            migrated,
+            "the version moved from 6 to 7, so a migration ran"
+        );
+        assert_eq!(get_schema_version(&conn), 7);
+        drop(conn);
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_a_failed_keyword_rewrite_leaves_no_transaction_open() {
+        // Unreleased, the savepoint's transaction stays open and the connection this
+        // error is returned with still holds the write lock — so whatever touches the
+        // database next waits on a migration that already failed.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &["keep-me".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO keywords (entry_id, keyword) VALUES (?1, 'MiXeD')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version = 6", [])
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_keywords BEFORE INSERT ON keywords
+             BEGIN SELECT RAISE(ABORT, 'no inserts'); END;",
+        )
+        .unwrap();
+
+        assert!(
+            migrate(tmp.path(), &conn).is_err(),
+            "the migration must fail"
+        );
+        assert!(
+            conn.is_autocommit(),
+            "a failed migration must not leave a transaction open"
+        );
+
+        conn.execute_batch("DROP TRIGGER refuse_keywords").unwrap();
+        drop(conn);
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_a_failed_keyword_update_leaves_no_transaction_open() {
+        // The same omission on `lk edit --keywords`, the everyday path into it.
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &["keep-me".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_keywords BEFORE INSERT ON keywords
+             BEGIN SELECT RAISE(ABORT, 'no inserts'); END;",
+        )
+        .unwrap();
+
+        assert!(
+            update_entry(&conn, id, None, None, Some(&["fresh".to_string()]), "now").is_err(),
+            "the update must fail"
+        );
+        assert!(
+            conn.is_autocommit(),
+            "a failed keyword update must not leave a transaction open"
+        );
+    }
+
+    #[test]
+    fn test_migration_7_rolls_back_a_failed_keyword_rewrite() {
+        // The rewrite deletes an entry's keywords before re-inserting them. If the
+        // insert fails, the delete has to go with it — otherwise the keywords are gone
+        // and the version still says 6, with nothing left to recover from.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &["keep-me".to_string(), "and-me".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        // Back to a pre-normalization state, with a keyword the migration must rewrite.
+        conn.execute(
+            "INSERT INTO keywords (entry_id, keyword) VALUES (?1, 'MiXeD')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version = 6", [])
+            .unwrap();
+        // ...and an insert that always fails, so the rewrite cannot complete.
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_keywords BEFORE INSERT ON keywords
+             BEGIN SELECT RAISE(ABORT, 'no inserts'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(
+            open_db(tmp.path()).is_err(),
+            "the migration must fail rather than press on"
+        );
+
+        // Reopen past the trigger and check nothing was lost.
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("DROP TRIGGER refuse_keywords").unwrap();
+        let mut kws: Vec<String> = conn
+            .prepare("SELECT keyword FROM keywords WHERE entry_id = ?1")
+            .unwrap()
+            .query_map(params![id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        kws.sort();
+        assert_eq!(kws, vec!["MiXeD", "and-me", "keep-me"]);
+        assert_eq!(
+            get_schema_version(&conn),
+            6,
+            "the version must not advance past a rewrite that did not happen"
+        );
+        drop(conn);
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
     fn test_migration_6_survives_partial_application() {
         // Simulate a crash between migration 6's ALTER and the version bump: the
         // column exists while schema_version still says 5. Opening must recover
@@ -3155,6 +3470,61 @@ mod tests {
             .unwrap();
             assert!(hits.iter().all(|e| e.project.is_some()));
         }
+    }
+
+    #[test]
+    fn test_keywords_are_stored_in_one_normal_form() {
+        // The same word typed two ways is one keyword. Without this, an NFD spelling
+        // is unfindable by its NFC needle, and `export` would name a separate file
+        // after it.
+        let composed = "が";
+        let decomposed = "か\u{3099}";
+        assert_ne!(composed, decomposed, "the fixture must differ bytewise");
+        assert_eq!(normalize_keyword(decomposed), composed);
+        // Lowercasing can break composition, so it has to happen before the compose
+        // step: `H` + combining macron below and the precomposed `ẖ` are one keyword.
+        assert_eq!(
+            normalize_keyword("H\u{0331}"),
+            normalize_keyword("\u{1E96}")
+        );
+        assert_eq!(normalize_keyword("H\u{0331}"), "\u{1E96}");
+        assert_eq!(
+            normalize_keywords([composed, decomposed, " が ", "GA"]),
+            vec!["が", "ga"],
+            "one row per keyword, whichever spelling arrived"
+        );
+    }
+
+    #[test]
+    fn test_edit_keywords_are_lowercased_and_deduped() {
+        // Keyword search lowercases the needle, so an entry edited to hold `AUTH`
+        // could never be found by `auth` — and the table has no unique constraint, so
+        // case-variants in one edit used to become duplicate rows.
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &["initial".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        update_entry(
+            &conn,
+            id,
+            None,
+            None,
+            Some(&["AUTH".to_string(), "auth".to_string(), "Login".to_string()]),
+            &now_iso(),
+        )
+        .unwrap();
+
+        let mut kws = get_keywords(&conn, id).unwrap();
+        kws.sort();
+        assert_eq!(kws, vec!["auth", "login"]);
     }
 
     #[test]
