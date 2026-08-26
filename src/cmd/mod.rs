@@ -345,8 +345,12 @@ pub fn maybe_auto_sync_for(project_root: &std::path::Path) {
             found_files.insert(rel_path.clone());
 
             let current_hash = crate::markdown::file_hash(filepath)?;
-            match existing.get(&rel_path) {
-                Some(old_hash) if *old_hash == current_hash => {}
+            match existing.get(&rel_path).map(|hashes| hashes.as_slice()) {
+                // One recorded hash, and the file still matches it: nothing to do.
+                // Everything else is work for `sync_knowledge_dir`, including a path whose
+                // entries disagree on `file_hash` — it repairs that by handing the entries
+                // the file dropped back to `local`.
+                Some([old_hash]) if *old_hash == current_hash => {}
                 _ => {
                     has_changes = true;
                     break;

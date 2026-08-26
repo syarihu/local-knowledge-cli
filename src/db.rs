@@ -125,7 +125,6 @@ pub struct Entry {
     pub category: String,
     pub source: String,
     pub source_file: Option<String>,
-    #[allow(dead_code)]
     pub file_hash: Option<String>,
     pub status: String,
     pub uid: String,
@@ -1374,21 +1373,56 @@ pub fn list_entries_by_source_file(
     Ok(entries)
 }
 
+/// Every distinct `file_hash` recorded against each shared markdown file.
+///
+/// A `Vec` rather than one hash per file because more than one is a *detectable* fault
+/// rather than a thing to average over. Each writer stamps one hash across a whole file
+/// (`export` flips a group together, `sync` deletes and re-imports a file as a unit), so
+/// two hashes under one path mean some entries were left pointing at a version of the
+/// file that no longer lists them. Collapsing them — what a `HashMap<_, String>` did, by
+/// letting the last row win — made that state compare equal to the file on disk and pass
+/// as unchanged. Callers decide what to do with a divergent path; none of them may treat
+/// it as a plain change, because re-importing the file drops the entries it no longer
+/// lists (see `sync_knowledge_dir`).
 pub fn get_shared_file_hashes(
     conn: &Connection,
-) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+) -> Result<HashMap<String, Vec<String>>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT source_file, file_hash FROM entries WHERE source = 'shared' AND source_file IS NOT NULL",
+        "SELECT DISTINCT source_file, file_hash FROM entries WHERE source = 'shared' AND source_file IS NOT NULL ORDER BY source_file, file_hash",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-    let mut map = HashMap::new();
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for row in rows {
         let (file, hash) = row?;
-        map.insert(file, hash);
+        map.entry(file).or_default().push(hash);
     }
     Ok(map)
+}
+
+/// Point one already-shared entry at a file and hash, leaving `updated_at` alone.
+///
+/// Separate from `update_entry_to_shared` because this is the *file* changing, not the
+/// entry: it is being written into a new copy of the file it already belonged to,
+/// unedited, so its `updated_at` must not move (that field orders search results and
+/// drives staleness).
+///
+/// By id, not by `source_file`: a row that appeared under the path while the file was
+/// being written was not in what was written, and stamping it anyway would make the file
+/// and its entries agree on paper. Divergence is the one signal that a file stopped
+/// carrying an entry (see `get_shared_file_hashes`), so it must be left to show.
+pub fn set_entry_file(
+    conn: &Connection,
+    id: i64,
+    source_file: &str,
+    file_hash: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute(
+        "UPDATE entries SET source_file = ?1, file_hash = ?2 WHERE id = ?3",
+        params![source_file, file_hash, id],
+    )?;
+    Ok(())
 }
 
 pub fn delete_entries_by_source_file(
@@ -1412,6 +1446,24 @@ pub fn update_entry_to_shared(
     conn.execute(
         "UPDATE entries SET source = 'shared', source_file = ?1, file_hash = ?2, updated_at = ?3 WHERE id = ?4",
         params![source_file, file_hash, updated_at, id],
+    )?;
+    Ok(())
+}
+
+/// Return an entry to being purely local: no owning file, no hash.
+///
+/// The inverse of `update_entry_to_shared`, for the entry whose file stopped listing it.
+/// Deleting it would be wrong — the row is the last copy — and leaving it pointing at a
+/// file that does not carry it is the divergent state `get_shared_file_hashes` reports.
+/// Local is simply what it now is: knowledge held in this database and nowhere else, which
+/// the next `export` shares again. `updated_at` stays put: the entry was not edited.
+pub fn detach_entry_from_file(
+    conn: &Connection,
+    id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute(
+        "UPDATE entries SET source = 'local', source_file = NULL, file_hash = NULL WHERE id = ?1",
+        params![id],
     )?;
     Ok(())
 }
