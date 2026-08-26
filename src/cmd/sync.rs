@@ -248,13 +248,6 @@ pub fn sync_knowledge_dir(
             let current_hash = markdown::file_hash(&entry)?;
 
             match existing.get(&rel_path).map(|hashes| hashes.as_slice()) {
-                // Entries under one path disagreeing on `file_hash` means the file was
-                // rewritten without some of them — `export` stamps the new hash only on
-                // what it wrote (see `get_shared_file_hashes`). Re-importing is the one
-                // response that must not happen here: it deletes every row for the path
-                // first, and the entries the file no longer lists exist nowhere else, so
-                // they would go for good. Name them and leave the file alone; `lk export`
-                // writes them back into it, which is also what re-unifies the hash.
                 Some(hashes) if hashes.len() > 1 => {
                     // The file's entries disagree on `file_hash`, which no writer produces:
                     // `export` stamps one hash across a group and `sync` re-imports a file
