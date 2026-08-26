@@ -155,12 +155,23 @@ fn check_destination(output_dir: &Path, filename: &str) -> Result<(), Box<dyn st
     }
 }
 
+/// The name one attempt at a temp file uses.
+///
+/// Both the nonce and the attempt index, because they cover different failures. The
+/// nonce is what keeps a temp left behind by a kill or a power cut from sitting on the
+/// one name a later run with the same pid is bound to retry — every export from that pid
+/// would fail. The index is what keeps sixteen retries sixteen names: a clock too coarse
+/// to advance inside the loop, or one that cannot be read at all (the `unwrap_or(0)`
+/// below), hands every attempt the same nonce, and then a single stale file is once again
+/// enough to fail them all.
+fn temp_file_name(pid: u32, nonce: u32, attempt: u32) -> String {
+    format!(".lk-export-{pid}-{nonce:08x}-{attempt:x}.tmp")
+}
+
 /// Create a file in `dir` that nobody else holds, at `mode` before the umask narrows it.
 ///
-/// `create_new` in a loop, so this never opens something that already exists. The name
-/// carries a nonce rather than only an attempt counter: a temp left behind by a kill or
-/// a power cut would otherwise be sitting on the one name a later run with the same pid
-/// is bound to retry, and every export from that pid would fail.
+/// `create_new` in a loop, so this never opens something that already exists. See
+/// `temp_file_name` for what makes the attempts distinct.
 ///
 /// Separate from `write_atomically` so the mode a file is *created* with can be asserted
 /// on its own — that is the part protecting content while it is being written, and a
@@ -169,12 +180,12 @@ fn create_temp_file(
     dir: &Path,
     mode: Option<u32>,
 ) -> Result<(PathBuf, std::fs::File), Box<dyn std::error::Error>> {
-    for _ in 0..16 {
+    for attempt in 0..16 {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        let candidate = dir.join(format!(".lk-export-{}-{nonce:08x}.tmp", std::process::id()));
+        let candidate = dir.join(temp_file_name(std::process::id(), nonce, attempt));
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
         #[cfg(unix)]
@@ -818,6 +829,21 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn test_a_frozen_clock_still_gives_every_attempt_its_own_name() {
+        // The retries are only retries if they try different names. A clock that cannot
+        // be read leaves the nonce at 0 for all sixteen, and one stale temp file from a
+        // killed run then fails every export this process attempts.
+        let names: std::collections::HashSet<String> = (0..16)
+            .map(|attempt| temp_file_name(4242, 0, attempt))
+            .collect();
+        assert_eq!(
+            names.len(),
+            16,
+            "sixteen attempts, sixteen names: {names:?}"
+        );
+    }
+
     #[test]
     fn test_an_owner_only_temp_file_is_private_before_anything_is_written() {
         // The mode has to be right at creation. Asserting the final mode instead passes
