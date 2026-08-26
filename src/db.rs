@@ -613,7 +613,11 @@ fn migrate(db_path: &Path, conn: &Connection) -> Result<bool, Box<dyn std::error
                 migrated = true;
             }
             Err(e) => {
-                conn.execute_batch("ROLLBACK TO migrate_keywords").ok();
+                // `ROLLBACK TO` leaves the savepoint — and so the transaction it opened
+                // — active. Releasing it is what ends the transaction, so the connection
+                // this error is returned with is not left holding a write lock.
+                conn.execute_batch("ROLLBACK TO migrate_keywords; RELEASE migrate_keywords;")
+                    .ok();
                 return Err(e);
             }
         }
@@ -1215,7 +1219,10 @@ pub fn update_entry(
         })() {
             Ok(()) => conn.execute_batch("RELEASE update_keywords")?,
             Err(e) => {
-                conn.execute_batch("ROLLBACK TO update_keywords").ok();
+                // Released for the same reason as every other rollback here: `ROLLBACK
+                // TO` alone keeps the savepoint and its transaction open.
+                conn.execute_batch("ROLLBACK TO update_keywords; RELEASE update_keywords;")
+                    .ok();
                 return Err(e);
             }
         }
@@ -2834,6 +2841,84 @@ mod tests {
         assert_eq!(get_schema_version(&conn), 7);
         drop(conn);
         cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_a_failed_keyword_rewrite_leaves_no_transaction_open() {
+        // `ROLLBACK TO` undoes the work but keeps the savepoint — and with it the
+        // transaction the savepoint opened. Unreleased, the connection this error is
+        // returned with still holds the write lock, so whatever touches the database
+        // next waits on a migration that already failed.
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = init_db(tmp.path()).unwrap();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &["keep-me".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO keywords (entry_id, keyword) VALUES (?1, 'MiXeD')",
+            params![id],
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version = 6", [])
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_keywords BEFORE INSERT ON keywords
+             BEGIN SELECT RAISE(ABORT, 'no inserts'); END;",
+        )
+        .unwrap();
+
+        assert!(
+            migrate(tmp.path(), &conn).is_err(),
+            "the migration must fail"
+        );
+        assert!(
+            conn.is_autocommit(),
+            "a failed migration must not leave a transaction open"
+        );
+
+        conn.execute_batch("DROP TRIGGER refuse_keywords").unwrap();
+        drop(conn);
+        cleanup_backups(tmp.path(), 0).ok();
+    }
+
+    #[test]
+    fn test_a_failed_keyword_update_leaves_no_transaction_open() {
+        // Same savepoint, same omission: `lk edit --keywords` is the everyday path, and
+        // a connection left mid-transaction blocks every write after it.
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(
+            &conn,
+            "T",
+            "body",
+            &["keep-me".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_keywords BEFORE INSERT ON keywords
+             BEGIN SELECT RAISE(ABORT, 'no inserts'); END;",
+        )
+        .unwrap();
+
+        assert!(
+            update_entry(&conn, id, None, None, Some(&["fresh".to_string()]), "now").is_err(),
+            "the update must fail"
+        );
+        assert!(
+            conn.is_autocommit(),
+            "a failed keyword update must not leave a transaction open"
+        );
     }
 
     #[test]

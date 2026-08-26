@@ -72,6 +72,15 @@ fn looks_disambiguated(base: &str) -> bool {
 /// that agree here would land on one file, and the second write would take the first
 /// group's entries with it.
 ///
+/// Lowercase first, compose second — the order `db::normalize_keyword` uses, and for
+/// the same reason: lowercasing can break composition, so composing first leaves a key
+/// that is not NFC after all. `H` with a combining macron below has no precomposed
+/// uppercase form, so it survives NFC as two characters and lowercases to `h` + the
+/// mark, while the `ẖ` a keyword normalizes to is one — two keys for the one file a
+/// case-folding file system would give them. That is exactly the collision this key
+/// exists to catch, and it reaches here through a name already on disk, which nothing
+/// normalized on the way in.
+///
 /// `to_lowercase` is not full case folding, so a directory carrying ext4's `casefold`
 /// attribute would still see `ß` and `ss` as one name — and neither this key nor the
 /// check in `cmd_export` can tell. Everything that follows from ordinary use of this
@@ -81,7 +90,7 @@ fn looks_disambiguated(base: &str) -> bool {
 /// (`db::normalize_keyword`), so a pair like `ß`/`ss` has to be deliberate.
 fn file_system_key(name: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
-    name.nfc().collect::<String>().to_lowercase()
+    name.to_lowercase().nfc().collect()
 }
 
 /// The output file name for a group.
@@ -775,6 +784,21 @@ mod tests {
         // `FOO` existing cannot change what `foo` is called, and vice versa.
         assert_eq!(export_file_name("foo"), "exported-foo.md");
         assert!(export_file_name("FOO").starts_with("exported-FOO-"));
+    }
+
+    #[test]
+    fn test_the_key_composes_after_lowercasing() {
+        // The other order leaves a key that is not NFC: `H` with a combining macron
+        // below has no precomposed uppercase form, so it survives NFC as two characters
+        // and only lowercasing brings it to the one `ẖ` is. A name already on disk goes
+        // through this key without having been normalized anywhere, so the two
+        // spellings have to meet — a file system that folds case and normalization gives
+        // them one file.
+        assert_eq!(
+            file_system_key("exported-H\u{0331}.md"),
+            file_system_key("exported-\u{1E96}.md"),
+            "the two spellings are one file name"
+        );
     }
 
     #[test]
