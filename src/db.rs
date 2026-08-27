@@ -1268,12 +1268,12 @@ pub fn replace_keywords(
 /// Set (or clear, with `None`) the project an entry is attributed to. Used by
 /// `lk edit --project` to fill in entries added before the column existed.
 ///
-/// Deliberately leaves `updated_at` alone, unlike every other update here. Recording
-/// where an entry came from says nothing about whether what it says is still true,
-/// and `updated_at` is what staleness is measured from — so bumping it would report
-/// a whole backfilled DB as freshly reviewed and reset the very signal that tells the
-/// user which entries to re-check. `lk edit --project ... --touch` still bumps it for
-/// anyone who does want to say "and I confirmed this one".
+/// Deliberately leaves `updated_at` alone, unlike the other writes `lk edit` makes.
+/// Recording where an entry came from says nothing about whether what it says is
+/// still true, and `updated_at` is what staleness is measured from — so bumping it
+/// would report a whole backfilled DB as freshly reviewed and reset the very signal
+/// that tells the user which entries to re-check. `lk edit --project ... --touch`
+/// still bumps it for anyone who does want to say "and I confirmed this one".
 pub fn update_entry_project(
     conn: &Connection,
     id: i64,
