@@ -1267,14 +1267,21 @@ pub fn replace_keywords(
 
 /// Set (or clear, with `None`) the project an entry is attributed to. Used by
 /// `lk edit --project` to fill in entries added before the column existed.
+///
+/// Deliberately leaves `updated_at` alone, unlike every other update here. Recording
+/// where an entry came from says nothing about whether what it says is still true,
+/// and `updated_at` is what staleness is measured from — so bumping it would report
+/// a whole backfilled DB as freshly reviewed and reset the very signal that tells the
+/// user which entries to re-check. `lk edit --project ... --touch` still bumps it for
+/// anyone who does want to say "and I confirmed this one".
 pub fn update_entry_project(
     conn: &Connection,
     id: i64,
     project: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(
-        "UPDATE entries SET project = ?1, updated_at = ?2 WHERE id = ?3",
-        params![project, now_iso(), id],
+        "UPDATE entries SET project = ?1 WHERE id = ?2",
+        params![project, id],
     )?;
     Ok(())
 }
@@ -3592,6 +3599,27 @@ mod tests {
         );
         update_entry_project(&conn, id, None).unwrap();
         assert!(get_entry(&conn, id).unwrap().unwrap().project.is_none());
+    }
+
+    #[test]
+    fn test_update_entry_project_keeps_updated_at() {
+        // Backfilling attribution must not read as "reviewed today": staleness is
+        // measured from `updated_at`, so a bulk `edit --project` pass would otherwise
+        // mark every entry fresh and erase the signal it is there to give.
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(&conn, "T", "body", &[], "", "local", None, None).unwrap();
+        let old = "2020-01-02T03:04:05";
+        conn.execute(
+            "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
+            params![old, id],
+        )
+        .unwrap();
+
+        update_entry_project(&conn, id, Some("syarihu/repo")).unwrap();
+        assert_eq!(get_entry(&conn, id).unwrap().unwrap().updated_at, old);
+
+        update_entry_project(&conn, id, None).unwrap();
+        assert_eq!(get_entry(&conn, id).unwrap().unwrap().updated_at, old);
     }
 
     #[test]

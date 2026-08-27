@@ -228,7 +228,7 @@ lk list --project some-app --scope user
 
 A full slug matches exactly, so `hoge/app` never answers with `fuga/app` — that is what the owner in the key is for. A bare name matches on the *last* segment, so it finds `syarihu/some-app`, a deeper `group/sub/some-app`, and any bare value recorded where no remote was known. When a bare name matches more than one recorded value the command says so on stderr instead of quietly merging them — asked of the store, so a small `--limit` cannot hide the ambiguity. An unusable value is an error rather than an empty result, since "no results" reads as "nothing recorded". Entries with no project recorded never match a filter.
 
-`lk edit <id-or-uid> --project owner/repo` fills in an entry added before the column existed, and `--project ""` clears it.
+`lk edit <id-or-uid> --project owner/repo` fills in an entry added before the column existed, and `--project ""` clears it. Alone among the edits, this one leaves `updated_at` untouched: attribution says where an entry came from, not that its contents were re-checked, so backfilling a whole DB does not reset the staleness clock. Add `--touch` when you did review the entry as well.
 
 See the spread with `lk stats --by-project`, which merges both scopes so one project is one row, and names the entries with nothing recorded rather than hiding them:
 
