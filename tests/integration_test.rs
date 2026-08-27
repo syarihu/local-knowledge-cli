@@ -1,7 +1,20 @@
+use std::path::Path;
 use std::process::Command;
 
 fn lk_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_lk"))
+}
+
+/// `lk` run in `dir`, with `HOME` pointed at it too.
+///
+/// Reads default to both scopes merged, so a command run in a fixture project but
+/// with the developer's real `HOME` answers from their user-scope DB as well, and an
+/// assertion about how many entries the fixture holds stops being about the fixture.
+/// CI never sees it — its `HOME` has no store — so this only ever failed locally.
+fn lk_in(dir: &Path) -> Command {
+    let mut cmd = lk_bin();
+    cmd.current_dir(dir).env("HOME", dir);
+    cmd
 }
 
 fn setup_temp_project() -> tempfile::TempDir {
@@ -331,15 +344,11 @@ fn test_add_with_status_reports_status_in_json() {
 #[test]
 fn test_search_status_combined_with_category() {
     let dir = setup_temp_project();
-    lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    lk_in(dir.path()).arg("init").output().unwrap();
 
     // Same status, different categories — the status+category filters must AND together
     for (title, category) in [("Plan item", "plan"), ("Decision item", "decisions")] {
-        lk_bin()
+        lk_in(dir.path())
             .args([
                 "add",
                 title,
@@ -352,12 +361,11 @@ fn test_search_status_combined_with_category() {
                 "--content",
                 "shared kw body",
             ])
-            .current_dir(dir.path())
             .output()
             .unwrap();
     }
 
-    let output = lk_bin()
+    let output = lk_in(dir.path())
         .args([
             "search",
             "shared",
@@ -367,7 +375,6 @@ fn test_search_status_combined_with_category() {
             "proposed",
             "--json",
         ])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1781,13 +1788,9 @@ fn test_export_by_ids() {
 #[test]
 fn test_export_by_query() {
     let dir = setup_temp_project();
-    lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    lk_in(dir.path()).arg("init").output().unwrap();
 
-    lk_bin()
+    lk_in(dir.path())
         .args([
             "add",
             "OAuth Flow",
@@ -1796,10 +1799,9 @@ fn test_export_by_query() {
             "--content",
             "OAuth 2.0 with PKCE.",
         ])
-        .current_dir(dir.path())
         .output()
         .unwrap();
-    lk_bin()
+    lk_in(dir.path())
         .args([
             "add",
             "Database Schema",
@@ -1808,14 +1810,12 @@ fn test_export_by_query() {
             "--content",
             "SQLite with FTS5.",
         ])
-        .current_dir(dir.path())
         .output()
         .unwrap();
 
     // Export only OAuth-related entries
-    let output = lk_bin()
+    let output = lk_in(dir.path())
         .args(["export", "--query", "OAuth"])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1823,9 +1823,8 @@ fn test_export_by_query() {
     assert!(stdout.contains("1 entries"));
 
     // Database entry should still be local
-    let out = lk_bin()
+    let out = lk_in(dir.path())
         .args(["list", "--source", "local", "--json"])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     let entries: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
@@ -2043,13 +2042,9 @@ fn test_supersede_same_id_rejected() {
 #[test]
 fn test_status_extension() {
     let dir = setup_temp_project();
-    lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    lk_in(dir.path()).arg("init").output().unwrap();
 
-    let out = lk_bin()
+    let out = lk_in(dir.path())
         .args([
             "add",
             "ADR Entry",
@@ -2059,7 +2054,6 @@ fn test_status_extension() {
             "decisions",
             "--json",
         ])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -2068,9 +2062,8 @@ fn test_status_extension() {
         .unwrap();
 
     // Set status to proposed
-    let output = lk_bin()
+    let output = lk_in(dir.path())
         .args(["edit", &id.to_string(), "--status", "proposed", "--json"])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -2078,9 +2071,8 @@ fn test_status_extension() {
     assert_eq!(entry["status"], "proposed");
 
     // Set status to accepted
-    let output = lk_bin()
+    let output = lk_in(dir.path())
         .args(["edit", &id.to_string(), "--status", "accepted", "--json"])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -2088,17 +2080,15 @@ fn test_status_extension() {
     assert_eq!(entry["status"], "accepted");
 
     // Invalid status should fail
-    let output = lk_bin()
+    let output = lk_in(dir.path())
         .args(["edit", &id.to_string(), "--status", "invalid"])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(!output.status.success());
 
     // List with --status filter
-    let output = lk_bin()
+    let output = lk_in(dir.path())
         .args(["list", "--status", "accepted", "--json"])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(output.status.success());
