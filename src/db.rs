@@ -1274,13 +1274,20 @@ pub fn replace_keywords(
 /// would report a whole backfilled DB as freshly reviewed and reset the very signal
 /// that tells the user which entries to re-check. `lk edit --project ... --touch`
 /// still bumps it for anyone who does want to say "and I confirmed this one".
+///
+/// `IS NOT` rather than a plain match so setting the value an entry already has costs
+/// nothing: `entries_au` fires on an update to *any* column, so even this one-column
+/// write would otherwise delete and re-insert the row's trigram-tokenized FTS entry.
+/// A first backfill still changes every row it touches — this is for the second run.
 pub fn update_entry_project(
     conn: &Connection,
     id: i64,
     project: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(
-        "UPDATE entries SET project = ?1 WHERE id = ?2",
+        // `IS NOT` and not `<>`: the value being replaced is usually NULL, which `<>`
+        // never matches, so the guard would skip exactly the rows a backfill is for.
+        "UPDATE entries SET project = ?1 WHERE id = ?2 AND project IS NOT ?1",
         params![project, id],
     )?;
     Ok(())
@@ -3599,6 +3606,27 @@ mod tests {
         );
         update_entry_project(&conn, id, None).unwrap();
         assert!(get_entry(&conn, id).unwrap().unwrap().project.is_none());
+    }
+
+    #[test]
+    fn test_update_entry_project_repeats_are_no_ops() {
+        // The write is guarded with `IS NOT`, so a re-run has to still land on the
+        // requested value — including the NULL case, where a `<>` guard would skip the
+        // row that most needs the write.
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(&conn, "T", "body", &[], "", "local", None, None).unwrap();
+
+        for _ in 0..2 {
+            update_entry_project(&conn, id, Some("syarihu/repo")).unwrap();
+            assert_eq!(
+                get_entry(&conn, id).unwrap().unwrap().project.as_deref(),
+                Some("syarihu/repo")
+            );
+        }
+        for _ in 0..2 {
+            update_entry_project(&conn, id, None).unwrap();
+            assert!(get_entry(&conn, id).unwrap().unwrap().project.is_none());
+        }
     }
 
     #[test]
