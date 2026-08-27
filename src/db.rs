@@ -1267,14 +1267,28 @@ pub fn replace_keywords(
 
 /// Set (or clear, with `None`) the project an entry is attributed to. Used by
 /// `lk edit --project` to fill in entries added before the column existed.
+///
+/// Deliberately leaves `updated_at` alone, unlike the other writes `lk edit` makes.
+/// Recording where an entry came from says nothing about whether what it says is
+/// still true, and `updated_at` is what staleness is measured from — so bumping it
+/// would report a whole backfilled DB as freshly reviewed and reset the very signal
+/// that tells the user which entries to re-check. `lk edit --project ... --touch`
+/// still bumps it for anyone who does want to say "and I confirmed this one".
+///
+/// `IS NOT` rather than a plain match so setting the value an entry already has costs
+/// nothing: `entries_au` fires on an update to *any* column, so even this one-column
+/// write would otherwise delete and re-insert the row's trigram-tokenized FTS entry.
+/// A first backfill still changes every row it touches — this is for the second run.
 pub fn update_entry_project(
     conn: &Connection,
     id: i64,
     project: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(
-        "UPDATE entries SET project = ?1, updated_at = ?2 WHERE id = ?3",
-        params![project, now_iso(), id],
+        // `IS NOT` and not `<>`: the value being replaced is usually NULL, which `<>`
+        // never matches, so the guard would skip exactly the rows a backfill is for.
+        "UPDATE entries SET project = ?1 WHERE id = ?2 AND project IS NOT ?1",
+        params![project, id],
     )?;
     Ok(())
 }
@@ -3592,6 +3606,48 @@ mod tests {
         );
         update_entry_project(&conn, id, None).unwrap();
         assert!(get_entry(&conn, id).unwrap().unwrap().project.is_none());
+    }
+
+    #[test]
+    fn test_update_entry_project_repeats_are_no_ops() {
+        // The write is guarded with `IS NOT`, so a re-run has to still land on the
+        // requested value — including the NULL case, where a `<>` guard would skip the
+        // row that most needs the write.
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(&conn, "T", "body", &[], "", "local", None, None).unwrap();
+
+        for _ in 0..2 {
+            update_entry_project(&conn, id, Some("syarihu/repo")).unwrap();
+            assert_eq!(
+                get_entry(&conn, id).unwrap().unwrap().project.as_deref(),
+                Some("syarihu/repo")
+            );
+        }
+        for _ in 0..2 {
+            update_entry_project(&conn, id, None).unwrap();
+            assert!(get_entry(&conn, id).unwrap().unwrap().project.is_none());
+        }
+    }
+
+    #[test]
+    fn test_update_entry_project_keeps_updated_at() {
+        // Backfilling attribution must not read as "reviewed today": staleness is
+        // measured from `updated_at`, so a bulk `edit --project` pass would otherwise
+        // mark every entry fresh and erase the signal it is there to give.
+        let (conn, _tmp) = setup_test_db();
+        let id = add_entry(&conn, "T", "body", &[], "", "local", None, None).unwrap();
+        let old = "2020-01-02T03:04:05";
+        conn.execute(
+            "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
+            params![old, id],
+        )
+        .unwrap();
+
+        update_entry_project(&conn, id, Some("syarihu/repo")).unwrap();
+        assert_eq!(get_entry(&conn, id).unwrap().unwrap().updated_at, old);
+
+        update_entry_project(&conn, id, None).unwrap();
+        assert_eq!(get_entry(&conn, id).unwrap().unwrap().updated_at, old);
     }
 
     #[test]
