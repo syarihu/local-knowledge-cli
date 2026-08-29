@@ -565,17 +565,45 @@ pub fn import_md_file(
         match result {
             Ok(_) => count += 1,
             // Cross-file md duplicates are caught up front by `check_no_duplicate_uids`,
-            // so a UNIQUE(uid) failure here means the md uid collides with an existing
-            // entry already in the DB (e.g. a `local` entry of the same uid). Fail with a
-            // clear, actionable message rather than the opaque SQLite error; the caller's
-            // transaction rolls back, leaving the DB untouched.
+            // so a UNIQUE(uid) failure here means the md uid collides with an entry
+            // already in the DB. Fail with a clear, actionable message rather than the
+            // opaque SQLite error; the caller's transaction rolls back, leaving the DB
+            // untouched.
+            //
+            // Name the row that is in the way instead of guessing at it. Reading "e.g. a
+            // local entry" sent one report looking for a local entry that did not exist:
+            // the uid was held by a *shared* row still recorded against a path the file
+            // had moved away from, and undoing that is nothing like resolving a clash
+            // with a local entry.
             Err(e) if is_duplicate_uid_error(e.as_ref()) => {
+                let uid = entry.uid.as_deref().unwrap_or("?");
+                let holder = db::get_entry_by_uid(conn, uid).ok().flatten();
+                let blame = match &holder {
+                    Some(h) if h.source == "shared" => match h.source_file.as_deref() {
+                        Some(path) => format!(
+                            "shared entry #{} '{}' is recorded against {path}, so the same \
+                             knowledge answers to two paths. Delete #{} and re-run `lk sync` \
+                             to re-import it from {rel_path} (the uid is kept).",
+                            h.id, h.title, h.id,
+                        ),
+                        None => format!(
+                            "shared entry #{} '{}' holds it but is recorded against no file, \
+                             so `lk sync` cannot reach it. Delete #{} and re-run `lk sync`.",
+                            h.id, h.title, h.id,
+                        ),
+                    },
+                    Some(h) => format!(
+                        "local entry #{} '{}' holds it. Delete #{} (or give one of the two a \
+                         different uid) and retry.",
+                        h.id, h.title, h.id,
+                    ),
+                    None => {
+                        "an existing entry holds it. Resolve the conflict and retry.".to_string()
+                    }
+                };
                 return Err(format!(
-                    "duplicate uid {} for '{}' in {} — it collides with an existing entry \
-                     (e.g. a local entry of the same uid). Resolve the conflict and retry.",
-                    entry.uid.as_deref().unwrap_or("?"),
+                    "duplicate uid {uid} for '{}' in {rel_path} — {blame}",
                     entry.title,
-                    rel_path,
                 )
                 .into());
             }
@@ -808,6 +836,88 @@ mod tests {
         let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
         assert_eq!(stats.unchanged, 1);
         assert_eq!((stats.added, stats.updated, stats.removed), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_a_uid_clash_names_the_entry_in_the_way() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        // A local entry holds the uid the markdown carries. The message has to say so:
+        // "e.g. a local entry" used to be a guess, and the guess was wrong often enough
+        // to send readers hunting for the wrong row.
+        let id = db::add_entry(
+            &conn,
+            "Local note",
+            "body",
+            &["auth".to_string()],
+            "",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+        let uid = db::get_entry(&conn, id).unwrap().unwrap().uid;
+        std::fs::write(
+            kdir.join("shared.md"),
+            format!(
+                "---\nkeywords: [auth]\n---\n\n# Shared\n\n\
+                 ## Entry: Shared note\nkeywords: [auth]\nuid: {uid}\n\nbody\n"
+            ),
+        )
+        .unwrap();
+
+        let err = match sync_knowledge_dir(&conn, &kdir, root) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("sync should have refused the clashing uid"),
+        };
+        assert!(
+            err.contains(&format!("local entry #{id} 'Local note'")),
+            "{err}"
+        );
+        // The failed sync left the store alone.
+        assert_eq!(db::get_entry(&conn, id).unwrap().unwrap().source, "local");
+        assert!(db::get_shared_file_hashes(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_a_uid_clash_with_a_fileless_shared_row_says_so() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        // A shared row recorded against no file is invisible to the passes that keep the
+        // store and the markdown in step, so it can hold a uid nothing will ever release.
+        // Saying "local entry" here would point at a row that does not exist.
+        let id = db::add_entry(
+            &conn,
+            "Fileless shared",
+            "body",
+            &["auth".to_string()],
+            "",
+            "shared",
+            None,
+            None,
+        )
+        .unwrap();
+        let uid = db::get_entry(&conn, id).unwrap().unwrap().uid;
+        std::fs::write(
+            kdir.join("shared.md"),
+            format!(
+                "---\nkeywords: [auth]\n---\n\n# Shared\n\n\
+                 ## Entry: Shared note\nkeywords: [auth]\nuid: {uid}\n\nbody\n"
+            ),
+        )
+        .unwrap();
+
+        let err = match sync_knowledge_dir(&conn, &kdir, root) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("sync should have refused the clashing uid"),
+        };
+        assert!(
+            err.contains(&format!("shared entry #{id} 'Fileless shared'"))
+                && err.contains("recorded against no file"),
+            "{err}"
+        );
     }
 
     #[test]
