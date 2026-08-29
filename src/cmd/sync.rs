@@ -219,7 +219,9 @@ pub fn sync_knowledge_dir(
     // conflict. Fail with a clear, actionable message *before* mutating anything —
     // silently skipping the duplicate insert could later delete the entry when one
     // of the files is removed while the other (unchanged) file still holds the uid.
-    check_no_duplicate_uids(knowledge_dir)?;
+    // The uids it collects are what tells "this entry moved to another file" from "this
+    // entry has no file left" further down.
+    let md_uids = check_no_duplicate_uids(knowledge_dir)?;
 
     let mut stats = SyncStats {
         added: 0,
@@ -232,22 +234,89 @@ pub fn sync_knowledge_dir(
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let existing = db::get_shared_file_hashes(conn)?;
-        let mut found_files = std::collections::HashSet::new();
 
-        for entry in walkdir_md(knowledge_dir) {
-            let fname = entry.file_name().and_then(|n| n.to_str());
-            if fname == Some("README.md") || fname == Some("lk-instructions.md") {
+        // Every deletion happens before the first insert, and that ordering is the whole
+        // shape of what follows.
+        //
+        // A uid identifies an entry wherever it lives, so moving one is a row that has to
+        // leave a path before it can arrive at another: renaming an exported file, moving
+        // it into a subdirectory, cutting a `## Entry:` out of one file and pasting it
+        // into another. Interleaving the two — importing each file as it is walked, then
+        // dropping vanished paths at the end — makes those succeed or fail on walk order
+        // alone, because the arriving insert hits UNIQUE(uid) while the departing row is
+        // still there. And since the walk is sorted, "alpha.md to zebra.md" worked while
+        // the reverse aborted the whole sync.
+        //
+        // So: settle which files exist, clear out everything that is leaving, and only
+        // then import. No insert can meet a row that this same sync was going to remove.
+        let files: Vec<(PathBuf, String)> = walkdir_md(knowledge_dir)
+            .into_iter()
+            .filter(|p| {
+                let fname = p.file_name().and_then(|n| n.to_str());
+                fname != Some("README.md") && fname != Some("lk-instructions.md")
+            })
+            .map(|p| {
+                let rel_path = p
+                    .strip_prefix(root)
+                    .map(|r| r.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| p.to_string_lossy().to_string());
+                (p, rel_path)
+            })
+            .collect();
+        let found_files: std::collections::HashSet<&str> =
+            files.iter().map(|(_, rel)| rel.as_str()).collect();
+
+        for (rel_path, hashes) in &existing {
+            if found_files.contains(rel_path.as_str()) {
                 continue;
             }
-            let rel_path = entry
-                .strip_prefix(root)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| entry.to_string_lossy().to_string());
-            found_files.insert(rel_path.clone());
+            // A file that is gone takes its entries with it — that is how knowledge stops
+            // being shared. But a path whose entries disagreed on `file_hash` was already
+            // inconsistent before it went missing, and there is no file left to say which
+            // entries it carried; deleting them all would throw away the ones it had
+            // already dropped. They become local instead, to be shared or deleted
+            // deliberately.
+            if hashes.len() > 1 {
+                // An entry the markdown still lists somewhere has not been orphaned — it
+                // moved, and the file listing it will import it below. Keeping it as
+                // `local` instead would both lose that (it is shared knowledge, in a file)
+                // and leave a row holding the uid the arriving insert needs.
+                let (moved, orphans): (Vec<db::Entry>, Vec<db::Entry>) =
+                    db::list_entries_by_source_file(conn, rel_path)?
+                        .into_iter()
+                        .partition(|e| md_uids.contains(&e.uid));
+                if !orphans.is_empty() {
+                    eprintln!(
+                        "sync: {rel_path} is gone and its entries disagreed on file_hash. \
+                         Keeping {} as local entries rather than deleting them.",
+                        orphans.len()
+                    );
+                }
+                for e in &orphans {
+                    eprintln!("  now local: #{} {}", e.id, e.title);
+                    db::detach_entry_from_file(conn, e.id)?;
+                }
+                stats.restored += orphans.len();
+                // Only the moved ones are still recorded against the gone path, so this
+                // clears the way for the file that lists them now.
+                if !moved.is_empty() {
+                    db::delete_entries_by_source_file(conn, rel_path)?;
+                }
+                continue;
+            }
+            db::delete_entries_by_source_file(conn, rel_path)?;
+            stats.removed += 1;
+        }
 
-            let current_hash = markdown::file_hash(&entry)?;
+        // Files to import once the deletions are done, and whether the path was already
+        // known (an update) or is new (an add).
+        let mut to_import: Vec<(&PathBuf, bool)> = Vec::new();
 
-            match existing.get(&rel_path).map(|hashes| hashes.as_slice()) {
+        for (entry, rel_path) in &files {
+            let rel_path = rel_path.as_str();
+            let current_hash = markdown::file_hash(entry)?;
+
+            match existing.get(rel_path).map(|hashes| hashes.as_slice()) {
                 Some(hashes) if hashes.len() > 1 => {
                     // The file's entries disagree on `file_hash`, which no writer produces:
                     // `export` stamps one hash across a group and `sync` re-imports a file
@@ -268,16 +337,14 @@ pub fn sync_knowledge_dir(
                     // one listed entry as evidence for both would leave the second looking
                     // listed — the re-import below would then delete it. One listed
                     // uid-less entry vouches for exactly one row.
-                    let text = std::fs::read_to_string(&entry)?;
+                    let text = std::fs::read_to_string(entry)?;
                     let listed = markdown::parse_md_entries(&text);
-                    let uids: std::collections::HashSet<&str> =
-                        listed.iter().filter_map(|e| e.uid.as_deref()).collect();
                     let mut vouched_titles: std::collections::HashMap<&str, usize> =
                         std::collections::HashMap::new();
                     for md_entry in listed.iter().filter(|e| e.uid.is_none()) {
                         *vouched_titles.entry(md_entry.title.as_str()).or_insert(0) += 1;
                     }
-                    let mut candidates = db::list_entries_by_source_file(conn, &rel_path)?;
+                    let mut candidates = db::list_entries_by_source_file(conn, rel_path)?;
                     // Rows carrying the file's current hash are matched against a uid-less
                     // title first: they were stamped by the export that produced the file
                     // as it stands, so where two rows share a title, they are the ones the
@@ -288,7 +355,11 @@ pub fn sync_knowledge_dir(
                         .sort_by_key(|e| e.file_hash.as_deref() != Some(current_hash.as_str()));
                     let mut left_behind: Vec<db::Entry> = Vec::new();
                     for candidate in candidates {
-                        if uids.contains(candidate.uid.as_str()) {
+                        // Listed here, or listed in some other file it has moved to —
+                        // either way the markdown still carries it, so it is not an entry
+                        // left with nowhere to live. (Each uid appears in one file at
+                        // most; `check_no_duplicate_uids` has already settled that.)
+                        if md_uids.contains(&candidate.uid) {
                             continue;
                         }
                         match vouched_titles.get_mut(candidate.title.as_str()) {
@@ -310,51 +381,29 @@ pub fn sync_knowledge_dir(
                     stats.restored += left_behind.len();
                     // What is left under the path is only what the file carries, so the
                     // ordinary re-import applies — and it re-unifies the hash.
-                    db::delete_entries_by_source_file(conn, &rel_path)?;
-                    let count = import_md_file(conn, &entry, root)?;
-                    stats.updated += count;
+                    db::delete_entries_by_source_file(conn, rel_path)?;
+                    to_import.push((entry, true));
                 }
                 Some([old_hash]) if *old_hash == current_hash => {
                     stats.unchanged += 1;
                 }
                 Some(_) => {
-                    db::delete_entries_by_source_file(conn, &rel_path)?;
-                    let count = import_md_file(conn, &entry, root)?;
-                    stats.updated += count;
+                    db::delete_entries_by_source_file(conn, rel_path)?;
+                    to_import.push((entry, true));
                 }
                 None => {
-                    let count = import_md_file(conn, &entry, root)?;
-                    stats.added += count;
+                    to_import.push((entry, false));
                 }
             }
         }
 
-        for (rel_path, hashes) in &existing {
-            if found_files.contains(rel_path) {
-                continue;
+        for (entry, is_update) in to_import {
+            let count = import_md_file(conn, entry, root)?;
+            if is_update {
+                stats.updated += count;
+            } else {
+                stats.added += count;
             }
-            // A file that is gone takes its entries with it — that is how knowledge stops
-            // being shared. But a path whose entries disagreed on `file_hash` was already
-            // inconsistent before it went missing, and there is no file left to say which
-            // entries it carried; deleting them all would throw away the ones it had
-            // already dropped. They become local instead, to be shared or deleted
-            // deliberately.
-            if hashes.len() > 1 {
-                let orphans = db::list_entries_by_source_file(conn, rel_path)?;
-                eprintln!(
-                    "sync: {rel_path} is gone and its entries disagreed on file_hash. \
-                     Keeping {} as local entries rather than deleting them.",
-                    orphans.len()
-                );
-                for e in &orphans {
-                    eprintln!("  now local: #{} {}", e.id, e.title);
-                    db::detach_entry_from_file(conn, e.id)?;
-                }
-                stats.restored += orphans.len();
-                continue;
-            }
-            db::delete_entries_by_source_file(conn, rel_path)?;
-            stats.removed += 1;
         }
 
         Ok(())
@@ -375,9 +424,14 @@ pub fn sync_knowledge_dir(
 /// Such a duplicate is an identity conflict (e.g. a stale/renamed copy left behind,
 /// or a hand-copied entry) that the user must resolve — proceeding would either abort
 /// mid-import or, worse, silently drop the entry on a later sync.
+///
+/// Returns every uid the markdown carries, which the caller uses to tell an entry that
+/// has moved from one that has nowhere left to live. It is free here — the check has to
+/// parse every file to find the duplicates anyway — and it is trustworthy for exactly
+/// the reason the check exists: past it, each uid appears in one file at most.
 fn check_no_duplicate_uids(
     knowledge_dir: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
     let mut locations: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     // walkdir_md yields canonicalized paths, so strip against a canonical base to keep
@@ -412,7 +466,7 @@ fn check_no_duplicate_uids(
         .filter(|(_, occurrences)| occurrences.len() > 1)
         .collect();
     if dups.is_empty() {
-        return Ok(());
+        return Ok(locations.into_keys().collect());
     }
     dups.sort_by_key(|(uid, _)| uid.as_str());
     let detail = dups
@@ -712,5 +766,182 @@ mod tests {
         titles.sort_unstable();
         assert_eq!(titles, ["First entry", "Second entry"]);
         assert!(db::get_shared_file_hashes(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_sync_follows_an_exported_file_that_was_renamed() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        // `export` names a file after the entry's first keyword, so renaming it to
+        // something that reads is the obvious next move. The file keeps the uid, which
+        // makes the rename a vanished path and a new one carrying the same identity —
+        // and sync must not read that as a collision with the row it is replacing.
+        let exported = kdir.join("exported-formula.md");
+        std::fs::write(
+            &exported,
+            "---\nkeywords: [formula]\ncategory: exported\n---\n\n# Exported: formula\n\n\
+             ## Entry: Release steps\nkeywords: [formula]\nuid: 694a2494ec86\n\nbody\n",
+        )
+        .unwrap();
+        assert_eq!(sync_knowledge_dir(&conn, &kdir, root).unwrap().added, 1);
+
+        std::fs::rename(&exported, kdir.join("release.md")).unwrap();
+        let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        assert_eq!(stats.removed, 1);
+        assert_eq!(stats.added, 1);
+        assert_eq!(stats.restored, 0);
+
+        // The entry survives the move, still shared, answering to the new path only.
+        let entry = db::get_entry_by_uid(&conn, "694a2494ec86")
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.source, "shared");
+        assert_eq!(entry.source_file.as_deref(), Some(".knowledge/release.md"));
+        assert!(
+            db::list_entries_by_source(&conn, "local")
+                .unwrap()
+                .is_empty()
+        );
+
+        // And the store has settled: syncing again changes nothing.
+        let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        assert_eq!(stats.unchanged, 1);
+        assert_eq!((stats.added, stats.updated, stats.removed), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_an_entry_moved_between_files_does_not_depend_on_walk_order() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        // Cutting a `## Entry:` out of one file and pasting it into another is an
+        // ordinary edit, and the walk is sorted: the entry here moves *backwards*, into
+        // the file read first, so the arriving insert is the one that used to meet the
+        // departing row still sitting under the old path.
+        let head = "---\nkeywords: [k]\ncategory: exported\n---\n\n# Exported: k\n\n";
+        let moved = "## Entry: Wanderer\nkeywords: [k]\nuid: aaaa11112222\n\nbody\n";
+        let stays = "## Entry: Homebody\nkeywords: [k]\nuid: bbbb33334444\n\nbody\n";
+        std::fs::write(kdir.join("alpha.md"), format!("{head}{stays}")).unwrap();
+        std::fs::write(kdir.join("zebra.md"), format!("{head}{moved}")).unwrap();
+        assert_eq!(sync_knowledge_dir(&conn, &kdir, root).unwrap().added, 2);
+
+        std::fs::write(kdir.join("alpha.md"), format!("{head}{stays}\n{moved}")).unwrap();
+        std::fs::write(kdir.join("zebra.md"), head).unwrap();
+        let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        assert_eq!(stats.restored, 0);
+
+        let wanderer = db::get_entry_by_uid(&conn, "aaaa11112222")
+            .unwrap()
+            .unwrap();
+        assert_eq!(wanderer.source_file.as_deref(), Some(".knowledge/alpha.md"));
+        assert_eq!(wanderer.source, "shared");
+        assert!(
+            db::list_entries_by_source(&conn, "local")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_two_files_can_trade_names_in_one_sync() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        // Neither path goes missing, so nothing here is a rename the store can see — yet
+        // both uids have to leave their old row before either can be written back. Only
+        // clearing every departing row before the first insert makes that possible.
+        let file = |title: &str, uid: &str| {
+            format!(
+                "---\nkeywords: [k]\ncategory: exported\n---\n\n# Exported: k\n\n\
+                 ## Entry: {title}\nkeywords: [k]\nuid: {uid}\n\nbody\n"
+            )
+        };
+        std::fs::write(kdir.join("one.md"), file("First", "aaaa11112222")).unwrap();
+        std::fs::write(kdir.join("two.md"), file("Second", "bbbb33334444")).unwrap();
+        assert_eq!(sync_knowledge_dir(&conn, &kdir, root).unwrap().added, 2);
+
+        std::fs::write(kdir.join("one.md"), file("Second", "bbbb33334444")).unwrap();
+        std::fs::write(kdir.join("two.md"), file("First", "aaaa11112222")).unwrap();
+        let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        assert_eq!(stats.updated, 2);
+        assert_eq!(stats.restored, 0);
+
+        let first = db::get_entry_by_uid(&conn, "aaaa11112222")
+            .unwrap()
+            .unwrap();
+        let second = db::get_entry_by_uid(&conn, "bbbb33334444")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.source_file.as_deref(), Some(".knowledge/two.md"));
+        assert_eq!(second.source_file.as_deref(), Some(".knowledge/one.md"));
+
+        let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        assert_eq!(stats.unchanged, 2);
+    }
+
+    fn add_shared_with_uid(
+        conn: &rusqlite::Connection,
+        title: &str,
+        rel: &str,
+        hash: &str,
+        uid: &str,
+    ) {
+        db::add_entry_full(
+            conn,
+            title,
+            "body",
+            &["k".to_string()],
+            "",
+            "shared",
+            Some(rel),
+            Some(hash),
+            Some(uid),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_a_renamed_divergent_file_moves_its_entries_instead_of_orphaning_them() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+        let old = ".knowledge/exported-formula.md";
+
+        // Two rows under one path disagreeing on `file_hash` is the wreckage an export
+        // that rewrote a file without all of its entries leaves behind — and here that
+        // file has also been renamed. The path is gone, so it cannot say what it carried;
+        // the markdown can, and it lists one of the two.
+        std::fs::write(
+            kdir.join("release.md"),
+            "---\nkeywords: [k]\ncategory: exported\n---\n\n# Exported: k\n\n\
+             ## Entry: Release steps\nkeywords: [k]\nuid: aaaa11112222\n\nbody\n",
+        )
+        .unwrap();
+        add_shared_with_uid(&conn, "Release steps", old, "h1", "aaaa11112222");
+        add_shared_with_uid(&conn, "Lost entry", old, "h2", "bbbb33334444");
+
+        let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
+
+        // The listed one followed the file. Handing it back as `local` would have both
+        // lost that and left it holding the uid the import needed.
+        let moved = db::get_entry_by_uid(&conn, "aaaa11112222")
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.source, "shared");
+        assert_eq!(moved.source_file.as_deref(), Some(".knowledge/release.md"));
+
+        // The one no file mentions is the actual orphan, and is kept rather than deleted.
+        assert_eq!(stats.restored, 1);
+        let locals = db::list_entries_by_source(&conn, "local").unwrap();
+        let titles: Vec<&str> = locals.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, ["Lost entry"]);
+
+        let stats = sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        assert_eq!(stats.unchanged, 1);
+        assert_eq!(stats.restored, 0);
     }
 }
