@@ -225,6 +225,11 @@ enum Commands {
         /// Export only entries matching a search query
         #[arg(long)]
         query: Option<String>,
+        /// Write everything to this one file instead of one file per first keyword
+        /// (e.g. "release" or "release.md"). Renaming an exported file afterwards is
+        /// what this replaces.
+        #[arg(long)]
+        file: Option<String>,
         /// Allow content that contains potential secrets
         #[arg(long)]
         allow_secrets: bool,
@@ -642,9 +647,17 @@ fn main() {
             dir,
             ids,
             query,
+            file,
             allow_secrets,
             scope,
-        } => cmd::cmd_export(dir, ids.as_deref(), query.as_deref(), allow_secrets, &scope),
+        } => cmd::cmd_export(
+            dir,
+            ids.as_deref(),
+            query.as_deref(),
+            file.as_deref(),
+            allow_secrets,
+            &scope,
+        ),
         Commands::Import { path } => cmd::cmd_import(&path),
         Commands::Keywords {
             regen,

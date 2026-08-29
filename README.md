@@ -290,6 +290,14 @@ Commit `.lk-version` to keep the team on a compatible version.
 
 `lk export` groups entries by their first keyword and writes one file per group, named `exported-<keyword>.md`. Keywords are free text, so a name that cannot be a file name is flattened: path separators and the characters file systems reject fold to `-`. A keyword that is not already exactly what a file system would store then carries a short digest of the original, so `feature/auth` and a literal `feature-auth` never land on the same file. So does a keyword that itself ends in something digest-shaped, which would otherwise take a disambiguated name's place. Ordinary keywords keep the name they have always had.
 
+To choose the name yourself, pass `--file`:
+
+```bash
+lk export --ids 22 --file release      # writes .knowledge/release.md
+```
+
+`--file` writes the whole selection to that one file instead of splitting it by first keyword, and the store records that path — so the name is right from the start. Renaming an exported file by hand works too (`lk sync` follows the move and keeps the entry's `uid`), but `--file` saves the round trip. The name must be a plain `.md` file name inside the export directory; `README.md` and `lk-instructions.md` are refused because `lk sync` skips them, which would leave the entries pointing at a file it never reads.
+
 ### Markdown Format
 
 Knowledge markdown files use YAML frontmatter and `## Entry:` headings:
