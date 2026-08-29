@@ -652,7 +652,7 @@ fn export_to_dir(
     // looking for something that does not exist.
     let describe = |group: &str| -> String {
         match file {
-            Some(name) => format!("--file {name}"),
+            Some(name) => format!("--file {name:?}"),
             None => format!("keyword {group:?}"),
         }
     };
@@ -1447,6 +1447,8 @@ mod tests {
 
         let err = export_to_file(&conn, &kdir, root, "release.md").unwrap_err();
         assert!(err.contains("lk sync"), "{err}");
+        // Named by the flag that chose it, and quoted — a `--file` name may carry spaces.
+        assert!(err.contains(r#"exporting --file "release.md""#), "{err}");
         assert_eq!(
             std::fs::read_to_string(kdir.join("release.md")).unwrap(),
             "# hand written\n"
