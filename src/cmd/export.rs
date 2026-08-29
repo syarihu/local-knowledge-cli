@@ -177,7 +177,7 @@ fn explicit_file_name(name: &str) -> Result<String, Box<dyn std::error::Error>> 
     const MAX_NAME_BYTES: usize = 255;
     if filename.len() > MAX_NAME_BYTES {
         return Err(format!(
-            "--file {name:?} is {} bytes; a file name cannot exceed {MAX_NAME_BYTES}.",
+            "--file {filename:?} is {} bytes; a file name cannot exceed {MAX_NAME_BYTES}.",
             filename.len()
         )
         .into());
@@ -201,16 +201,27 @@ fn explicit_file_name(name: &str) -> Result<String, Box<dyn std::error::Error>> 
         )
         .into());
     }
-    // Win32 resolves these to devices before it ever reaches the file system, extension
-    // and all, so `CON.md` is not a file there and never can be. Only `--file` can
-    // produce one: a keyword-derived name always carries the `exported-` prefix, which
-    // is what has kept a keyword called `con` harmless.
+    // Win32 resolves these to devices before it ever reaches the file system, so `CON.md`
+    // is not a file there and never can be. Only `--file` can produce one: a
+    // keyword-derived name always carries the `exported-` prefix, which is what has kept
+    // a keyword called `con` harmless.
     const DEVICE_NAMES: &[&str] = &[
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
-    let stem = filename.strip_suffix(".md").unwrap_or(&filename);
-    if DEVICE_NAMES.iter().any(|d| stem.eq_ignore_ascii_case(d)) {
+    // Matched the way Win32 resolves one, which is not the way this file system reads a
+    // name: any extension still names the device (`NUL.txt` is the null device), and
+    // trailing dots and spaces come off the component first, so `CON .md` is `CON` there
+    // too.
+    let device_key = filename
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches([' ', '.']);
+    if DEVICE_NAMES
+        .iter()
+        .any(|d| device_key.eq_ignore_ascii_case(d))
+    {
         return Err(format!(
             "--file {filename:?} is a reserved device name on Windows, where it names a \
              device rather than a file. The store travels with the repository, so the name \
@@ -703,15 +714,18 @@ fn export_to_dir(
                 // gets in the way; without `--file` the keyword behind it is the thing
                 // the user has to act on.
                 return Err(match file {
+                    // Quoted: a keyword and a `--file` name may both carry spaces, and an
+                    // unquoted name leaves the reader guessing where it ends.
                     Some(_) => format!(
-                        "--file {filename} is the same file as {existing} to this file \
-                         system, and {existing} already holds shared entries. Choose \
+                        "--file {filename:?} is the same file as {existing:?} to this file \
+                         system, and {existing:?} already holds shared entries. Choose \
                          another name (or rename that file) and export again."
                     ),
                     None => format!(
-                        "keyword {group:?} would export to {filename}, which this file \
-                         system sees as the same file as {existing} — and that file already \
-                         holds shared entries. Rename it (or the keyword) and export again."
+                        "keyword {group:?} would export to {filename:?}, which this file \
+                         system sees as the same file as {existing:?} — and that file \
+                         already holds shared entries. Rename it (or the keyword) and \
+                         export again."
                     ),
                 }
                 .into());
@@ -1493,7 +1507,17 @@ mod tests {
     fn test_file_refuses_a_windows_device_name() {
         // Win32 resolves these to devices before the file system sees them, extension and
         // all, so `CON.md` is not a file there — whatever this machine happens to allow.
-        for name in ["CON", "nul", "Com1", "LPT9.md", "aux"] {
+        // Win32 drops trailing dots and spaces from the component and matches before the
+        // first dot, so all of these name a device there whatever this machine allows.
+        for name in [
+            "CON",
+            "nul",
+            "Com1",
+            "LPT9.md",
+            "aux",
+            "CON .md",
+            "NUL.txt.md",
+        ] {
             assert!(
                 explicit_file_name(name).is_err(),
                 "--file {name:?} should have been refused"
@@ -1522,7 +1546,7 @@ mod tests {
         add_local(&conn, "Second entry", "auth");
         let err = export_to_file(&conn, &kdir, root, "Release").unwrap_err();
         assert!(
-            err.contains("--file Release.md is the same file as release.md"),
+            err.contains(r#"--file "Release.md" is the same file as "release.md""#),
             "{err}"
         );
         assert!(!err.contains("keyword"), "{err}");

@@ -446,7 +446,13 @@ pub fn sync_knowledge_dir(
 
     match result {
         Ok(()) => {
-            conn.execute_batch("COMMIT")?;
+            // A failed COMMIT (a busy reader, a full disk) leaves the transaction open on
+            // the connection, and whatever runs next on it inherits that. Returning the
+            // error is not enough: end the transaction first, the same as the arm below.
+            if let Err(e) = conn.execute_batch("COMMIT") {
+                conn.execute_batch("ROLLBACK").ok();
+                return Err(e.into());
+            }
             for line in &notices {
                 eprintln!("{line}");
             }
