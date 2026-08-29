@@ -5,6 +5,18 @@ use crate::db;
 use crate::markdown;
 use crate::util::{get_knowledge_dir, get_project_root, now_iso, open_db_with_migrate};
 
+/// Characters a file name cannot carry, or cannot carry everywhere: the separators, and
+/// the set Windows rejects. A `.knowledge/` directory travels with its repository, so a
+/// name that only works here is a name that breaks for the next person to clone it.
+const UNSAFE_NAME_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+
+/// Bidirectional controls are not `char::is_control`, and a file name that renders
+/// differently from its bytes is a name nobody can act on.
+const BIDI_CHARS: &[char] = &[
+    '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}',
+    '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+];
+
 /// The base name for a group, as a single safe path segment (no `exported-` prefix,
 /// no extension, no digest).
 ///
@@ -13,17 +25,10 @@ use crate::util::{get_knowledge_dir, get_project_root, now_iso, open_db_with_mig
 /// `x/../../README` resolved outside the store and overwrote whatever was there.
 /// Characters a file name cannot carry fold to `-`.
 fn export_base_name(group: &str) -> String {
-    const UNSAFE: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-    // Bidirectional controls are not `char::is_control`, and a file name that renders
-    // differently from its bytes is a name nobody can act on.
-    const BIDI: &[char] = &[
-        '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}',
-        '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
-    ];
     let folded: String = group
         .chars()
         .map(|c| {
-            if c.is_control() || UNSAFE.contains(&c) || BIDI.contains(&c) {
+            if c.is_control() || UNSAFE_NAME_CHARS.contains(&c) || BIDI_CHARS.contains(&c) {
                 '-'
             } else {
                 c
@@ -120,8 +125,10 @@ fn export_file_name(group: &str) -> String {
 /// same test, so a name carrying any other one is refused rather than quietly extended
 /// into `notes.txt.md`.
 ///
-/// What the name is otherwise made of is left alone — the point of `--file` is to write
-/// the name the user chose.
+/// A name is refused rather than folded. `export_base_name` rewrites a keyword into
+/// something a file system can hold, because a keyword is not a file name and the user
+/// never asked for one — but `--file` *is* the name the user asked for, and silently
+/// writing a different one is worse than saying no.
 ///
 /// Every refusal here is about the flag alone, so it lands before the store is opened and
 /// whether or not the selection turns out to be empty: a name the export could never have
@@ -143,6 +150,38 @@ fn explicit_file_name(name: &str) -> Result<String, Box<dyn std::error::Error>> 
         }
         None => format!("{name}.md"),
     };
+    if let Some(bad) = filename
+        .chars()
+        .find(|c| c.is_control() || BIDI_CHARS.contains(c))
+    {
+        return Err(format!(
+            "--file {name:?} contains {bad:?}, which a file name cannot carry — a file that \
+             renders differently from its bytes is one nobody can act on."
+        )
+        .into());
+    }
+    // `/` is caught by the segment check below, but the rest of the set is legal here and
+    // rejected on Windows, and `.knowledge/` travels with its repository.
+    if let Some(bad) = filename
+        .chars()
+        .find(|c| *c != '/' && UNSAFE_NAME_CHARS.contains(c))
+    {
+        return Err(format!(
+            "--file {name:?} contains {bad:?}, which some file systems reject. The store \
+             travels with the repository, so the name has to work everywhere."
+        )
+        .into());
+    }
+    // A path component caps at 255 bytes. Left to the write, this surfaced as a raw
+    // `File name too long (os error 63)`.
+    const MAX_NAME_BYTES: usize = 255;
+    if filename.len() > MAX_NAME_BYTES {
+        return Err(format!(
+            "--file {name:?} is {} bytes; a file name cannot exceed {MAX_NAME_BYTES}.",
+            filename.len()
+        )
+        .into());
+    }
     // One segment, so `--file` names a file and `--dir` names the directory. Checked
     // here as well as in `check_destination`, which sees it too late to blame the flag.
     if Path::new(&filename).components().count() != 1 {
@@ -233,7 +272,7 @@ fn check_destination_is_recognized(
     recorded: &std::collections::HashMap<String, Vec<String>>,
     rel_path: &str,
     filepath: &Path,
-    group: &str,
+    what: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !filepath.is_file() {
         return Ok(());
@@ -246,7 +285,7 @@ fn check_destination_is_recognized(
         return Ok(());
     }
     Err(format!(
-        "{} already exists and is not the copy this store recorded, so exporting {group:?} \
+        "{} already exists and is not the copy this store recorded, so exporting {what} \
          would replace knowledge that lives only in that file. Run `lk sync` to take it in \
          first, then export again.",
         filepath.display()
@@ -580,6 +619,16 @@ fn export_to_dir(
     let destination_name =
         |group: &str| -> String { file.map_or_else(|| export_file_name(group), str::to_string) };
 
+    // How to name what is being written when a destination is refused. Under `--file`
+    // there is no keyword behind the name, and telling the user to rename one sends them
+    // looking for something that does not exist.
+    let describe = |group: &str| -> String {
+        match file {
+            Some(name) => format!("--file {name}"),
+            None => format!("keyword {group:?}"),
+        }
+    };
+
     // Every destination is checked before the first one is written: refusing half-way
     // through leaves the earlier groups written and flipped to `shared` while the command
     // reports failure, and that mixed state is worse than either outcome.
@@ -633,11 +682,21 @@ fn export_to_dir(
                 .into());
             }
             if let Some(existing) = owned.get(&key).filter(|name| *name != &filename) {
-                return Err(format!(
-                    "keyword {group:?} would export to {filename}, which this file system \
-                     sees as the same file as {existing} — and that file already holds \
-                     shared entries. Rename it (or the keyword) and export again."
-                )
+                // The name came from the flag, so repeating how it was arrived at only
+                // gets in the way; without `--file` the keyword behind it is the thing
+                // the user has to act on.
+                return Err(match file {
+                    Some(_) => format!(
+                        "--file {filename} is the same file as {existing} to this file \
+                         system, and {existing} already holds shared entries. Choose \
+                         another name (or rename that file) and export again."
+                    ),
+                    None => format!(
+                        "keyword {group:?} would export to {filename}, which this file \
+                         system sees as the same file as {existing} — and that file already \
+                         holds shared entries. Rename it (or the keyword) and export again."
+                    ),
+                }
                 .into());
             }
 
@@ -646,7 +705,7 @@ fn export_to_dir(
                     &recorded,
                     &destination_rel_path(output_dir, root, &filename),
                     &output_dir.join(&filename),
-                    group,
+                    &describe(group),
                 )?;
             }
         }
@@ -668,7 +727,12 @@ fn export_to_dir(
         // arrived (a `git pull`, an editor saving) is taken over, though it cannot close
         // it — `export` holds no lock over the store.
         if flip_to_shared {
-            check_destination_is_recognized(&recorded, &rel_path, &filepath, group_name)?;
+            check_destination_is_recognized(
+                &recorded,
+                &rel_path,
+                &filepath,
+                &describe(group_name),
+            )?;
         }
 
         // The entries this file already holds. A group is built from `local` entries, but
@@ -1356,5 +1420,119 @@ mod tests {
             std::fs::read_to_string(kdir.join("release.md")).unwrap(),
             "# hand written\n"
         );
+    }
+
+    fn dump_to_file(
+        conn: &rusqlite::Connection,
+        dir: &Path,
+        root: &Path,
+        file: &str,
+    ) -> Result<(), String> {
+        let name = explicit_file_name(file).map_err(|e| e.to_string())?;
+        export_to_dir(
+            conn,
+            dir,
+            root,
+            None,
+            None,
+            Some(&name),
+            true,
+            false,
+            false,
+            false,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn test_file_refuses_a_name_a_file_system_cannot_hold() {
+        // `--file` skips `export_base_name`, which folds these away for a keyword. A
+        // keyword is not a file name and its owner never asked for one, so folding is
+        // right there; an explicit name is what the user asked for, so it is refused
+        // rather than quietly turned into something else.
+        for name in [
+            "with\nnewline",     // a control character
+            "left\u{202E}right", // a bidi override: renders unlike its bytes
+            "a:b",               // rejected on Windows, and the store travels
+            "a|b",
+            "a*b",
+        ] {
+            assert!(
+                explicit_file_name(name).is_err(),
+                "--file {name:?} should have been refused"
+            );
+        }
+
+        // Long enough to fail the write with a raw `File name too long` before.
+        let long = "z".repeat(300);
+        let err = explicit_file_name(&long).unwrap_err().to_string();
+        assert!(err.contains("cannot exceed"), "{err}");
+
+        // The extension test is exact: `sync` matches lowercase `md`.
+        assert!(explicit_file_name("notes.MD").is_err());
+    }
+
+    #[test]
+    fn test_a_file_clash_with_an_owned_name_does_not_blame_a_keyword() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        add_local(&conn, "First entry", "auth");
+        export_to_file(&conn, &kdir, root, "release").unwrap();
+
+        // A file system that ignores case sees `Release.md` as the file the store already
+        // owns. The refusal is right; blaming a keyword is not, since `--file` named it.
+        add_local(&conn, "Second entry", "auth");
+        let err = export_to_file(&conn, &kdir, root, "Release").unwrap_err();
+        assert!(
+            err.contains("--file Release.md is the same file as release.md"),
+            "{err}"
+        );
+        assert!(!err.contains("keyword"), "{err}");
+    }
+
+    #[test]
+    fn test_file_keeps_the_entries_the_destination_already_holds() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+
+        // The same merge the keyword-named files get: for a shared entry the markdown is
+        // not a copy, it is where the entry lives, so a second export into the same file
+        // must not drop the lines the first one put there.
+        add_local(&conn, "First entry", "auth");
+        export_to_file(&conn, &kdir, root, "release").unwrap();
+        add_local(&conn, "Second entry", "deploy");
+        export_to_file(&conn, &kdir, root, "release").unwrap();
+
+        let text = std::fs::read_to_string(kdir.join("release.md")).unwrap();
+        assert!(text.contains("## Entry: First entry"), "{text}");
+        assert!(text.contains("## Entry: Second entry"), "{text}");
+        assert_eq!(
+            db::list_entries_by_source(&conn, "shared").unwrap().len(),
+            2
+        );
+
+        let stats = crate::cmd::sync::sync_knowledge_dir(&conn, &kdir, root).unwrap();
+        assert_eq!(stats.unchanged, 1);
+    }
+
+    #[test]
+    fn test_file_names_a_dump_only_export_too() {
+        let (dir, conn, kdir) = store();
+        let root = dir.path();
+        let dump = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&dump).unwrap();
+        let _ = kdir;
+
+        // A dump records no `source_file`, so the entry stays local and the run has to
+        // stay repeatable — the name must not change either of those.
+        add_local(&conn, "Dumped", "auth");
+        for _ in 0..2 {
+            dump_to_file(&conn, &dump, root, "notes").unwrap();
+        }
+        let text = std::fs::read_to_string(dump.join("notes.md")).unwrap();
+        assert!(text.contains("## Entry: Dumped"), "{text}");
+        assert_eq!(db::list_entries_by_source(&conn, "local").unwrap().len(), 1);
+        assert!(db::get_shared_file_hashes(&conn).unwrap().is_empty());
     }
 }
