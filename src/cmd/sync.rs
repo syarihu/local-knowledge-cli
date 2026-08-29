@@ -628,10 +628,17 @@ pub fn import_md_file(
                              to re-import it from {rel_path} (the uid is kept).",
                             h.id, h.title, h.id,
                         ),
+                        // Deleting is the way out here too, but it is not the same trade
+                        // as the arms above: a shared row against no file is reached by
+                        // neither `sync` (which finds rows by path) nor `export` (which
+                        // takes local entries), so what it says may exist nowhere else.
+                        // Say to read it first rather than sending the user to `delete`.
                         None => format!(
                             "shared entry #{} '{}' holds it but is recorded against no file, \
-                             so `lk sync` cannot reach it. Delete #{} and re-run `lk sync`.",
-                            h.id, h.title, h.id,
+                             so neither `lk sync` nor `lk export` can reach it — the row may \
+                             be the only copy of what it says. Read it with `lk get {}`, then \
+                             delete #{} and re-run `lk sync`.",
+                            h.id, h.title, h.id, h.id,
                         ),
                     },
                     Some(h) => format!(
@@ -960,6 +967,8 @@ mod tests {
                 && err.contains("recorded against no file"),
             "{err}"
         );
+        // Nothing else holds this row, so the way out has to start with reading it.
+        assert!(err.contains(&format!("`lk get {id}`")), "{err}");
     }
 
     #[test]
