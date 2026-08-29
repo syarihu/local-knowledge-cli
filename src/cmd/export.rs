@@ -201,6 +201,23 @@ fn explicit_file_name(name: &str) -> Result<String, Box<dyn std::error::Error>> 
         )
         .into());
     }
+    // Win32 resolves these to devices before it ever reaches the file system, extension
+    // and all, so `CON.md` is not a file there and never can be. Only `--file` can
+    // produce one: a keyword-derived name always carries the `exported-` prefix, which
+    // is what has kept a keyword called `con` harmless.
+    const DEVICE_NAMES: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let stem = filename.strip_suffix(".md").unwrap_or(&filename);
+    if DEVICE_NAMES.iter().any(|d| stem.eq_ignore_ascii_case(d)) {
+        return Err(format!(
+            "--file {filename:?} is a reserved device name on Windows, where it names a \
+             device rather than a file. The store travels with the repository, so the name \
+             has to work everywhere. Choose another name."
+        )
+        .into());
+    }
     Ok(filename)
 }
 
@@ -1470,6 +1487,26 @@ mod tests {
 
         // The extension test is exact: `sync` matches lowercase `md`.
         assert!(explicit_file_name("notes.MD").is_err());
+    }
+
+    #[test]
+    fn test_file_refuses_a_windows_device_name() {
+        // Win32 resolves these to devices before the file system sees them, extension and
+        // all, so `CON.md` is not a file there — whatever this machine happens to allow.
+        for name in ["CON", "nul", "Com1", "LPT9.md", "aux"] {
+            assert!(
+                explicit_file_name(name).is_err(),
+                "--file {name:?} should have been refused"
+            );
+        }
+        // Only a whole name is a device. Anything built around one is an ordinary file,
+        // which is why the `exported-` prefix has always kept the keyword path safe.
+        for name in ["console", "con-notes", "exported-con", "nullable"] {
+            assert!(
+                explicit_file_name(name).is_ok(),
+                "--file {name:?} should have been allowed"
+            );
+        }
     }
 
     #[test]

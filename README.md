@@ -298,7 +298,7 @@ lk export --ids 22 --file release      # writes .knowledge/release.md
 
 `--file` writes the whole selection to that one file instead of splitting it by first keyword, and the store records that path — so the name is right from the start. Renaming an exported file by hand works too (`lk sync` follows the move and keeps the entry's `uid`), but `--file` saves the round trip.
 
-The name must be a plain `.md` file name inside the export directory (`--dir` chooses the directory). `README.md` and `lk-instructions.md` are refused because `lk sync` skips them, which would leave the entries pointing at a file it never reads. Unlike the keyword-derived names, which are folded into something a file system can hold, a name given here is refused rather than rewritten — control characters, bidi overrides, the characters Windows rejects, and anything over 255 bytes — since silently writing a different name than the one asked for is worse than saying no.
+The name must be a plain `.md` file name inside the export directory (`--dir` chooses the directory). `README.md` and `lk-instructions.md` are refused because `lk sync` skips them, which would leave the entries pointing at a file it never reads. Unlike the keyword-derived names, which are folded into something a file system can hold, a name given here is refused rather than rewritten — control characters, bidi overrides, the characters Windows rejects, Windows device names such as `CON` or `NUL`, and anything over 255 bytes — since silently writing a different name than the one asked for is worse than saying no.
 
 ### Markdown Format
 
