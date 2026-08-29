@@ -64,6 +64,9 @@ Export local-only knowledge entries to .knowledge/ markdown files for sharing vi
     - Mode A (all): `lk export`
     - Mode B (selected): `lk export --ids <comma-separated-ids>`
     - Mode B (by query): `lk export --query "<search term>"` when the user selected by topic
+    - Add `--file <name>` when the selection belongs in one file under a name you already
+      know (e.g. `lk export --ids 22 --file release`); it skips the rename in step 16.
+      It names a file, not a path — the move in step 16 still applies.
 13. Show the user which files were created
 14. Check the existing directory structure under `.knowledge/` (e.g., `architecture/`, `features/`, `conventions/`, `infrastructure/`)
 15. For each exported file (`exported-*.md`), determine which subdirectory it best fits into based on its content and keywords:
