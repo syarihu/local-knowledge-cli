@@ -7,6 +7,10 @@
 .claude/search.log
 
 
+# claude
+.claude/worktrees
+
+
 # Added by cargo
 
 /target
