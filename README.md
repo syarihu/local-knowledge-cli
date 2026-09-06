@@ -480,7 +480,7 @@ No manual server startup is needed — Claude Code / Claude Desktop automaticall
 
 `lk init` creates `.knowledge/lk-instructions.md` containing knowledge base guidelines (search before investigating, save after discovering, etc.).
 
-- **Claude Code**: `lk init` adds an `@.knowledge/lk-instructions.md` import line to `CLAUDE.md` (or `.claude/CLAUDE.md` if it exists, creating `CLAUDE.md` if needed). This keeps your project config minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
+- **Claude Code**: `lk init` adds an `@.knowledge/lk-instructions.md` import line to your project's Claude config file (prioritizing `CLAUDE.md` over `.claude/CLAUDE.md`, and creating `CLAUDE.md` if neither exists). This keeps your project config minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
 - **Other AI Agents (Cursor, Antigravity, Codex, etc.)**: Connect the `lk-knowledge` MCP server (`lk install-mcp`). The server returns instructions automatically via the MCP `initialize` response (`InitializeResult.instructions`), so no configuration file edits or imports are needed.
 
 `lk-instructions.md` is generated (not meant to be hand-edited), so `lk update` and `lk install-commands` refresh it in place wherever it already exists (the current project and the global `~/.claude/` copy) using the freshly installed binary's content. Locations that haven't run `lk init` are left untouched.
