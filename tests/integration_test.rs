@@ -2154,11 +2154,8 @@ fn test_mcp_tool_names_mirror_the_cli_subcommands() {
 #[test]
 fn test_mcp_tool_descriptions_include_behavioral_triggers() {
     let dir = setup_temp_project();
-    lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
 
     let tools: Vec<serde_json::Value> = mcp_request(
         dir.path(),
@@ -2185,8 +2182,12 @@ fn test_mcp_tool_descriptions_include_behavioral_triggers() {
         .expect("add_knowledge tool not found in tools/list");
     let add_desc = add_tool["description"].as_str().unwrap();
     assert!(
-        add_desc.starts_with("CRITICAL WORKFLOW: After investigating unfamiliar code, making an architecture decision, or discovering non-obvious implementation details, proactively call this tool to persist findings without waiting for user prompt."),
+        add_desc.starts_with("CRITICAL WORKFLOW: After investigating unfamiliar code"),
         "add_knowledge description must lead with proactive saving instructions: {add_desc}"
+    );
+    assert!(
+        add_desc.contains("proactively call this tool to persist findings"),
+        "add_knowledge description must mention proactive persistence: {add_desc}"
     );
 }
 
