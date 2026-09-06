@@ -3,9 +3,9 @@ use crate::cmd::update::install_embedded_commands;
 use crate::db;
 use crate::util::get_project_root;
 
-pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_init(global: bool, no_import: bool) -> Result<(), Box<dyn std::error::Error>> {
     if global {
-        return cmd_init_global();
+        return cmd_init_global(no_import);
     }
     let root = get_project_root();
     let db_path = root.join(".knowledge").join("knowledge.db");
@@ -181,74 +181,41 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     // Migrate: if AGENTS.md exists, remove any lk import or legacy marker from it
     let agents_md_path = root.join("AGENTS.md");
-    if agents_md_path.exists() {
-        let content = std::fs::read_to_string(&agents_md_path)?;
-        let mut tracker = CodeFenceTracker::default();
-        let has_import = content.lines().any(|line| {
-            let inside = tracker.process_line(line);
-            !inside
-                && !tracker.is_in_code_block()
-                && (is_matching_import(line, import_line)
-                    || is_matching_import(line, old_import_line))
-        });
-        let has_marker = find_heading_pos(&content, old_marker).is_some();
+    match strip_lk_import(&agents_md_path, &[import_line, old_import_line], old_marker)? {
+        StripOutcome::Removed => {
+            println!("Migrated lk import from AGENTS.md and removed empty file")
+        }
+        StripOutcome::Modified => {
+            println!("Migrated lk import out of {}", agents_md_path.display())
+        }
+        StripOutcome::Unchanged => {}
+    }
 
-        if has_import || has_marker {
-            let newline = detect_newline(&content);
-            let mut new_content = content.clone();
-            if has_import {
-                let mut filter_tracker = CodeFenceTracker::default();
-                let lines: Vec<&str> = new_content
-                    .lines()
-                    .filter(|line| {
-                        let inside = filter_tracker.process_line(line);
-                        if !inside && !filter_tracker.is_in_code_block() {
-                            !is_matching_import(line, import_line)
-                                && !is_matching_import(line, old_import_line)
-                        } else {
-                            true
-                        }
-                    })
-                    .collect();
-                new_content = lines.join(newline);
-                if content.ends_with('\n') && !new_content.is_empty() {
-                    new_content.push_str(newline);
+    // `claude_md_import = false` (or `--no-import`) means the agent gets these
+    // instructions from the MCP server's `initialize` response instead, so the import
+    // would just be a second copy of the same bytes in every session. Take it back out
+    // rather than only skipping the add, so the setting is reachable from a project
+    // that already has the import.
+    let want_import = !no_import && config.claude_md_import;
+
+    if !want_import {
+        for candidate in &candidates {
+            match strip_lk_import(candidate, &[import_line, old_import_line], old_marker)? {
+                StripOutcome::Removed => println!(
+                    "Removed lk import and deleted empty {}",
+                    candidate.display()
+                ),
+                StripOutcome::Modified => {
+                    println!("Removed lk import from {}", candidate.display())
                 }
-            }
-            if let Some(section_start) = find_heading_pos(&new_content, old_marker) {
-                let rest = &new_content[section_start..];
-                let heading_line_len = rest
-                    .split_inclusive('\n')
-                    .next()
-                    .map(|l| l.len())
-                    .unwrap_or(rest.len());
-                let body = &rest[heading_line_len..];
-                let section_end = find_next_h1_or_h2_pos(body)
-                    .map(|offset| section_start + heading_line_len + offset)
-                    .unwrap_or(new_content.len());
-
-                let mut trimmed = new_content[..section_start].to_string();
-                if section_end < new_content.len() {
-                    trimmed.push_str(&new_content[section_end..]);
-                }
-                new_content = trimmed;
-            }
-
-            // Collapse excessive blank lines outside code fences
-            new_content = collapse_blank_lines(&new_content);
-
-            if new_content.trim().is_empty() {
-                std::fs::remove_file(&agents_md_path)?;
-                println!("Migrated lk import from AGENTS.md and removed empty file");
-            } else {
-                std::fs::write(&agents_md_path, new_content)?;
-                println!("Migrated lk import out of {}", agents_md_path.display());
+                StripOutcome::Unchanged => {}
             }
         }
+        println!("Skipped CLAUDE.md import (claude_md_import = false)");
     }
 
     // Migrate legacy import line in CLAUDE.md
-    for candidate in &candidates {
+    for candidate in candidates.iter().filter(|_| want_import) {
         if candidate.exists() {
             let content = std::fs::read_to_string(candidate)?;
             let mut check_tracker = CodeFenceTracker::default();
@@ -294,7 +261,9 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Check if any candidate already contains the import line
+    // Check if any candidate already contains the import line.
+    // When `want_import` is false the strip above has already taken it out, so this is
+    // false and the `else if` below leaves the file alone.
     let already_imported = candidates.iter().any(|p| {
         p.exists()
             && std::fs::read_to_string(p)
@@ -310,7 +279,7 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     if already_imported {
         println!("lk import already exists in a project config file");
-    } else {
+    } else if want_import {
         // Find the first existing file, or create CLAUDE.md
         let target_path = candidates
             .iter()
@@ -372,11 +341,21 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 7. Create config.toml if it doesn't exist
+    // 7. Create config.toml if it doesn't exist, and record --no-import in it so the
+    //    choice survives the next `lk init` instead of having to be re-passed.
     let config_path = knowledge_dir.join("config.toml");
     if !config_path.exists() {
         std::fs::write(&config_path, crate::config::DEFAULT_CONFIG_CONTENT)?;
         println!("Created {}", config_path.display());
+    }
+    if no_import && config.claude_md_import {
+        crate::config::set_config_bool(
+            &config_path,
+            "claude_md_import",
+            false,
+            crate::config::DEFAULT_CONFIG_CONTENT,
+        )?;
+        println!("Set claude_md_import = false in {}", config_path.display());
     }
 
     // 8. Write .knowledge/.lk-version
@@ -390,9 +369,11 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_init_global(no_import: bool) -> Result<(), Box<dyn std::error::Error>> {
     let claude_dir = crate::util::home_dir().join(".claude");
     std::fs::create_dir_all(&claude_dir)?;
+    let global_config = crate::config::GlobalConfig::load();
+    let want_import = !no_import && global_config.claude_md_import;
 
     // 1. Write lk-instructions.md to ~/.claude/
     let instructions_path = claude_dir.join("lk-instructions.md");
@@ -414,8 +395,31 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Add @lk-instructions.md to ~/.claude/CLAUDE.md
     let claude_md_path = claude_dir.join("CLAUDE.md");
     let import_line = "@lk-instructions.md";
+    let old_marker = "## Knowledge Base (local-knowledge-cli)";
 
-    if claude_md_path.exists() {
+    if !want_import {
+        match strip_lk_import(&claude_md_path, &[import_line], old_marker)? {
+            StripOutcome::Removed => println!(
+                "Removed lk import and deleted empty {}",
+                claude_md_path.display()
+            ),
+            StripOutcome::Modified => {
+                println!("Removed lk import from {}", claude_md_path.display())
+            }
+            StripOutcome::Unchanged => {}
+        }
+        println!("Skipped CLAUDE.md import (claude_md_import = false)");
+        if no_import && global_config.claude_md_import {
+            let config_path = crate::config::GlobalConfig::path();
+            crate::config::set_config_bool(
+                &config_path,
+                "claude_md_import",
+                false,
+                crate::config::DEFAULT_GLOBAL_CONFIG_CONTENT,
+            )?;
+            println!("Set claude_md_import = false in {}", config_path.display());
+        }
+    } else if claude_md_path.exists() {
         let content = std::fs::read_to_string(&claude_md_path)?;
         let mut tracker = CodeFenceTracker::default();
         let already_imported = content.lines().any(|l| {
@@ -446,6 +450,96 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nGlobal initialization complete!");
     Ok(())
+}
+
+/// What [`strip_lk_import`] did to a file.
+#[derive(Debug, PartialEq, Eq)]
+enum StripOutcome {
+    /// The file had no lk import or legacy marker (or does not exist).
+    Unchanged,
+    /// The import/marker was removed and the user's own content was kept.
+    Modified,
+    /// Nothing but lk's own lines was left, so the file was deleted.
+    Removed,
+}
+
+/// Remove lk's import line (any of `import_lines`) and the legacy inline marker section
+/// from `path`, leaving everything the user wrote. Imports and markers inside fenced code
+/// blocks are left alone, as are lines indented past CommonMark's 3-space limit.
+///
+/// When the file holds nothing but lk's own lines it is deleted rather than left empty:
+/// a `CLAUDE.md` or `AGENTS.md` whose only content was the import is a file lk created,
+/// and keeping an empty one around just leaves litter for the user to clean up.
+fn strip_lk_import(
+    path: &std::path::Path,
+    import_lines: &[&str],
+    old_marker: &str,
+) -> Result<StripOutcome, Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Ok(StripOutcome::Unchanged);
+    }
+    let content = std::fs::read_to_string(path)?;
+    let mut tracker = CodeFenceTracker::default();
+    let has_import = content.lines().any(|line| {
+        let inside = tracker.process_line(line);
+        !inside
+            && !tracker.is_in_code_block()
+            && import_lines.iter().any(|t| is_matching_import(line, t))
+    });
+    let has_marker = find_heading_pos(&content, old_marker).is_some();
+    if !has_import && !has_marker {
+        return Ok(StripOutcome::Unchanged);
+    }
+
+    let newline = detect_newline(&content);
+    let mut new_content = content.clone();
+    if has_import {
+        let mut filter_tracker = CodeFenceTracker::default();
+        let lines: Vec<&str> = new_content
+            .lines()
+            .filter(|line| {
+                let inside = filter_tracker.process_line(line);
+                if !inside && !filter_tracker.is_in_code_block() {
+                    !import_lines.iter().any(|t| is_matching_import(line, t))
+                } else {
+                    true
+                }
+            })
+            .collect();
+        new_content = lines.join(newline);
+        if content.ends_with('\n') && !new_content.is_empty() {
+            new_content.push_str(newline);
+        }
+    }
+    if let Some(section_start) = find_heading_pos(&new_content, old_marker) {
+        let rest = &new_content[section_start..];
+        let heading_line_len = rest
+            .split_inclusive('\n')
+            .next()
+            .map(|l| l.len())
+            .unwrap_or(rest.len());
+        let body = &rest[heading_line_len..];
+        let section_end = find_next_h1_or_h2_pos(body)
+            .map(|offset| section_start + heading_line_len + offset)
+            .unwrap_or(new_content.len());
+
+        let mut trimmed = new_content[..section_start].to_string();
+        if section_end < new_content.len() {
+            trimmed.push_str(&new_content[section_end..]);
+        }
+        new_content = trimmed;
+    }
+
+    // Collapse excessive blank lines outside code fences
+    new_content = collapse_blank_lines(&new_content);
+
+    if new_content.trim().is_empty() {
+        std::fs::remove_file(path)?;
+        Ok(StripOutcome::Removed)
+    } else {
+        std::fs::write(path, new_content)?;
+        Ok(StripOutcome::Modified)
+    }
 }
 
 /// Returns "\r\n" if `content` uses CRLF newlines exclusively, otherwise defaults to "\n".

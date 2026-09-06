@@ -29,6 +29,11 @@ enum Commands {
         /// Install lk-instructions globally to ~/.claude/
         #[arg(long)]
         global: bool,
+        /// Don't add the lk-instructions import to CLAUDE.md, and remove it if present.
+        /// Use when agents read the instructions from the lk-knowledge MCP server instead.
+        /// Recorded as `claude_md_import = false` in config.toml, so it sticks across runs.
+        #[arg(long)]
+        no_import: bool,
     },
     /// Add a knowledge entry
     Add {
@@ -533,7 +538,7 @@ fn main() {
     }
 
     let result = match cli.command {
-        Commands::Init { global } => cmd::cmd_init(global),
+        Commands::Init { global, no_import } => cmd::cmd_init(global, no_import),
         Commands::Add {
             title,
             keywords,

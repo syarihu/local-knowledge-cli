@@ -33,6 +33,10 @@ pub struct Config {
     pub command_log: bool,
     /// Mark .knowledge/**/*.md as linguist-generated in .gitattributes (default: true)
     pub gitattributes_generated: bool,
+    /// Add the lk-instructions import to CLAUDE.md (default: true).
+    /// Set to false when agents receive the instructions over the lk-knowledge MCP
+    /// server instead, which serves the same content in its `initialize` response.
+    pub claude_md_import: bool,
 }
 
 impl Default for Config {
@@ -45,6 +49,7 @@ impl Default for Config {
             secret_detection: true,
             command_log: false,
             gitattributes_generated: true,
+            claude_md_import: true,
         }
     }
 }
@@ -113,6 +118,10 @@ impl Config {
                             config.gitattributes_generated =
                                 parse_bool(value, key, config.gitattributes_generated);
                         }
+                        "claude_md_import" => {
+                            config.claude_md_import =
+                                parse_bool(value, key, config.claude_md_import);
+                        }
                         _ => {} // Ignore unknown keys
                     }
                 }
@@ -162,6 +171,12 @@ command_log = false
 # Set to false to show full diffs for .knowledge/**/*.md in GitHub PRs
 gitattributes_generated = true
 
+# Add `@.knowledge/lk-instructions.md` to CLAUDE.md (default: true)
+# Set to false when agents read the instructions from the lk-knowledge MCP server,
+# which returns the same content in its `initialize` response; `lk init` then removes
+# the import line instead of adding it. `lk init --no-import` sets this for you.
+claude_md_import = true
+
 # Category templates: Place markdown files in .knowledge/templates/
 # e.g., .knowledge/templates/decisions.md will be used as default content
 # when running `lk add \"Title\" --category decisions` without --content
@@ -178,6 +193,9 @@ pub struct GlobalConfig {
     pub user_knowledge_dir: PathBuf,
     /// Detect potential secrets when exporting user-scope entries (default: true).
     pub secret_detection: bool,
+    /// Add the lk-instructions import to `~/.claude/CLAUDE.md` (default: true).
+    /// The user-scope counterpart of [`Config::claude_md_import`].
+    pub claude_md_import: bool,
 }
 
 impl GlobalConfig {
@@ -185,6 +203,7 @@ impl GlobalConfig {
         Self {
             user_knowledge_dir: home.join(".config").join("lk").join("knowledge"),
             secret_detection: true,
+            claude_md_import: true,
         }
     }
 
@@ -220,6 +239,10 @@ impl GlobalConfig {
                             config.secret_detection =
                                 parse_bool(value, key, config.secret_detection);
                         }
+                        "claude_md_import" => {
+                            config.claude_md_import =
+                                parse_bool(value, key, config.claude_md_import);
+                        }
                         _ => {} // Ignore unknown keys
                     }
                 }
@@ -227,6 +250,14 @@ impl GlobalConfig {
         }
 
         config
+    }
+
+    /// Path of the global config file (`~/.config/lk/config.toml`).
+    pub fn path() -> PathBuf {
+        crate::util::home_dir()
+            .join(".config")
+            .join("lk")
+            .join("config.toml")
     }
 }
 
@@ -273,7 +304,66 @@ pub const DEFAULT_GLOBAL_CONFIG_CONTENT: &str = "\
 
 # Detect potential secrets when exporting user-scope entries (default: true).
 secret_detection = true
+
+# Add `@lk-instructions.md` to ~/.claude/CLAUDE.md (default: true)
+# Set to false when agents read the instructions from the lk-knowledge MCP server.
+# `lk init --global --no-import` sets this for you.
+claude_md_import = true
 ";
+
+/// Set a boolean key in one of lk's line-based config files, rewriting the line when
+/// the key is already present and appending it otherwise. `default_content` seeds the
+/// file when it does not exist yet, so a `--no-import` run on a fresh project still
+/// leaves a fully commented config behind.
+///
+/// Key matching mirrors [`Config::load`]: lines are trimmed, `#` comments are skipped,
+/// and the key is whatever precedes the first `=`. Duplicate assignments of the same
+/// key are dropped rather than left in place — the loader takes the last one it sees,
+/// so a stale duplicate below the rewritten line would silently win.
+pub fn set_config_bool(
+    path: &Path,
+    key: &str,
+    value: bool,
+    default_content: &str,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => default_content.to_string(),
+        Err(e) => return Err(e),
+    };
+
+    let mut replaced = false;
+    let mut lines: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let is_assignment = !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(k, _)| k.trim() == key);
+        if is_assignment {
+            if !replaced {
+                lines.push(format!("{key} = {value}"));
+                replaced = true;
+            }
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if !replaced {
+        if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push(format!("{key} = {value}"));
+    }
+
+    let mut out = lines.join("\n");
+    out.push('\n');
+    std::fs::write(path, out)
+}
 
 #[cfg(test)]
 mod tests {
@@ -290,6 +380,111 @@ mod tests {
         assert!(config.secret_detection);
         assert!(!config.command_log);
         assert!(config.gitattributes_generated);
+        assert!(config.claude_md_import);
+    }
+
+    #[test]
+    fn test_load_claude_md_import() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "claude_md_import = false\n").unwrap();
+        assert!(!Config::load(dir.path()).claude_md_import);
+
+        // An unparseable value must not flip the default off by accident.
+        std::fs::write(dir.path().join("config.toml"), "claude_md_import = maybe\n").unwrap();
+        assert!(Config::load(dir.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_global_config_claude_md_import() {
+        let home = TempDir::new().unwrap();
+        let config_path = home.path().join("config.toml");
+        assert!(GlobalConfig::load_from(&config_path, home.path()).claude_md_import);
+
+        std::fs::write(&config_path, "claude_md_import = no\n").unwrap();
+        assert!(!GlobalConfig::load_from(&config_path, home.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_set_config_bool_rewrites_existing_key() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# lk config\nauto_sync = true\nclaude_md_import = true\n",
+        )
+        .unwrap();
+
+        set_config_bool(&path, "claude_md_import", false, "").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content, "# lk config\nauto_sync = true\nclaude_md_import = false\n",
+            "only the target key changes"
+        );
+        assert!(!Config::load(dir.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_set_config_bool_appends_missing_key() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "auto_sync = true\n").unwrap();
+
+        set_config_bool(&path, "claude_md_import", false, "").unwrap();
+
+        assert!(!Config::load(dir.path()).claude_md_import);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("auto_sync = true"));
+        assert!(content.ends_with("claude_md_import = false\n"));
+    }
+
+    #[test]
+    fn test_set_config_bool_seeds_file_from_default_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+
+        set_config_bool(&path, "claude_md_import", false, DEFAULT_CONFIG_CONTENT).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        // The rest of the default config survives, so the user still gets the comments.
+        assert!(content.contains("stale_threshold_days = 30"));
+        assert!(!Config::load(dir.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_set_config_bool_drops_duplicate_assignments() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        // `Config::load` takes the last assignment it sees, so a leftover duplicate
+        // below the rewritten line would win and undo the change.
+        std::fs::write(
+            &path,
+            "claude_md_import = true\nauto_sync = true\nclaude_md_import = true\n",
+        )
+        .unwrap();
+
+        set_config_bool(&path, "claude_md_import", false, "").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.matches("claude_md_import").count(), 1);
+        assert!(!Config::load(dir.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_set_config_bool_ignores_commented_key() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# claude_md_import = true\n").unwrap();
+
+        set_config_bool(&path, "claude_md_import", false, "").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("# claude_md_import = true"),
+            "the comment is left as documentation, got:\n{content}"
+        );
+        assert!(content.contains("\nclaude_md_import = false\n"));
+        assert!(!Config::load(dir.path()).claude_md_import);
     }
 
     #[test]

@@ -508,6 +508,28 @@ No manual server startup is needed — Claude Code / Claude Desktop automaticall
 
 `lk-instructions.md` is generated (not meant to be hand-edited), so `lk update` and `lk install-commands` refresh it in place wherever it already exists (the current project and the global `~/.claude/` copy) using the freshly installed binary's content. Locations that haven't run `lk init` are left untouched.
 
+#### Skipping the CLAUDE.md import
+
+If Claude Code is connected to the `lk-knowledge` MCP server, it already receives these
+instructions in the `initialize` response — byte for byte the same content the import
+points at. The import then costs a second copy of it in every session, and you can drop it:
+
+```bash
+lk init --no-import           # project: skip the import, and remove it if already present
+lk init --global --no-import  # same for ~/.claude/CLAUDE.md
+```
+
+This records `claude_md_import = false` in `.knowledge/config.toml` (or `~/.config/lk/config.toml`
+for `--global`), so later `lk init` runs don't put the import back — deleting the line by
+hand doesn't survive the next run. Set it back to `true` and re-run `lk init` to restore it.
+
+A `CLAUDE.md` whose only content was the import is deleted rather than left empty; one
+with your own content keeps it, and an import shown inside a code fence is left alone.
+
+Keep the import if the MCP server isn't connected everywhere the repo is used — teammates
+who clone without configuring MCP, or CI — since it's the only path that carries the
+instructions through the repository itself.
+
 After `lk init`, Claude Code will automatically:
 
 1. Search the knowledge base before exploring code
@@ -548,6 +570,12 @@ command_log = false
 # Mark .knowledge/*.md as linguist-generated in .gitattributes (default: true)
 # Set to false to show full diffs for .knowledge/*.md in GitHub PRs
 gitattributes_generated = true
+
+# Add `@.knowledge/lk-instructions.md` to CLAUDE.md (default: true)
+# Set to false when agents read the instructions from the lk-knowledge MCP server
+# instead; `lk init` then removes the import line rather than adding it.
+# `lk init --no-import` sets this for you.
+claude_md_import = true
 ```
 
 ### Global config (user scope)
@@ -564,6 +592,11 @@ User-scope markdown export/sync is governed by a separate global config at `~/.c
 
 # Detect potential secrets when exporting user-scope entries (default: true)
 secret_detection = true
+
+# Add `@lk-instructions.md` to ~/.claude/CLAUDE.md (default: true)
+# Set to false when agents read the instructions from the lk-knowledge MCP server.
+# `lk init --global --no-import` sets this for you.
+claude_md_import = true
 ```
 
 ### Environment variable overrides
