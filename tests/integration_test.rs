@@ -43,11 +43,7 @@ fn test_help() {
 #[test]
 fn test_init() {
     let dir = setup_temp_project();
-    let output = lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
     assert!(output.status.success());
 
     // Verify DB was created
@@ -76,16 +72,8 @@ fn test_init_idempotent() {
     let dir = setup_temp_project();
 
     // Run init twice
-    lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    let output = lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    lk_in(dir.path()).arg("init").output().unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
     assert!(output.status.success());
 
     // CLAUDE.md should not have duplicate import lines, and AGENTS.md was not created
@@ -101,11 +89,7 @@ fn test_init_migrates_agents_md_to_claude_md() {
     let agents_md_path = dir.path().join("AGENTS.md");
     std::fs::write(&agents_md_path, "@.knowledge/lk-instructions.md\n").unwrap();
 
-    let output = lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
     assert!(output.status.success());
 
     // AGENTS.md had only lk import, so it should be removed
@@ -125,11 +109,7 @@ fn test_init_removes_import_from_agents_md_with_other_content() {
     )
     .unwrap();
 
-    let output = lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
     assert!(output.status.success());
 
     // AGENTS.md should still exist with user content, but without lk import
@@ -152,11 +132,7 @@ fn test_init_prefers_dot_claude_claude_md_if_exists() {
     let claude_md_path = dot_claude.join("CLAUDE.md");
     std::fs::write(&claude_md_path, "# Dot Claude\n").unwrap();
 
-    let output = lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
     assert!(output.status.success());
 
     assert!(!dir.path().join("AGENTS.md").exists());
@@ -174,11 +150,7 @@ fn test_init_migrates_agents_md_when_claude_md_already_has_content() {
     let claude_md_path = dir.path().join("CLAUDE.md");
     std::fs::write(&claude_md_path, "# Existing Claude Rules\n").unwrap();
 
-    let output = lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
     assert!(output.status.success());
 
     // AGENTS.md had only lk import, so it should be removed

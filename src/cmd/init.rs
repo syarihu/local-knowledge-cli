@@ -204,9 +204,8 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(section_start) = new_content.find(old_marker) {
                 let rest = &new_content[section_start + old_marker.len()..];
                 let section_end = rest
-                    .match_indices("\n## ")
-                    .find(|(i, _)| !rest[i + 4..].starts_with('#'))
-                    .map(|(i, _)| section_start + old_marker.len() + i)
+                    .find("\n## ")
+                    .map(|i| section_start + old_marker.len() + i)
                     .unwrap_or(new_content.len());
 
                 let mut trimmed = new_content[..section_start].to_string();
@@ -269,9 +268,8 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                 let section_start = content.find(old_marker).unwrap();
                 let rest = &content[section_start + old_marker.len()..];
                 let section_end = rest
-                    .match_indices("\n## ")
-                    .find(|(i, _)| !rest[i + 4..].starts_with('#'))
-                    .map(|(i, _)| section_start + old_marker.len() + i)
+                    .find("\n## ")
+                    .map(|i| section_start + old_marker.len() + i)
                     .unwrap_or(content.len());
 
                 let mut new_content = content[..section_start].to_string();
