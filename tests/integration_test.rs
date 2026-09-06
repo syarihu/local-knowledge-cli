@@ -396,6 +396,58 @@ fn test_init_does_not_modify_agents_md_with_indented_marker() {
 }
 
 #[test]
+fn test_init_does_not_delete_indented_import_in_agents_md() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let content = "\
+# Project Instructions
+
+Here is an example import in an indented block:
+
+    @.knowledge/lk-instructions.md
+    @.claude/lk-instructions.md
+";
+    std::fs::write(&agents_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should be untouched because indented imports are examples, not real imports
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert_eq!(agents_md, content);
+
+    // CLAUDE.md should still be created with the real import line
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    assert!(claude_md_path.exists());
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_does_not_migrate_indented_import_in_claude_md() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+Example old import:
+
+    @.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // The indented example should NOT be rewritten
+    assert!(claude_md.contains("    @.claude/lk-instructions.md"));
+    // A real import should be appended because the example is not treated as an existing import
+    assert!(claude_md.ends_with("@.knowledge/lk-instructions.md\n"));
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()

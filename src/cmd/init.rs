@@ -186,12 +186,10 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
         let mut tracker = CodeFenceTracker::default();
         let has_import = content.lines().any(|line| {
             let inside = tracker.process_line(line);
-            if !inside && !tracker.is_in_code_block() {
-                let trimmed = line.trim();
-                trimmed == import_line || trimmed == old_import_line
-            } else {
-                false
-            }
+            !inside
+                && !tracker.is_in_code_block()
+                && (is_matching_import(line, import_line)
+                    || is_matching_import(line, old_import_line))
         });
         let has_marker = find_heading_pos(&content, old_marker).is_some();
 
@@ -204,8 +202,8 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                     .filter(|line| {
                         let inside = filter_tracker.process_line(line);
                         if !inside && !filter_tracker.is_in_code_block() {
-                            let trimmed = line.trim();
-                            trimmed != import_line && trimmed != old_import_line
+                            !is_matching_import(line, import_line)
+                                && !is_matching_import(line, old_import_line)
                         } else {
                             true
                         }
@@ -255,7 +253,9 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
             let mut check_tracker = CodeFenceTracker::default();
             let has_old_import = content.lines().any(|l| {
                 let inside = check_tracker.process_line(l);
-                !inside && !check_tracker.is_in_code_block() && l.trim() == old_import_line
+                !inside
+                    && !check_tracker.is_in_code_block()
+                    && is_matching_import(l, old_import_line)
             });
             if has_old_import {
                 let mut replace_tracker = CodeFenceTracker::default();
@@ -265,7 +265,7 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                         let inside = replace_tracker.process_line(l);
                         if !inside
                             && !replace_tracker.is_in_code_block()
-                            && l.trim() == old_import_line
+                            && is_matching_import(l, old_import_line)
                         {
                             import_line.to_string()
                         } else {
@@ -291,7 +291,7 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                     let mut tracker = CodeFenceTracker::default();
                     c.lines().any(|l| {
                         let inside = tracker.process_line(l);
-                        !inside && !tracker.is_in_code_block() && l.trim() == import_line
+                        !inside && !tracker.is_in_code_block() && is_matching_import(l, import_line)
                     })
                 })
                 .unwrap_or(false)
@@ -403,7 +403,7 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
         let mut tracker = CodeFenceTracker::default();
         let already_imported = content.lines().any(|l| {
             let inside = tracker.process_line(l);
-            !inside && !tracker.is_in_code_block() && l.trim() == import_line
+            !inside && !tracker.is_in_code_block() && is_matching_import(l, import_line)
         });
         if already_imported {
             println!("lk import already exists in {}", claude_md_path.display());
@@ -448,6 +448,13 @@ fn strip_indent_up_to_3(line: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// Returns true if `line` matches `target` after stripping up to 3 leading ASCII spaces
+/// and trimming trailing whitespace. If the line is indented by 4+ spaces or tabs,
+/// it is considered an indented code block in CommonMark and returns false.
+fn is_matching_import(line: &str, target: &str) -> bool {
+    strip_indent_up_to_3(line).is_some_and(|r| r.trim_end() == target)
 }
 
 /// Tracks CommonMark fenced code blocks (``` or ~~~) across lines.
@@ -722,5 +729,39 @@ fn foo() {
 ";
         let pos = find_heading_pos(content, "## Knowledge Base (local-knowledge-cli)");
         assert!(pos.is_none());
+    }
+
+    #[test]
+    fn test_is_matching_import() {
+        let import = "@.knowledge/lk-instructions.md";
+        assert!(is_matching_import("@.knowledge/lk-instructions.md", import));
+        assert!(is_matching_import(
+            "   @.knowledge/lk-instructions.md",
+            import
+        ));
+        assert!(is_matching_import(
+            "@.knowledge/lk-instructions.md   ",
+            import
+        ));
+        assert!(is_matching_import(
+            "   @.knowledge/lk-instructions.md   ",
+            import
+        ));
+
+        // 4+ spaces is an indented code block, not an import
+        assert!(!is_matching_import(
+            "    @.knowledge/lk-instructions.md",
+            import
+        ));
+        // Tab is an indented code block
+        assert!(!is_matching_import(
+            "\t@.knowledge/lk-instructions.md",
+            import
+        ));
+        // Mismatched import line
+        assert!(!is_matching_import("@.claude/lk-instructions.md", import));
+        // Empty or whitespace lines
+        assert!(!is_matching_import("", import));
+        assert!(!is_matching_import("   ", import));
     }
 }
