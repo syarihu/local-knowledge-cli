@@ -2242,6 +2242,7 @@ fn test_mcp_tool_annotations() {
     let edit_tool = find_tool("edit_knowledge");
     assert_eq!(edit_tool["annotations"]["readOnlyHint"], false);
     assert_eq!(edit_tool["annotations"]["destructiveHint"], false);
+    assert_eq!(edit_tool["annotations"]["idempotentHint"], true);
 
     let supersede_tool = find_tool("supersede_knowledge");
     assert_eq!(supersede_tool["annotations"]["readOnlyHint"], false);

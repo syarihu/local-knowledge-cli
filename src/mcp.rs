@@ -546,7 +546,8 @@ fn tool_def_edit(registry: &ProjectRegistry) -> Value {
         },
         "annotations": {
             "readOnlyHint": false,
-            "destructiveHint": false
+            "destructiveHint": false,
+            "idempotentHint": true
         }
     });
     inject_project_prop(&mut def, registry);
