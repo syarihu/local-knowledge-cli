@@ -330,6 +330,11 @@ enum Commands {
         #[arg(long, default_value = "all")]
         target: String,
     },
+    /// Output agent-specific setup instructions to connect AI coding agents to lk
+    Setup {
+        /// Target agent (e.g., "agy", "cursor", "claude", "codex", or "all")
+        target: Option<String>,
+    },
 }
 
 impl Commands {
@@ -696,6 +701,7 @@ fn main() {
             remove_project,
         } => cmd::cmd_install_mcp(&target, &project, &remove_project),
         Commands::UninstallMcp { target } => cmd::cmd_uninstall_mcp(&target),
+        Commands::Setup { target } => cmd::cmd_setup(target.as_deref()),
     };
 
     if let Err(e) = result {
