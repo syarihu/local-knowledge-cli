@@ -187,14 +187,14 @@ pub const PROMPTS: &[PromptDef] = &[
 ];
 
 pub fn find_prompt(name: &str) -> Option<&'static PromptDef> {
-    let query = name.trim();
-    let query_base = query
+    let normalized = name.trim().to_ascii_lowercase();
+    let query_base = normalized
         .strip_prefix("lk-knowledge-")
-        .or_else(|| query.strip_prefix("lk-"))
-        .unwrap_or(query);
+        .or_else(|| normalized.strip_prefix("lk-"))
+        .unwrap_or(&normalized);
 
     PROMPTS.iter().find(|p| {
-        if p.name.eq_ignore_ascii_case(query) {
+        if p.name == normalized {
             return true;
         }
         let p_base = p
@@ -202,7 +202,7 @@ pub fn find_prompt(name: &str) -> Option<&'static PromptDef> {
             .strip_prefix("lk-knowledge-")
             .or_else(|| p.name.strip_prefix("lk-"))
             .unwrap_or(p.name);
-        p_base.eq_ignore_ascii_case(query_base)
+        p_base == query_base
     })
 }
 
@@ -273,6 +273,8 @@ mod tests {
     fn test_find_prompt_canonical_and_alias() {
         assert!(find_prompt("lk-search").is_some());
         assert!(find_prompt("lk-knowledge-search").is_some());
+        assert!(find_prompt("LK-KNOWLEDGE-SEARCH").is_some());
+        assert!(find_prompt("Lk-Knowledge-Plan").is_some());
         assert!(find_prompt("search").is_some());
         assert!(find_prompt("SEARCH").is_some());
         assert!(find_prompt("LK-SEARCH").is_some());

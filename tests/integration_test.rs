@@ -5471,10 +5471,10 @@ fn test_mcp_prompts_list() {
         .expect("prompts/list must return prompts array");
     assert_eq!(prompts.len(), 11);
 
-    // Verify all prompt names start with lk-
+    // Verify all prompt names start with lk- and do not use legacy lk-knowledge-
     for p in prompts {
         let name = p["name"].as_str().expect("prompt name must be string");
-        assert!(name.starts_with("lk-"));
+        assert!(name.starts_with("lk-") && !name.starts_with("lk-knowledge-"));
         let desc = p["description"]
             .as_str()
             .expect("prompt description must be string");
@@ -5560,6 +5560,17 @@ fn test_mcp_prompts_get() {
         .as_str()
         .unwrap();
     assert!(!text.contains("$ARGUMENTS"));
+    assert!(text.contains(r#"lk search "" --json --limit 5"#));
+
+    // 4. Get prompt with uppercase legacy alias
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"LK-KNOWLEDGE-SEARCH"}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let text = replies[0]["result"]["messages"][0]["content"]["text"]
+        .as_str()
+        .unwrap();
     assert!(text.contains(r#"lk search "" --json --limit 5"#));
 }
 
