@@ -563,6 +563,40 @@ User notes with multiple blank lines.
 }
 
 #[test]
+fn test_init_migrates_claude_md_inline_section_preserves_user_blank_lines() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Overview
+
+
+
+Intro text with multiple blank lines.
+
+
+
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+# Next Chapter
+
+
+
+Another section with multiple blank lines.
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("# Overview\n\n\n\nIntro text with multiple blank lines."));
+    assert!(claude_md.contains("# Next Chapter\n\n\n\nAnother section with multiple blank lines."));
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+    assert!(!claude_md.contains("Knowledge Base (local-knowledge-cli)"));
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()

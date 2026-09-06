@@ -349,7 +349,6 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     new_content.push_str(&content[section_end..]);
                 }
-                new_content = collapse_blank_lines(&new_content);
                 std::fs::write(&target_path, new_content)?;
                 println!(
                     "Migrated inline instructions to import in {}",
