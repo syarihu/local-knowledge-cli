@@ -466,7 +466,7 @@ Once installed, Claude has access to these tools:
 | Tool | Description |
 |------|-------------|
 | `search_knowledge` | Search the knowledge base with full-text or keyword search |
-| `add_knowledge` | Add new entries with duplicate detection |
+| `add_knowledge` | Add new entries with duplicate and secret detection |
 | `list_knowledge` | Browse entries with source/category filtering and pagination |
 | `get_knowledge` | Retrieve full content of an entry by ID |
 | `edit_knowledge` | Edit title, content, keywords, or status of an entry (CLI: `lk edit`) |
@@ -560,7 +560,7 @@ The sync is hash-based — if no files have changed, the overhead is negligible.
 
 ### Secret detection
 
-When enabled (default), `lk add` and `lk export` scan content for potential secrets (API keys, tokens, private keys, credentials). If detected, the command is blocked with a warning. Use `--allow-secrets` to override.
+When enabled (default), `lk add`, `lk export`, and the `add_knowledge` MCP tool scan content for potential secrets (API keys, tokens, private keys, credentials). If detected, the command or tool call is blocked with a warning. Use `--allow-secrets` (or `allow_secrets: true` in MCP) to override.
 
 ### GitHub PR diff collapsing
 

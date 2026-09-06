@@ -103,15 +103,7 @@ pub fn cmd_add(
             let matches = crate::secrets::check_for_secrets(&text);
             if !matches.is_empty() {
                 if json_output {
-                    let warnings: Vec<serde_json::Value> = matches
-                        .iter()
-                        .map(|m| {
-                            serde_json::json!({
-                                "pattern": m.pattern_name,
-                                "matched": m.matched,
-                            })
-                        })
-                        .collect();
+                    let warnings = crate::secrets::warnings_json(&matches);
                     let out = serde_json::json!({
                         "added": false,
                         "secret_detected": true,

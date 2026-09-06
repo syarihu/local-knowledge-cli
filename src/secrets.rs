@@ -68,6 +68,19 @@ pub fn format_warning(matches: &[SecretMatch]) -> String {
     msg
 }
 
+/// Format secret matches as JSON warning objects for CLI (`--json`) and MCP replies.
+pub fn warnings_json(matches: &[SecretMatch]) -> Vec<serde_json::Value> {
+    matches
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "pattern": m.pattern_name,
+                "matched": m.matched,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +166,15 @@ mod tests {
         let matches =
             check_for_secrets("Set AUTH_TOKEN environment variable before running the app");
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_warnings_json_format() {
+        let matches = check_for_secrets("aws key is AKIAIOSFODNN7EXAMPLE");
+        assert!(!matches.is_empty());
+        let json = warnings_json(&matches);
+        assert_eq!(json.len(), 1);
+        assert_eq!(json[0]["pattern"], "AWS Access Key ID");
+        assert_eq!(json[0]["matched"], "AKIA***");
     }
 }
