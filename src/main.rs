@@ -4,6 +4,7 @@ mod db;
 mod keywords;
 mod markdown;
 mod mcp;
+mod prompts;
 mod secrets;
 mod similarity;
 mod util;

@@ -2088,6 +2088,8 @@ fn test_mcp_initialize_returns_instructions() {
     let result = &replies[0]["result"];
     assert_eq!(result["protocolVersion"], "2024-11-05");
     assert_eq!(result["serverInfo"]["name"], "lk-knowledge");
+    assert!(result["capabilities"]["tools"].is_object());
+    assert!(result["capabilities"]["prompts"].is_object());
     let instructions = result["instructions"]
         .as_str()
         .expect("initialize response must contain instructions string");
@@ -5269,4 +5271,182 @@ fn test_setup_unknown_target() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Unknown agent: 'unknown-agent'"));
     assert!(stderr.contains("Available: agy, cursor, claude, codex, all"));
+}
+
+#[test]
+fn test_mcp_prompts_list() {
+    let dir = setup_temp_project();
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"prompts/list","params":{}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let result = &replies[0]["result"];
+    let prompts = result["prompts"]
+        .as_array()
+        .expect("prompts/list must return prompts array");
+    assert_eq!(prompts.len(), 11);
+
+    // Verify all prompt names start with lk-knowledge-
+    for p in prompts {
+        let name = p["name"].as_str().expect("prompt name must be string");
+        assert!(name.starts_with("lk-knowledge-"));
+        let desc = p["description"]
+            .as_str()
+            .expect("prompt description must be string");
+        assert!(!desc.is_empty());
+    }
+
+    // Verify lk-knowledge-search arguments
+    let search = prompts
+        .iter()
+        .find(|p| p["name"] == "lk-knowledge-search")
+        .expect("lk-knowledge-search must be listed");
+    let args = search["arguments"]
+        .as_array()
+        .expect("search must have arguments");
+    assert_eq!(args.len(), 1);
+    assert_eq!(args[0]["name"], "query");
+    assert_eq!(args[0]["required"], false);
+
+    // Verify lk-knowledge-plan arguments
+    let plan = prompts
+        .iter()
+        .find(|p| p["name"] == "lk-knowledge-plan")
+        .expect("lk-knowledge-plan must be listed");
+    let args = plan["arguments"]
+        .as_array()
+        .expect("plan must have arguments");
+    assert_eq!(args.len(), 1);
+    assert_eq!(args[0]["name"], "mode");
+    assert_eq!(args[0]["required"], false);
+
+    // Verify lk-knowledge-sync has no arguments
+    let sync = prompts
+        .iter()
+        .find(|p| p["name"] == "lk-knowledge-sync")
+        .expect("lk-knowledge-sync must be listed");
+    assert!(sync.get("arguments").is_none());
+}
+
+#[test]
+fn test_mcp_prompts_get() {
+    let dir = setup_temp_project();
+
+    // 1. Get canonical prompt with argument substitution
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"lk-knowledge-search","arguments":{"query":"auth flow"}}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let result = &replies[0]["result"];
+    assert_eq!(
+        result["description"],
+        "Search the local knowledge base for existing knowledge"
+    );
+    let messages = result["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    let text = messages[0]["content"]["text"].as_str().unwrap();
+    assert!(text.contains("auth flow"));
+    assert!(text.contains(r#"lk search "auth flow" --json --limit 5"#));
+    assert!(!text.starts_with("---"));
+    assert!(!text.contains("allowed-tools:"));
+
+    // 2. Get prompt with short alias
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"search","arguments":{"query":"payment logic"}}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let text = replies[0]["result"]["messages"][0]["content"]["text"]
+        .as_str()
+        .unwrap();
+    assert!(text.contains("payment logic"));
+
+    // 3. Get prompt without arguments (auto-route/empty substitution)
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"lk-knowledge-search"}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let text = replies[0]["result"]["messages"][0]["content"]["text"]
+        .as_str()
+        .unwrap();
+    assert!(!text.contains("$ARGUMENTS"));
+    assert!(text.contains(r#"lk search "" --json --limit 5"#));
+}
+
+#[test]
+fn test_mcp_prompts_get_errors() {
+    let dir = setup_temp_project();
+
+    // 1. Unknown prompt
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"nonexistent"}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let error = &replies[0]["error"];
+    assert_eq!(error["code"], -32602);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown prompt: 'nonexistent'")
+    );
+
+    // 2. Missing name param
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let error = &replies[0]["error"];
+    assert_eq!(error["code"], -32602);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("Missing 'name' parameter")
+    );
+}
+
+#[test]
+fn test_install_commands_embeds_all_prompts() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let output = lk_bin()
+        .arg("install-commands")
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let commands_dir = home.path().join(".claude/commands");
+    assert!(commands_dir.exists());
+
+    // Verify all 11 files are written
+    for filename in [
+        "lk-knowledge-search.md",
+        "lk-knowledge-save-context.md",
+        "lk-knowledge-plan.md",
+        "lk-knowledge-discover.md",
+        "lk-knowledge-refresh.md",
+        "lk-knowledge-add-db.md",
+        "lk-knowledge-from-branch.md",
+        "lk-knowledge-write-md.md",
+        "lk-knowledge-agent-brief.md",
+        "lk-knowledge-export.md",
+        "lk-knowledge-sync.md",
+    ] {
+        let p = commands_dir.join(filename);
+        assert!(p.exists(), "Command file {filename} should be installed");
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("allowed-tools:"));
+    }
 }

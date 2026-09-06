@@ -462,7 +462,9 @@ lk install-mcp --target claude-desktop --project /path/to/a --project /path/to/b
 lk install-mcp --target claude-desktop --remove-project /path/to/old-project
 ```
 
-Once installed, Claude has access to these tools:
+Once installed, clients have access to these tools and prompt templates:
+
+#### MCP Tools
 
 | Tool | Description |
 |------|-------------|
@@ -474,6 +476,26 @@ Once installed, Claude has access to these tools:
 | `supersede_knowledge` | Mark an entry as superseded by another (bidirectional) |
 | `get_stats` | Get knowledge base statistics |
 | `list_projects` | List registered projects (multi-project mode only) |
+
+#### MCP Prompts (`prompts/list`, `prompts/get`)
+
+`lk mcp` provides workflow prompt templates directly over MCP, allowing clients (Claude Code, Claude Desktop, Cursor, etc.) to invoke them without manual slash command file installation:
+
+| Prompt | Description | Arguments |
+|--------|-------------|-----------|
+| `lk-knowledge-search` | Search the local knowledge base for existing knowledge | `query` |
+| `lk-knowledge-save-context` | Save conversation context to lk knowledge base | `hint` |
+| `lk-knowledge-plan` | Save plans to tackle later and resume them from a working list | `mode` |
+| `lk-knowledge-discover` | Explore the entire project and auto-generate knowledge markdown files | `focus` |
+| `lk-knowledge-refresh` | Check all knowledge entries for staleness and update outdated ones | `focus` |
+| `lk-knowledge-add-db` | Add knowledge discovered in this conversation to the local DB | `description` |
+| `lk-knowledge-from-branch` | Extract knowledge entries from the current branch diff before merging | `branch` |
+| `lk-knowledge-write-md` | Help write well-structured knowledge markdown files from code or design info | `target` |
+| `lk-knowledge-agent-brief` | Canonical brief to prepend when delegating code investigation to sub-agents | - |
+| `lk-knowledge-export` | Export local knowledge entries to shareable markdown files | - |
+| `lk-knowledge-sync` | Sync shared knowledge markdown files into the local DB | - |
+
+*(In `prompts/get`, prompt names also accept short aliases such as `search`, `plan`, `save-context`, etc.)*
 
 No manual server startup is needed — Claude Code / Claude Desktop automatically launches `lk mcp` when a tool is called. When multiple projects are registered, each tool accepts an optional `project` parameter to specify which project to operate on.
 

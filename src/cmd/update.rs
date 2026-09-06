@@ -253,8 +253,8 @@ pub fn install_embedded_commands() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&commands_dir)?;
 
     // Clean up legacy ~ prefixed command files
-    for (filename, _) in EMBEDDED_COMMANDS {
-        let legacy = format!("~{filename}");
+    for p in crate::prompts::PROMPTS {
+        let legacy = format!("~{}", p.filename);
         let legacy_path = commands_dir.join(&legacy);
         if legacy_path.exists() {
             std::fs::remove_file(&legacy_path)?;
@@ -262,9 +262,9 @@ pub fn install_embedded_commands() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    for (filename, content) in EMBEDDED_COMMANDS {
-        std::fs::write(commands_dir.join(filename), content)?;
-        println!("  Updated: {filename}");
+    for p in crate::prompts::PROMPTS {
+        std::fs::write(commands_dir.join(p.filename), p.raw_content)?;
+        println!("  Updated: {}", p.filename);
     }
     Ok(())
 }
@@ -314,53 +314,6 @@ fn fetch_latest_tag(repo: &str) -> Result<String, Box<dyn std::error::Error>> {
     println!("Latest version: {tag}");
     Ok(tag)
 }
-
-const EMBEDDED_COMMANDS: &[(&str, &str)] = &[
-    (
-        "lk-knowledge-search.md",
-        include_str!("../../commands/lk-knowledge-search.md"),
-    ),
-    (
-        "lk-knowledge-add-db.md",
-        include_str!("../../commands/lk-knowledge-add-db.md"),
-    ),
-    (
-        "lk-knowledge-export.md",
-        include_str!("../../commands/lk-knowledge-export.md"),
-    ),
-    (
-        "lk-knowledge-sync.md",
-        include_str!("../../commands/lk-knowledge-sync.md"),
-    ),
-    (
-        "lk-knowledge-write-md.md",
-        include_str!("../../commands/lk-knowledge-write-md.md"),
-    ),
-    (
-        "lk-knowledge-discover.md",
-        include_str!("../../commands/lk-knowledge-discover.md"),
-    ),
-    (
-        "lk-knowledge-refresh.md",
-        include_str!("../../commands/lk-knowledge-refresh.md"),
-    ),
-    (
-        "lk-knowledge-from-branch.md",
-        include_str!("../../commands/lk-knowledge-from-branch.md"),
-    ),
-    (
-        "lk-knowledge-save-context.md",
-        include_str!("../../commands/lk-knowledge-save-context.md"),
-    ),
-    (
-        "lk-knowledge-agent-brief.md",
-        include_str!("../../commands/lk-knowledge-agent-brief.md"),
-    ),
-    (
-        "lk-knowledge-plan.md",
-        include_str!("../../commands/lk-knowledge-plan.md"),
-    ),
-];
 
 fn detect_target() -> Result<String, Box<dyn std::error::Error>> {
     let os = std::env::consts::OS;
