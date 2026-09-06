@@ -549,7 +549,7 @@ fn find_heading_pos(content: &str, heading: &str) -> Option<usize> {
     None
 }
 
-/// Find the byte offset in `body` where the next H1 (`# `) or H2 (`## `) heading begins.
+/// Find the byte offset in `body` where the next H1 (`# ` or `#\t`) or H2 (`## ` or `##\t`) heading begins.
 /// Skips any headings that occur inside code fences.
 fn find_next_h1_or_h2_pos(body: &str) -> Option<usize> {
     let mut tracker = CodeFenceTracker::default();
@@ -558,8 +558,13 @@ fn find_next_h1_or_h2_pos(body: &str) -> Option<usize> {
         let inside_code = tracker.process_line(line);
         if !inside_code
             && !tracker.is_in_code_block()
-            && strip_indent_up_to_3(line)
-                .is_some_and(|r| r.trim_end().starts_with("# ") || r.trim_end().starts_with("## "))
+            && strip_indent_up_to_3(line).is_some_and(|r| {
+                let trimmed = r.trim_end();
+                trimmed.starts_with("# ")
+                    || trimmed.starts_with("#\t")
+                    || trimmed.starts_with("## ")
+                    || trimmed.starts_with("##\t")
+            })
         {
             return Some(offset);
         }
@@ -808,5 +813,18 @@ fn foo() {
         let content = "# Title\r\n\r\n\r\nText\r\n";
         let collapsed = collapse_blank_lines(content);
         assert_eq!(collapsed, "# Title\r\n\r\nText\r\n");
+    }
+
+    #[test]
+    fn test_find_next_h1_or_h2_pos_recognizes_tabs() {
+        let body = "Some text\n#\tHeading with tab\n";
+        let pos = find_next_h1_or_h2_pos(body);
+        assert!(pos.is_some());
+        assert!(body[pos.unwrap()..].starts_with("#\tHeading with tab"));
+
+        let body2 = "Some text\n##\tH2 with tab\n";
+        let pos2 = find_next_h1_or_h2_pos(body2);
+        assert!(pos2.is_some());
+        assert!(body2[pos2.unwrap()..].starts_with("##\tH2 with tab"));
     }
 }
