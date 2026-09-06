@@ -288,7 +288,6 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                 if content.ends_with('\n') && !new_content.is_empty() {
                     new_content.push_str(newline);
                 }
-                new_content = collapse_blank_lines(&new_content);
                 std::fs::write(candidate, new_content)?;
                 println!("Updated import path in {}", candidate.display());
             }
@@ -477,7 +476,7 @@ fn strip_indent_up_to_3(line: &str) -> Option<&str> {
             if space_count > 3 {
                 return None;
             }
-        } else if c == '\t' {
+        } else if c == '\t' || c == '\r' || c == '\n' {
             return None;
         } else {
             return Some(&line[i..]);
@@ -835,5 +834,20 @@ fn foo() {
         let pos2 = find_next_h1_or_h2_pos(body2);
         assert!(pos2.is_some());
         assert!(body2[pos2.unwrap()..].starts_with("##\tH2 with tab"));
+    }
+
+    #[test]
+    fn test_strip_indent_up_to_3() {
+        assert_eq!(strip_indent_up_to_3("foo"), Some("foo"));
+        assert_eq!(strip_indent_up_to_3("   foo"), Some("foo"));
+        assert_eq!(strip_indent_up_to_3("    foo"), None);
+        assert_eq!(strip_indent_up_to_3("\tfoo"), None);
+        // Blank lines with \n or \r\n from split_inclusive
+        assert_eq!(strip_indent_up_to_3("\n"), None);
+        assert_eq!(strip_indent_up_to_3("\r\n"), None);
+        assert_eq!(strip_indent_up_to_3("   \n"), None);
+        assert_eq!(strip_indent_up_to_3("   \r\n"), None);
+        assert_eq!(strip_indent_up_to_3(""), None);
+        assert_eq!(strip_indent_up_to_3("   "), None);
     }
 }

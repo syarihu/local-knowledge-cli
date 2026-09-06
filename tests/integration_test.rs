@@ -537,6 +537,32 @@ fn test_init_preserves_crlf_line_endings_in_agents_md() {
 }
 
 #[test]
+fn test_init_migrates_claude_md_import_preserves_user_blank_lines() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+
+
+User notes with multiple blank lines.
+
+
+
+@.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // User multiple blank lines are preserved (not collapsed)
+    assert!(claude_md.contains("# Documentation\n\n\n\nUser notes with multiple blank lines."));
+    assert!(claude_md.ends_with("@.knowledge/lk-instructions.md\n"));
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()
