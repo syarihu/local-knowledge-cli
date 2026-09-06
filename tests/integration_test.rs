@@ -5189,3 +5189,73 @@ fn test_keywords_regen() {
         "curated entries at or below the threshold must be left alone"
     );
 }
+
+#[test]
+fn test_setup_list() {
+    let output = lk_bin().arg("setup").output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("AGENT"));
+    assert!(stdout.contains("WHAT IT COVERS"));
+    assert!(stdout.contains("agy"));
+    assert!(stdout.contains("cursor"));
+    assert!(stdout.contains("claude"));
+    assert!(stdout.contains("codex"));
+    assert!(stdout.contains("all"));
+    assert!(stdout.contains("To view instructions: lk setup <agent>"));
+}
+
+#[test]
+fn test_setup_targets() {
+    // agy and aliases
+    for alias in ["agy", "antigravity", "gemini"] {
+        let output = lk_bin().args(["setup", alias]).output().unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Antigravity (`agy`)"));
+        assert!(stdout.contains("~/.gemini/config/mcp_config.json"));
+        assert!(stdout.contains("lk-knowledge"));
+        assert!(stdout.contains("Preserve Symlinks"));
+    }
+
+    // cursor
+    let output = lk_bin().args(["setup", "cursor"]).output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Cursor"));
+    assert!(stdout.contains("~/.cursor/mcp.json"));
+
+    // claude and aliases
+    for alias in ["claude", "claude-code", "claude-desktop"] {
+        let output = lk_bin().args(["setup", alias]).output().unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Claude Code"));
+        assert!(stdout.contains("Claude Desktop"));
+        assert!(stdout.contains("claude mcp add"));
+    }
+
+    // codex
+    let output = lk_bin().args(["setup", "codex"]).output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Codex"));
+
+    // all
+    let output = lk_bin().args(["setup", "all"]).output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Antigravity"));
+    assert!(stdout.contains("Cursor"));
+    assert!(stdout.contains("Claude Code"));
+    assert!(stdout.contains("Codex"));
+}
+
+#[test]
+fn test_setup_unknown_target() {
+    let output = lk_bin().args(["setup", "unknown-agent"]).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Unknown agent: 'unknown-agent'"));
+    assert!(stderr.contains("Available: agy, cursor, claude, codex, all"));
+}
