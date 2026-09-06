@@ -5471,21 +5471,21 @@ fn test_mcp_prompts_list() {
         .expect("prompts/list must return prompts array");
     assert_eq!(prompts.len(), 11);
 
-    // Verify all prompt names start with lk-knowledge-
+    // Verify all prompt names start with lk- and do not use legacy lk-knowledge-
     for p in prompts {
         let name = p["name"].as_str().expect("prompt name must be string");
-        assert!(name.starts_with("lk-knowledge-"));
+        assert!(name.starts_with("lk-") && !name.starts_with("lk-knowledge-"));
         let desc = p["description"]
             .as_str()
             .expect("prompt description must be string");
         assert!(!desc.is_empty());
     }
 
-    // Verify lk-knowledge-search arguments
+    // Verify lk-search arguments
     let search = prompts
         .iter()
-        .find(|p| p["name"] == "lk-knowledge-search")
-        .expect("lk-knowledge-search must be listed");
+        .find(|p| p["name"] == "lk-search")
+        .expect("lk-search must be listed");
     let args = search["arguments"]
         .as_array()
         .expect("search must have arguments");
@@ -5493,11 +5493,11 @@ fn test_mcp_prompts_list() {
     assert_eq!(args[0]["name"], "query");
     assert_eq!(args[0]["required"], false);
 
-    // Verify lk-knowledge-plan arguments
+    // Verify lk-plan arguments
     let plan = prompts
         .iter()
-        .find(|p| p["name"] == "lk-knowledge-plan")
-        .expect("lk-knowledge-plan must be listed");
+        .find(|p| p["name"] == "lk-plan")
+        .expect("lk-plan must be listed");
     let args = plan["arguments"]
         .as_array()
         .expect("plan must have arguments");
@@ -5505,11 +5505,11 @@ fn test_mcp_prompts_list() {
     assert_eq!(args[0]["name"], "mode");
     assert_eq!(args[0]["required"], false);
 
-    // Verify lk-knowledge-sync has no arguments
+    // Verify lk-sync has no arguments
     let sync = prompts
         .iter()
-        .find(|p| p["name"] == "lk-knowledge-sync")
-        .expect("lk-knowledge-sync must be listed");
+        .find(|p| p["name"] == "lk-sync")
+        .expect("lk-sync must be listed");
     assert!(sync.get("arguments").is_none());
 }
 
@@ -5520,7 +5520,7 @@ fn test_mcp_prompts_get() {
     // 1. Get canonical prompt with argument substitution
     let replies = mcp_request(
         dir.path(),
-        r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"lk-knowledge-search","arguments":{"query":"auth flow"}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"lk-search","arguments":{"query":"auth flow"}}}"#,
     );
     assert_eq!(replies.len(), 1);
     let result = &replies[0]["result"];
@@ -5550,7 +5550,7 @@ fn test_mcp_prompts_get() {
         .unwrap();
     assert!(text.contains("payment logic"));
 
-    // 3. Get prompt without arguments (auto-route/empty substitution)
+    // 3. Get prompt with legacy lk-knowledge-* alias without arguments (auto-route/empty substitution)
     let replies = mcp_request(
         dir.path(),
         r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"lk-knowledge-search"}}"#,
@@ -5560,6 +5560,17 @@ fn test_mcp_prompts_get() {
         .as_str()
         .unwrap();
     assert!(!text.contains("$ARGUMENTS"));
+    assert!(text.contains(r#"lk search "" --json --limit 5"#));
+
+    // 4. Get prompt with uppercase legacy alias
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"LK-KNOWLEDGE-SEARCH"}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let text = replies[0]["result"]["messages"][0]["content"]["text"]
+        .as_str()
+        .unwrap();
     assert!(text.contains(r#"lk search "" --json --limit 5"#));
 }
 

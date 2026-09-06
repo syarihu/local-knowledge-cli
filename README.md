@@ -483,19 +483,19 @@ Once installed, clients have access to these tools and prompt templates:
 
 | Prompt | Description | Arguments |
 |--------|-------------|-----------|
-| `lk-knowledge-search` | Search the local knowledge base for existing knowledge | `query` |
-| `lk-knowledge-save-context` | Save conversation context to lk knowledge base | `hint` |
-| `lk-knowledge-plan` | Save plans to tackle later and resume them from a working list | `mode` |
-| `lk-knowledge-discover` | Explore the entire project and auto-generate knowledge markdown files | `focus` |
-| `lk-knowledge-refresh` | Check all knowledge entries for staleness and update outdated ones | `focus` |
-| `lk-knowledge-add-db` | Add knowledge discovered in this conversation to the local DB | `description` |
-| `lk-knowledge-from-branch` | Extract knowledge entries from the current branch diff before merging | `branch` |
-| `lk-knowledge-write-md` | Help write well-structured knowledge markdown files from code or design info | `target` |
-| `lk-knowledge-agent-brief` | Canonical brief to prepend when delegating code investigation to sub-agents | - |
-| `lk-knowledge-export` | Export local knowledge entries to shareable markdown files | - |
-| `lk-knowledge-sync` | Sync shared knowledge markdown files into the local DB | - |
+| `lk-search` | Search the local knowledge base for existing knowledge | `query` |
+| `lk-save-context` | Save conversation context to lk knowledge base | `hint` |
+| `lk-plan` | Save plans to tackle later and resume them from a working list | `mode` |
+| `lk-discover` | Explore the entire project and auto-generate knowledge markdown files | `focus` |
+| `lk-refresh` | Check all knowledge entries for staleness and update outdated ones | `focus` |
+| `lk-add-db` | Add knowledge discovered in this conversation to the local DB | `description` |
+| `lk-from-branch` | Extract knowledge entries from the current branch diff before merging | `branch` |
+| `lk-write-md` | Help write well-structured knowledge markdown files from code or design info | `target` |
+| `lk-agent-brief` | Canonical brief to prepend when delegating code investigation to sub-agents | - |
+| `lk-export` | Export local knowledge entries to shareable markdown files | - |
+| `lk-sync` | Sync shared knowledge markdown files into the local DB | - |
 
-*(In `prompts/get`, prompt names also accept short aliases such as `search`, `plan`, `save-context`, etc.)*
+*(In `prompts/get`, prompt names also accept short aliases such as `search`, `plan`, `save-context`, etc., as well as the legacy `lk-knowledge-*` prefix.)*
 
 No manual server startup is needed — Claude Code / Claude Desktop automatically launches `lk mcp` when a tool is called. When multiple projects are registered, each tool accepts an optional `project` parameter to specify which project to operate on.
 
