@@ -502,6 +502,41 @@ Some text
 }
 
 #[test]
+fn test_init_preserves_crlf_line_endings_in_claude_md() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "# Documentation\r\n\r\n@.claude/lk-instructions.md\r\n";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("\r\n"));
+    assert!(!claude_md.replace("\r\n", "").contains('\n'));
+    assert_eq!(
+        claude_md,
+        "# Documentation\r\n\r\n@.knowledge/lk-instructions.md\r\n"
+    );
+}
+
+#[test]
+fn test_init_preserves_crlf_line_endings_in_agents_md() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let content = "# AGENTS\r\n\r\n@.knowledge/lk-instructions.md\r\n\r\nUser instructions\r\n";
+    std::fs::write(&agents_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(agents_md.contains("\r\n"));
+    assert!(!agents_md.replace("\r\n", "").contains('\n'));
+    assert_eq!(agents_md, "# AGENTS\r\n\r\nUser instructions\r\n");
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()

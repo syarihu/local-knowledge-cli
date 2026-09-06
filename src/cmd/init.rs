@@ -194,6 +194,7 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
         let has_marker = find_heading_pos(&content, old_marker).is_some();
 
         if has_import || has_marker {
+            let newline = detect_newline(&content);
             let mut new_content = content.clone();
             if has_import {
                 let mut filter_tracker = CodeFenceTracker::default();
@@ -209,9 +210,9 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     })
                     .collect();
-                new_content = lines.join("\n");
-                if !new_content.ends_with('\n') && !new_content.is_empty() {
-                    new_content.push('\n');
+                new_content = lines.join(newline);
+                if content.ends_with('\n') && !new_content.is_empty() {
+                    new_content.push_str(newline);
                 }
             }
             if let Some(section_start) = find_heading_pos(&new_content, old_marker) {
@@ -265,6 +266,7 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             if has_old_import {
+                let newline = detect_newline(&content);
                 let mut replace_tracker = CodeFenceTracker::default();
                 let mut replaced_or_already_present = has_new_import;
                 let mut lines: Vec<String> = Vec::new();
@@ -282,9 +284,9 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                         lines.push(l.to_string());
                     }
                 }
-                let mut new_content = lines.join("\n");
+                let mut new_content = lines.join(newline);
                 if content.ends_with('\n') && !new_content.is_empty() {
-                    new_content.push('\n');
+                    new_content.push_str(newline);
                 }
                 new_content = collapse_blank_lines(&new_content);
                 std::fs::write(candidate, new_content)?;
@@ -333,12 +335,18 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                     .map(|offset| section_start + heading_line_len + offset)
                     .unwrap_or(content.len());
 
+                let newline = detect_newline(&content);
+                let double_newline = if newline == "\r\n" {
+                    "\r\n\r\n"
+                } else {
+                    "\n\n"
+                };
                 let mut new_content = content[..section_start].to_string();
                 new_content.push_str(import_line);
-                new_content.push('\n');
+                new_content.push_str(newline);
                 if section_end < content.len() {
-                    if !new_content.ends_with("\n\n") {
-                        new_content.push('\n');
+                    if !new_content.ends_with(double_newline) {
+                        new_content.push_str(newline);
                     }
                     new_content.push_str(&content[section_end..]);
                 }
@@ -350,13 +358,14 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                 );
             } else {
                 use std::io::Write;
+                let newline = detect_newline(&content);
                 let mut f = std::fs::OpenOptions::new()
                     .append(true)
                     .open(&target_path)?;
                 if !content.ends_with('\n') {
-                    writeln!(f)?;
+                    write!(f, "{newline}")?;
                 }
-                writeln!(f, "{import_line}")?;
+                write!(f, "{import_line}{newline}")?;
                 println!("Added import to {}", target_path.display());
             }
         } else {
@@ -419,13 +428,14 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
             println!("lk import already exists in {}", claude_md_path.display());
         } else {
             use std::io::Write;
+            let newline = detect_newline(&content);
             let mut f = std::fs::OpenOptions::new()
                 .append(true)
                 .open(&claude_md_path)?;
             if !content.ends_with('\n') {
-                writeln!(f)?;
+                write!(f, "{newline}")?;
             }
-            writeln!(f, "{import_line}")?;
+            write!(f, "{import_line}{newline}")?;
             println!("Added import to {}", claude_md_path.display());
         }
     } else {
@@ -438,6 +448,15 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nGlobal initialization complete!");
     Ok(())
+}
+
+/// Returns "\r\n" if `content` contains CRLF newlines, otherwise "\n".
+fn detect_newline(content: &str) -> &'static str {
+    if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
 }
 
 /// If `line` has up to 3 leading ASCII spaces (and no leading tab) followed by a non-whitespace
@@ -552,6 +571,7 @@ fn find_next_h1_or_h2_pos(body: &str) -> Option<usize> {
 /// Collapses runs of multiple consecutive blank lines outside code fences down to a single blank line.
 /// Blank lines inside fenced code blocks are preserved.
 fn collapse_blank_lines(content: &str) -> String {
+    let newline = detect_newline(content);
     let mut tracker = CodeFenceTracker::default();
     let mut consecutive_blank = 0;
     let mut result_lines = Vec::new();
@@ -572,9 +592,9 @@ fn collapse_blank_lines(content: &str) -> String {
         }
     }
 
-    let mut result = result_lines.join("\n");
+    let mut result = result_lines.join(newline);
     if content.ends_with('\n') && !result.is_empty() {
-        result.push('\n');
+        result.push_str(newline);
     }
     result
 }
@@ -774,5 +794,19 @@ fn foo() {
         // Empty or whitespace lines
         assert!(!is_matching_import("", import));
         assert!(!is_matching_import("   ", import));
+    }
+
+    #[test]
+    fn test_detect_newline() {
+        assert_eq!(detect_newline("line1\r\nline2\r\n"), "\r\n");
+        assert_eq!(detect_newline("line1\nline2\n"), "\n");
+        assert_eq!(detect_newline("single line"), "\n");
+    }
+
+    #[test]
+    fn test_collapse_blank_lines_preserves_crlf() {
+        let content = "# Title\r\n\r\n\r\nText\r\n";
+        let collapsed = collapse_blank_lines(content);
+        assert_eq!(collapsed, "# Title\r\n\r\nText\r\n");
     }
 }
