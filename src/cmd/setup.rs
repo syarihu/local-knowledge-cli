@@ -153,7 +153,8 @@ pub const TARGETS: &[AgentSetupTarget] = &[
 ];
 
 pub fn cmd_setup(target: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    match target {
+    let normalized = target.map(|s| s.trim().to_ascii_lowercase());
+    match normalized.as_deref() {
         None => {
             println!("{:<8} WHAT IT COVERS", "AGENT");
             for t in TARGETS {
@@ -166,24 +167,24 @@ pub fn cmd_setup(target: Option<&str>) -> Result<(), Box<dyn std::error::Error>>
         Some("all") => {
             for (i, t) in TARGETS.iter().enumerate() {
                 if i > 0 {
-                    println!("\n---\n");
+                    println!();
                 }
                 print!("{}", t.template);
             }
             Ok(())
         }
         Some(name) => {
-            let normalized = name.trim().to_ascii_lowercase();
             if let Some(target) = TARGETS
                 .iter()
-                .find(|t| t.id == normalized || t.aliases.contains(&normalized.as_str()))
+                .find(|t| t.id == name || t.aliases.contains(&name))
             {
                 print!("{}", target.template);
                 Ok(())
             } else {
+                let original = target.unwrap_or(name);
                 let available: Vec<&str> = TARGETS.iter().map(|t| t.id).chain(["all"]).collect();
                 Err(format!(
-                    "Unknown agent: '{name}'. Available: {}.\n\
+                    "Unknown agent: '{original}'. Available: {}.\n\
                      Run `lk setup` without arguments to see available agents.",
                     available.join(", ")
                 )

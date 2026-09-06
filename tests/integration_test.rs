@@ -5249,6 +5249,17 @@ fn test_setup_targets() {
     assert!(stdout.contains("Cursor"));
     assert!(stdout.contains("Claude Code"));
     assert!(stdout.contains("Codex"));
+    assert!(!stdout.contains("---\n\n---"));
+
+    // case-insensitive and whitespace normalization
+    let output_all_upper = lk_bin().args(["setup", "ALL"]).output().unwrap();
+    assert!(output_all_upper.status.success());
+    assert_eq!(output.stdout, output_all_upper.stdout);
+
+    let output_trimmed = lk_bin().args(["setup", "  agy  "]).output().unwrap();
+    assert!(output_trimmed.status.success());
+    let stdout_trimmed = String::from_utf8_lossy(&output_trimmed.stdout);
+    assert!(stdout_trimmed.contains("Antigravity"));
 }
 
 #[test]
