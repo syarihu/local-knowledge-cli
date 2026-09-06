@@ -430,6 +430,26 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// If `line` has up to 3 leading ASCII spaces (and no leading tab), returns the remainder of the line.
+/// In CommonMark, block elements (fences, ATX headings) allow at most 3 spaces of indentation;
+/// lines indented by 4 or more spaces or tabs are indented blocks.
+fn strip_indent_up_to_3(line: &str) -> Option<&str> {
+    let mut space_count = 0;
+    for (i, c) in line.char_indices() {
+        if c == ' ' {
+            space_count += 1;
+            if space_count > 3 {
+                return None;
+            }
+        } else if c == '\t' {
+            return None;
+        } else {
+            return Some(&line[i..]);
+        }
+    }
+    None
+}
+
 /// Tracks CommonMark fenced code blocks (``` or ~~~) across lines.
 #[derive(Default)]
 struct CodeFenceTracker {
@@ -444,23 +464,28 @@ impl CodeFenceTracker {
     /// Process a line. If the line opens or closes a fence, updates state and returns false.
     /// Returns true if this line is content inside an active code block.
     fn process_line(&mut self, line: &str) -> bool {
-        let trimmed = line.trim();
         if let Some((fence_char, min_len)) = self.active_fence {
-            let fence_count = trimmed.chars().take_while(|&c| c == fence_char).count();
-            if fence_count >= min_len && trimmed[fence_count..].trim().is_empty() {
-                self.active_fence = None;
-                return false;
-            }
-            true
-        } else if let Some(first @ ('`' | '~')) = trimmed.chars().next() {
-            let count = trimmed.chars().take_while(|&c| c == first).count();
-            if count >= 3 {
-                let rest = &trimmed[count..];
-                if first == '`' && rest.contains('`') {
+            if let Some(rest) = strip_indent_up_to_3(line) {
+                let trimmed = rest.trim_end();
+                let fence_count = trimmed.chars().take_while(|&c| c == fence_char).count();
+                if fence_count >= min_len && trimmed[fence_count..].trim().is_empty() {
+                    self.active_fence = None;
                     return false;
                 }
-                self.active_fence = Some((first, count));
-                return false;
+            }
+            true
+        } else if let Some(rest) = strip_indent_up_to_3(line) {
+            let trimmed = rest.trim_end();
+            if let Some(first @ ('`' | '~')) = trimmed.chars().next() {
+                let count = trimmed.chars().take_while(|&c| c == first).count();
+                if count >= 3 {
+                    let after_fence = &trimmed[count..];
+                    if first == '`' && after_fence.contains('`') {
+                        return false;
+                    }
+                    self.active_fence = Some((first, count));
+                    return false;
+                }
             }
             false
         } else {
@@ -476,7 +501,10 @@ fn find_heading_pos(content: &str, heading: &str) -> Option<usize> {
     let mut offset = 0;
     for line in content.split_inclusive('\n') {
         let inside_code = tracker.process_line(line);
-        if !inside_code && !tracker.is_in_code_block() && line.trim() == heading {
+        if !inside_code
+            && !tracker.is_in_code_block()
+            && strip_indent_up_to_3(line).is_some_and(|r| r.trim_end() == heading)
+        {
             return Some(offset);
         }
         offset += line.len();
@@ -491,11 +519,12 @@ fn find_next_h1_or_h2_pos(body: &str) -> Option<usize> {
     let mut offset = 0;
     for line in body.split_inclusive('\n') {
         let inside_code = tracker.process_line(line);
-        if !inside_code && !tracker.is_in_code_block() {
-            let s = line.trim_start();
-            if s.starts_with("# ") || s.starts_with("## ") {
-                return Some(offset);
-            }
+        if !inside_code
+            && !tracker.is_in_code_block()
+            && strip_indent_up_to_3(line)
+                .is_some_and(|r| r.trim_end().starts_with("# ") || r.trim_end().starts_with("## "))
+        {
+            return Some(offset);
         }
         offset += line.len();
     }
@@ -663,5 +692,35 @@ fn foo() {
         assert!(collapsed.contains("# Title\n\nOutside text"));
         assert!(collapsed.contains("```rust\nfn foo() {\n\n\n\n    bar();\n}\n```"));
         assert!(collapsed.contains("```\n\n# Next Section"));
+    }
+
+    #[test]
+    fn test_code_fence_tracker_indentation_limit() {
+        let mut tracker = CodeFenceTracker::default();
+        // 1 to 3 spaces is valid fence
+        assert!(!tracker.process_line("   ```markdown"));
+        assert!(tracker.is_in_code_block());
+        assert!(!tracker.process_line("   ```"));
+        assert!(!tracker.is_in_code_block());
+
+        // 4 spaces is indented block, NOT a fence
+        assert!(!tracker.process_line("    ```markdown"));
+        assert!(!tracker.is_in_code_block());
+
+        // Tab is NOT a fence
+        assert!(!tracker.process_line("\t```markdown"));
+        assert!(!tracker.is_in_code_block());
+    }
+
+    #[test]
+    fn test_find_heading_pos_rejects_4_space_indented_heading() {
+        let content = "\
+# Documentation
+
+    ## Knowledge Base (local-knowledge-cli)
+    This is an indented code block or list item, not an ATX heading.
+";
+        let pos = find_heading_pos(content, "## Knowledge Base (local-knowledge-cli)");
+        assert!(pos.is_none());
     }
 }

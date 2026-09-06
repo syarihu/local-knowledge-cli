@@ -375,6 +375,27 @@ Here is an example of the old import:
 }
 
 #[test]
+fn test_init_does_not_modify_agents_md_with_indented_marker() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let content = "\
+# My Project
+
+    ## Knowledge Base (local-knowledge-cli)
+    Indented text that is not a heading.
+";
+    std::fs::write(&agents_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should be completely untouched
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert_eq!(agents_md, content);
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()
