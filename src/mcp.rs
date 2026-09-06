@@ -1537,7 +1537,8 @@ pub fn run_server(project_paths: Vec<PathBuf>) -> Result<(), Box<dyn std::error:
                 json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": {
-                        "tools": {}
+                        "tools": {},
+                        "prompts": {}
                     },
                     "serverInfo": {
                         "name": "lk-knowledge",
@@ -1578,6 +1579,33 @@ pub fn run_server(project_paths: Vec<PathBuf>) -> Result<(), Box<dyn std::error:
                             "isError": true,
                         }),
                     ),
+                }
+            }
+
+            "prompts/list" => respond(req.id, crate::prompts::prompts_list_response()),
+
+            "prompts/get" => {
+                let name = req.params["name"].as_str().unwrap_or("");
+                if name.is_empty() {
+                    respond_err(req.id, -32602, "Missing 'name' parameter in prompts/get")
+                } else if let Some(prompt) = crate::prompts::find_prompt(name) {
+                    let arguments = req.params.get("arguments");
+                    let rendered = prompt.render(arguments);
+                    respond(
+                        req.id,
+                        json!({
+                            "description": prompt.description,
+                            "messages": [{
+                                "role": "user",
+                                "content": {
+                                    "type": "text",
+                                    "text": rendered,
+                                }
+                            }]
+                        }),
+                    )
+                } else {
+                    respond_err(req.id, -32602, &format!("Unknown prompt: '{name}'"))
                 }
             }
 
