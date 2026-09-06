@@ -125,7 +125,7 @@ fn test_init_removes_import_from_agents_md_with_other_content() {
 }
 
 #[test]
-fn test_init_prefers_dot_claude_claude_md_if_exists() {
+fn test_init_uses_existing_dot_claude_claude_md_when_root_absent() {
     let dir = setup_temp_project();
     let dot_claude = dir.path().join(".claude");
     std::fs::create_dir_all(&dot_claude).unwrap();
@@ -222,6 +222,66 @@ Follow Rust 2021 conventions.
     // CLAUDE.md should have the import
     let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
     assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_migrates_agents_md_with_h1_following_legacy_section() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let legacy_content = "\
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+### Subheading
+Details here.
+
+# Next Chapter
+Keep this H1 section.
+";
+    std::fs::write(&agents_md_path, legacy_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // Legacy lk section should be removed, but H1 section kept
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(agents_md.contains("# Next Chapter"));
+    assert!(agents_md.contains("Keep this H1 section."));
+    assert!(!agents_md.contains("Knowledge Base (local-knowledge-cli)"));
+    assert!(!agents_md.contains("Old inline lk instructions."));
+
+    // CLAUDE.md should have the import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_migrates_claude_md_with_h1_following_legacy_section() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let legacy_content = "\
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+### Subheading
+Details here.
+
+# Next Chapter
+Keep this H1 section.
+";
+    std::fs::write(&claude_md_path, legacy_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // Legacy lk section should be replaced with import, and H1 section kept
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+    assert!(claude_md.contains("# Next Chapter"));
+    assert!(claude_md.contains("Keep this H1 section."));
+    assert!(!claude_md.contains("Knowledge Base (local-knowledge-cli)"));
+    assert!(!claude_md.contains("Old inline lk instructions."));
 }
 
 #[test]

@@ -212,9 +212,8 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                     .map(|l| l.len())
                     .unwrap_or(rest.len());
                 let body = &rest[heading_line_len..];
-                let section_end = body
-                    .find("\n## ")
-                    .map(|i| section_start + heading_line_len + i)
+                let section_end = find_next_h1_or_h2_pos(body)
+                    .map(|offset| section_start + heading_line_len + offset)
                     .unwrap_or(new_content.len());
 
                 let mut trimmed = new_content[..section_start].to_string();
@@ -295,16 +294,21 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                     .map(|l| l.len())
                     .unwrap_or(rest.len());
                 let body = &rest[heading_line_len..];
-                let section_end = body
-                    .find("\n## ")
-                    .map(|i| section_start + heading_line_len + i)
+                let section_end = find_next_h1_or_h2_pos(body)
+                    .map(|offset| section_start + heading_line_len + offset)
                     .unwrap_or(content.len());
 
                 let mut new_content = content[..section_start].to_string();
                 new_content.push_str(import_line);
                 new_content.push('\n');
                 if section_end < content.len() {
+                    if !new_content.ends_with("\n\n") {
+                        new_content.push('\n');
+                    }
                     new_content.push_str(&content[section_end..]);
+                }
+                while new_content.contains("\n\n\n") {
+                    new_content = new_content.replace("\n\n\n", "\n\n");
                 }
                 std::fs::write(&target_path, new_content)?;
                 println!(
@@ -404,6 +408,26 @@ fn find_heading_pos(content: &str, heading: &str) -> Option<usize> {
     for line in content.split_inclusive('\n') {
         if line.trim() == heading {
             return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+/// Find the byte offset in `body` where the next H1 (`# `) or H2 (`## `) heading begins.
+/// Skips any headings that occur inside code fences.
+fn find_next_h1_or_h2_pos(body: &str) -> Option<usize> {
+    let mut in_code_block = false;
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code_block = !in_code_block;
+        } else if !in_code_block {
+            let s = line.trim_start();
+            if s.starts_with("# ") || s.starts_with("## ") {
+                return Some(offset);
+            }
         }
         offset += line.len();
     }
