@@ -4599,6 +4599,39 @@ fn test_cli_add_user_scope_honors_global_config_false() {
     assert_eq!(out["added"], true);
 }
 
+/// Project config can disable secret detection for project scope in CLI `lk add`.
+#[test]
+fn test_cli_add_honors_config_secret_detection_false() {
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    // Disable secret_detection in project config.
+    let config_path = proj.path().join(".knowledge/config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str("\nsecret_detection = false\n");
+    std::fs::write(&config_path, config).unwrap();
+
+    let output = lk_bin()
+        .args([
+            "add",
+            "CLI project secret",
+            "--content",
+            "aws key is AKIAIOSFODNN7EXAMPLE",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let out: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["added"], true);
+}
+
 /// A symlinked user_knowledge_dir (the dotfiles use case) still round-trips:
 /// export → edit md → sync reflects the change (canonicalized rel-path agreement).
 #[cfg(unix)]
