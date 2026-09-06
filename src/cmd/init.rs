@@ -1,7 +1,7 @@
 use crate::cmd::sync::sync_knowledge_dir;
 use crate::cmd::update::install_embedded_commands;
 use crate::db;
-use crate::util::get_project_root;
+use crate::util::{detect_newline, get_project_root};
 
 pub fn cmd_init(global: bool, no_import: bool) -> Result<(), Box<dyn std::error::Error>> {
     if global {
@@ -211,7 +211,10 @@ pub fn cmd_init(global: bool, no_import: bool) -> Result<(), Box<dyn std::error:
                 StripOutcome::Unchanged => {}
             }
         }
-        println!("Skipped CLAUDE.md import (claude_md_import = false)");
+        // Name whichever of the two actually turned it off. On a `--no-import` run the
+        // config still reads `true` at this point (it is persisted below), so reporting
+        // the config value would send someone looking at the wrong thing.
+        println!("Skipped CLAUDE.md import ({})", skip_reason(no_import));
     }
 
     // Migrate legacy import line in CLAUDE.md
@@ -408,7 +411,7 @@ fn cmd_init_global(no_import: bool) -> Result<(), Box<dyn std::error::Error>> {
             }
             StripOutcome::Unchanged => {}
         }
-        println!("Skipped CLAUDE.md import (claude_md_import = false)");
+        println!("Skipped CLAUDE.md import ({})", skip_reason(no_import));
         if no_import && global_config.claude_md_import {
             let config_path = crate::config::GlobalConfig::path();
             crate::config::set_config_bool(
@@ -450,6 +453,15 @@ fn cmd_init_global(no_import: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nGlobal initialization complete!");
     Ok(())
+}
+
+/// Why the CLAUDE.md import was skipped, for the line `lk init` prints about it.
+fn skip_reason(no_import: bool) -> &'static str {
+    if no_import {
+        "--no-import"
+    } else {
+        "claude_md_import = false"
+    }
 }
 
 /// What [`strip_lk_import`] did to a file.
@@ -540,21 +552,6 @@ fn strip_lk_import(
         std::fs::write(path, new_content)?;
         Ok(StripOutcome::Modified)
     }
-}
-
-/// Returns "\r\n" if `content` uses CRLF newlines exclusively, otherwise defaults to "\n".
-/// If the file has mixed line endings or lone LF characters, "\n" is returned to avoid churn.
-fn detect_newline(content: &str) -> &'static str {
-    if !content.contains("\r\n") {
-        return "\n";
-    }
-    let bytes = content.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\n' && (i == 0 || bytes[i - 1] != b'\r') {
-            return "\n";
-        }
-    }
-    "\r\n"
 }
 
 /// If `line` has up to 3 leading ASCII spaces (and no leading tab) followed by a non-whitespace
@@ -897,16 +894,6 @@ fn foo() {
         // Empty or whitespace lines
         assert!(!is_matching_import("", import));
         assert!(!is_matching_import("   ", import));
-    }
-
-    #[test]
-    fn test_detect_newline() {
-        assert_eq!(detect_newline("line1\r\nline2\r\n"), "\r\n");
-        assert_eq!(detect_newline("line1\nline2\n"), "\n");
-        assert_eq!(detect_newline("single line"), "\n");
-        // Mixed line endings default to LF
-        assert_eq!(detect_newline("line1\r\nline2\n"), "\n");
-        assert_eq!(detect_newline("line1\nline2\r\n"), "\n");
     }
 
     #[test]

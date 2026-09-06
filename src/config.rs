@@ -360,8 +360,11 @@ pub fn set_config_bool(
         lines.push(format!("{key} = {value}"));
     }
 
-    let mut out = lines.join("\n");
-    out.push('\n');
+    // Keep whatever line endings the file already had: config.toml is git-tracked, so a
+    // CRLF checkout rewritten to LF would turn one changed setting into a whole-file diff.
+    let newline = crate::util::detect_newline(&content);
+    let mut out = lines.join(newline);
+    out.push_str(newline);
     std::fs::write(path, out)
 }
 
@@ -467,6 +470,44 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content.matches("claude_md_import").count(), 1);
+        assert!(!Config::load(dir.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_set_config_bool_preserves_crlf() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        // config.toml is git-tracked, so a CRLF checkout must not come back as LF.
+        std::fs::write(
+            &path,
+            "# lk config\r\nauto_sync = true\r\nclaude_md_import = true\r\n",
+        )
+        .unwrap();
+
+        set_config_bool(&path, "claude_md_import", false, "").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content, "# lk config\r\nauto_sync = true\r\nclaude_md_import = false\r\n",
+            "line endings must survive the rewrite"
+        );
+        assert!(!Config::load(dir.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_set_config_bool_appends_with_crlf_when_file_uses_crlf() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "auto_sync = true\r\n").unwrap();
+
+        set_config_bool(&path, "claude_md_import", false, "").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains('\n')
+                || content.matches("\r\n").count() == content.matches('\n').count(),
+            "appended lines must use CRLF too, got: {content:?}"
+        );
         assert!(!Config::load(dir.path()).claude_md_import);
     }
 

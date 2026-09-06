@@ -5,6 +5,25 @@ use crate::db;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_REPO: &str = "syarihu/local-knowledge-cli";
 
+/// Returns "\r\n" if `content` uses CRLF newlines exclusively, otherwise defaults to "\n".
+/// If the file has mixed line endings or lone LF characters, "\n" is returned to avoid churn.
+///
+/// Rewriting a file lk only partly owns — a `CLAUDE.md` with the user's own content, a
+/// git-tracked `config.toml` checked out with `core.autocrlf=true` — must not flip every
+/// line ending on the way through, or one changed setting shows up as a whole-file diff.
+pub fn detect_newline(content: &str) -> &'static str {
+    if !content.contains("\r\n") {
+        return "\n";
+    }
+    let bytes = content.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' && (i == 0 || bytes[i - 1] != b'\r') {
+            return "\n";
+        }
+    }
+    "\r\n"
+}
+
 pub fn get_project_root() -> PathBuf {
     let cwd = std::env::current_dir().expect("Cannot get current directory");
     let mut current = cwd.as_path();
@@ -731,6 +750,16 @@ pub fn days_since(updated_at: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_detect_newline() {
+        assert_eq!(detect_newline("line1\r\nline2\r\n"), "\r\n");
+        assert_eq!(detect_newline("line1\nline2\n"), "\n");
+        assert_eq!(detect_newline("single line"), "\n");
+        // Mixed line endings default to LF
+        assert_eq!(detect_newline("line1\r\nline2\n"), "\n");
+        assert_eq!(detect_newline("line1\nline2\r\n"), "\n");
+    }
 
     #[test]
     fn test_normalize_project_key_accepts_every_remote_shape() {
