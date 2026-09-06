@@ -450,13 +450,19 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Returns "\r\n" if `content` contains CRLF newlines, otherwise "\n".
+/// Returns "\r\n" if `content` uses CRLF newlines exclusively, otherwise defaults to "\n".
+/// If the file has mixed line endings or lone LF characters, "\n" is returned to avoid churn.
 fn detect_newline(content: &str) -> &'static str {
-    if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
+    if !content.contains("\r\n") {
+        return "\n";
     }
+    let bytes = content.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' && (i == 0 || bytes[i - 1] != b'\r') {
+            return "\n";
+        }
+    }
+    "\r\n"
 }
 
 /// If `line` has up to 3 leading ASCII spaces (and no leading tab) followed by a non-whitespace
@@ -806,6 +812,9 @@ fn foo() {
         assert_eq!(detect_newline("line1\r\nline2\r\n"), "\r\n");
         assert_eq!(detect_newline("line1\nline2\n"), "\n");
         assert_eq!(detect_newline("single line"), "\n");
+        // Mixed line endings default to LF
+        assert_eq!(detect_newline("line1\r\nline2\n"), "\n");
+        assert_eq!(detect_newline("line1\nline2\r\n"), "\n");
     }
 
     #[test]
