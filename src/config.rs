@@ -362,9 +362,13 @@ pub fn set_config_bool(
 
     // Keep whatever line endings the file already had: config.toml is git-tracked, so a
     // CRLF checkout rewritten to LF would turn one changed setting into a whole-file diff.
+    // Same reason for the trailing newline — only re-add it when the original ended with
+    // one, which is the rule the markdown rewrites in `cmd/init.rs` already follow.
     let newline = crate::util::detect_newline(&content);
     let mut out = lines.join(newline);
-    out.push_str(newline);
+    if content.ends_with('\n') {
+        out.push_str(newline);
+    }
     std::fs::write(path, out)
 }
 
@@ -471,6 +475,32 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content.matches("claude_md_import").count(), 1);
         assert!(!Config::load(dir.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_set_config_bool_preserves_missing_trailing_newline() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        // No trailing newline: adding one is churn unrelated to the setting being changed.
+        std::fs::write(&path, "auto_sync = true\nclaude_md_import = true").unwrap();
+
+        set_config_bool(&path, "claude_md_import", false, "").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "auto_sync = true\nclaude_md_import = false");
+        assert!(!Config::load(dir.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_set_config_bool_keeps_trailing_newline_when_present() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "auto_sync = true\nclaude_md_import = true\n").unwrap();
+
+        set_config_bool(&path, "claude_md_import", false, "").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "auto_sync = true\nclaude_md_import = false\n");
     }
 
     #[test]
