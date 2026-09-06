@@ -28,3 +28,5 @@ gitattributes_generated = true
 # Category templates: Place markdown files in .knowledge/templates/
 # e.g., .knowledge/templates/decisions.md will be used as default content
 # when running `lk add "Title" --category decisions` without --content
+
+claude_md_import = false
