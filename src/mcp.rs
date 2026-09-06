@@ -998,23 +998,25 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             };
 
             // Secret detection
-            let secret_detection = match effective_scope {
-                "user" => crate::config::GlobalConfig::load().secret_detection,
-                _ => config.secret_detection,
-            };
-            if !allow_secrets && secret_detection {
-                let text = format!("{title}\n{effective_content}");
-                let matches = secrets::check_for_secrets(&text);
-                if !matches.is_empty() {
-                    let out = json!({
-                        "added": false,
-                        "secret_detected": true,
-                        "reason": "Potential secrets detected in content. Remove the secret from \
-                                   the entry, or pass allow_secrets=true to override this check \
-                                   if it is a false positive.",
-                        "warnings": secrets::warnings_json(&matches),
-                    });
-                    return Ok(decorate_result(out, &project_name));
+            if !allow_secrets {
+                let secret_detection = match effective_scope {
+                    "user" => crate::config::GlobalConfig::load().secret_detection,
+                    _ => config.secret_detection,
+                };
+                if secret_detection {
+                    let text = format!("{title}\n{effective_content}");
+                    let matches = secrets::check_for_secrets(&text);
+                    if !matches.is_empty() {
+                        let out = json!({
+                            "added": false,
+                            "secret_detected": true,
+                            "reason": "Potential secrets detected in content. Remove the secret from \
+                                       the entry, or pass allow_secrets=true to override this check \
+                                       if it is a false positive.",
+                            "warnings": secrets::warnings_json(&matches),
+                        });
+                        return Ok(decorate_result(out, &project_name));
+                    }
                 }
             }
 
