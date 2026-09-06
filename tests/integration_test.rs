@@ -2151,6 +2151,46 @@ fn test_mcp_tool_names_mirror_the_cli_subcommands() {
     );
 }
 
+#[test]
+fn test_mcp_tool_descriptions_include_behavioral_triggers() {
+    let dir = setup_temp_project();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let tools: Vec<serde_json::Value> = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    )
+    .into_iter()
+    .filter_map(|v| v["result"]["tools"].as_array().cloned())
+    .flatten()
+    .collect();
+
+    let search_tool = tools
+        .iter()
+        .find(|t| t["name"] == "search_knowledge")
+        .expect("search_knowledge tool not found in tools/list");
+    let search_desc = search_tool["description"].as_str().unwrap();
+    assert!(
+        search_desc.starts_with("CRITICAL WORKFLOW: Search BEFORE investigating unfamiliar code"),
+        "search_knowledge description must lead with proactive search instructions: {search_desc}"
+    );
+
+    let add_tool = tools
+        .iter()
+        .find(|t| t["name"] == "add_knowledge")
+        .expect("add_knowledge tool not found in tools/list");
+    let add_desc = add_tool["description"].as_str().unwrap();
+    assert!(
+        add_desc.starts_with("CRITICAL WORKFLOW: After investigating unfamiliar code"),
+        "add_knowledge description must lead with proactive saving instructions: {add_desc}"
+    );
+    assert!(
+        add_desc.contains("proactively call this tool to persist findings"),
+        "add_knowledge description must mention proactive persistence: {add_desc}"
+    );
+}
+
 /// An edit that names no field changes nothing, so reporting success would leave
 /// the caller believing the entry was updated. The CLI already refuses it; both
 /// surfaces have to answer the same way.
