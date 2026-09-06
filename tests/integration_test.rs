@@ -3955,6 +3955,61 @@ fn test_mcp_add_knowledge_user_scope_blocks_secrets() {
 }
 
 #[test]
+fn test_mcp_add_knowledge_blocks_secret_in_title() {
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    let replies = mcp_request(
+        proj.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"AWS AKIAIOSFODNN7EXAMPLE key","content":"safe content"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], false, "body: {body}");
+    assert_eq!(out["secret_detected"], true, "body: {body}");
+}
+
+#[test]
+fn test_mcp_add_knowledge_user_scope_honors_global_config_false() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    // Disable secret_detection in global user config (~/.config/lk/config.toml).
+    let lk_dir = home.path().join(".config/lk");
+    std::fs::create_dir_all(&lk_dir).unwrap();
+    std::fs::write(lk_dir.join("config.toml"), "secret_detection = false\n").unwrap();
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"MCP user secret","content":"aws key is AKIAIOSFODNN7EXAMPLE","scope":"user"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], true, "body: {body}");
+}
+
+#[test]
 fn test_project_flag_cannot_inject_markdown_metadata() {
     // A newline in the value would become a second metadata line once exported, and
     // the next sync would apply it (`status: deprecated` here). The value must be

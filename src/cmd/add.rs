@@ -97,8 +97,13 @@ pub fn cmd_add(
 
     // Secret detection
     if !allow_secrets {
-        let config = crate::config::Config::load(&crate::util::get_knowledge_dir());
-        if config.secret_detection {
+        let secret_detection = match scope {
+            super::Scope::Project => {
+                crate::config::Config::load(&crate::util::get_knowledge_dir()).secret_detection
+            }
+            super::Scope::User => crate::config::GlobalConfig::load().secret_detection,
+        };
+        if secret_detection {
             let text = format!("{title}\n{content}");
             let matches = crate::secrets::check_for_secrets(&text);
             if !matches.is_empty() {

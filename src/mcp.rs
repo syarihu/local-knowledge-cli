@@ -1005,9 +1005,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
 
             // Secret detection
             let secret_detection = match effective_scope {
-                "user" => {
-                    config.secret_detection && crate::config::GlobalConfig::load().secret_detection
-                }
+                "user" => crate::config::GlobalConfig::load().secret_detection,
                 _ => config.secret_detection,
             };
             if !allow_secrets && secret_detection {
