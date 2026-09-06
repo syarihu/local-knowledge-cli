@@ -235,10 +235,8 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                 new_content = trimmed;
             }
 
-            // Collapse excessive blank lines
-            while new_content.contains("\n\n\n") {
-                new_content = new_content.replace("\n\n\n", "\n\n");
-            }
+            // Collapse excessive blank lines outside code fences
+            new_content = collapse_blank_lines(&new_content);
 
             if new_content.trim().is_empty() {
                 std::fs::remove_file(&agents_md_path)?;
@@ -254,12 +252,21 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     for candidate in &candidates {
         if candidate.exists() {
             let content = std::fs::read_to_string(candidate)?;
-            let has_old_import = content.lines().any(|l| l.trim() == old_import_line);
+            let mut check_tracker = CodeFenceTracker::default();
+            let has_old_import = content.lines().any(|l| {
+                let inside = check_tracker.process_line(l);
+                !inside && !check_tracker.is_in_code_block() && l.trim() == old_import_line
+            });
             if has_old_import {
+                let mut replace_tracker = CodeFenceTracker::default();
                 let lines: Vec<String> = content
                     .lines()
                     .map(|l| {
-                        if l.trim() == old_import_line {
+                        let inside = replace_tracker.process_line(l);
+                        if !inside
+                            && !replace_tracker.is_in_code_block()
+                            && l.trim() == old_import_line
+                        {
                             import_line.to_string()
                         } else {
                             l.to_string()
@@ -325,9 +332,7 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     new_content.push_str(&content[section_end..]);
                 }
-                while new_content.contains("\n\n\n") {
-                    new_content = new_content.replace("\n\n\n", "\n\n");
-                }
+                new_content = collapse_blank_lines(&new_content);
                 std::fs::write(&target_path, new_content)?;
                 println!(
                     "Migrated inline instructions to import in {}",
@@ -497,6 +502,36 @@ fn find_next_h1_or_h2_pos(body: &str) -> Option<usize> {
     None
 }
 
+/// Collapses runs of multiple consecutive blank lines outside code fences down to a single blank line.
+/// Blank lines inside fenced code blocks are preserved.
+fn collapse_blank_lines(content: &str) -> String {
+    let mut tracker = CodeFenceTracker::default();
+    let mut consecutive_blank = 0;
+    let mut result_lines = Vec::new();
+
+    for line in content.lines() {
+        let inside_code = tracker.process_line(line);
+        if inside_code || tracker.is_in_code_block() {
+            consecutive_blank = 0;
+            result_lines.push(line);
+        } else if line.trim().is_empty() {
+            consecutive_blank += 1;
+            if consecutive_blank <= 1 {
+                result_lines.push(line);
+            }
+        } else {
+            consecutive_blank = 0;
+            result_lines.push(line);
+        }
+    }
+
+    let mut result = result_lines.join("\n");
+    if content.ends_with('\n') && !result.is_empty() {
+        result.push('\n');
+    }
+    result
+}
+
 pub(crate) const LK_INSTRUCTIONS_CONTENT: &str =
     include_str!("../../.knowledge/lk-instructions.md");
 
@@ -598,5 +633,35 @@ More text
         let pos = find_next_h1_or_h2_pos(body);
         assert!(pos.is_some());
         assert!(body[pos.unwrap()..].starts_with("# Real H1"));
+    }
+
+    #[test]
+    fn test_collapse_blank_lines_preserves_code_fences() {
+        let content = "\
+# Title
+
+
+
+Outside text
+
+
+
+```rust
+fn foo() {
+
+
+
+    bar();
+}
+```
+
+
+
+# Next Section
+";
+        let collapsed = collapse_blank_lines(content);
+        assert!(collapsed.contains("# Title\n\nOutside text"));
+        assert!(collapsed.contains("```rust\nfn foo() {\n\n\n\n    bar();\n}\n```"));
+        assert!(collapsed.contains("```\n\n# Next Section"));
     }
 }

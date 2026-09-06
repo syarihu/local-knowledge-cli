@@ -316,6 +316,65 @@ Keep this heading.
 }
 
 #[test]
+fn test_init_preserves_blank_lines_in_code_block_during_migration() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let content = "\
+# My Project
+
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+# Code Example
+```rust
+fn example() {
+
+
+
+    println!(\"keep blanks\");
+}
+```
+";
+    std::fs::write(&agents_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(
+        agents_md.contains("```rust\nfn example() {\n\n\n\n    println!(\"keep blanks\");\n}\n```")
+    );
+    assert!(!agents_md.contains("Knowledge Base (local-knowledge-cli)"));
+}
+
+#[test]
+fn test_init_migrates_claude_md_import_skipping_code_fence() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+Here is an example of the old import:
+```markdown
+@.claude/lk-instructions.md
+```
+
+@.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // The example inside the code block remains untouched
+    assert!(claude_md.contains("```markdown\n@.claude/lk-instructions.md\n```"));
+    // The standalone import outside the code block is migrated
+    assert!(claude_md.ends_with("@.knowledge/lk-instructions.md\n"));
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()
