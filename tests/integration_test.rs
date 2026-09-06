@@ -58,8 +58,9 @@ fn test_init() {
     // Verify .gitignore was created
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(gitignore.contains(".knowledge/knowledge.db"));
-    // Verify AGENTS.md was created with import line
-    let claude_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+    // Verify CLAUDE.md was created with import line, and AGENTS.md was not created
+    assert!(!dir.path().join("AGENTS.md").exists());
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
     assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
     // Verify .knowledge/lk-instructions.md was created with full instructions
     let instructions =
@@ -87,10 +88,105 @@ fn test_init_idempotent() {
         .unwrap();
     assert!(output.status.success());
 
-    // AGENTS.md should not have duplicate import lines
-    let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
-    let count = agents_md.matches("@.knowledge/lk-instructions.md").count();
-    assert_eq!(count, 1, "AGENTS.md should not have duplicate import lines");
+    // CLAUDE.md should not have duplicate import lines, and AGENTS.md was not created
+    assert!(!dir.path().join("AGENTS.md").exists());
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    let count = claude_md.matches("@.knowledge/lk-instructions.md").count();
+    assert_eq!(count, 1, "CLAUDE.md should not have duplicate import lines");
+}
+
+#[test]
+fn test_init_migrates_agents_md_to_claude_md() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    std::fs::write(&agents_md_path, "@.knowledge/lk-instructions.md\n").unwrap();
+
+    let output = lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md had only lk import, so it should be removed
+    assert!(!agents_md_path.exists());
+    // CLAUDE.md should now have the import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_removes_import_from_agents_md_with_other_content() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    std::fs::write(
+        &agents_md_path,
+        "# Project Instructions\n\nFollow style guide.\n\n@.knowledge/lk-instructions.md\n",
+    )
+    .unwrap();
+
+    let output = lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should still exist with user content, but without lk import
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(agents_md.contains("# Project Instructions"));
+    assert!(agents_md.contains("Follow style guide."));
+    assert!(!agents_md.contains("@.knowledge/lk-instructions.md"));
+
+    // CLAUDE.md should have the import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_prefers_dot_claude_claude_md_if_exists() {
+    let dir = setup_temp_project();
+    let dot_claude = dir.path().join(".claude");
+    std::fs::create_dir_all(&dot_claude).unwrap();
+    let claude_md_path = dot_claude.join("CLAUDE.md");
+    std::fs::write(&claude_md_path, "# Dot Claude\n").unwrap();
+
+    let output = lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    assert!(!dir.path().join("AGENTS.md").exists());
+    assert!(!dir.path().join("CLAUDE.md").exists());
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.starts_with("# Dot Claude\n"));
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_migrates_agents_md_when_claude_md_already_has_content() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    std::fs::write(&agents_md_path, "@.knowledge/lk-instructions.md\n").unwrap();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    std::fs::write(&claude_md_path, "# Existing Claude Rules\n").unwrap();
+
+    let output = lk_bin()
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md had only lk import, so it should be removed
+    assert!(!agents_md_path.exists());
+    // CLAUDE.md should keep existing content and have lk import appended
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.starts_with("# Existing Claude Rules\n"));
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
 }
 
 #[test]

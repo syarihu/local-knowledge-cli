@@ -166,7 +166,7 @@ All lk-managed files are stored under the `.knowledge/` directory:
 | `.knowledge/.lk-version` | Yes | Minimum required lk version |
 | `.knowledge/lk-instructions.md` | Yes | Claude Code instructions |
 | `.gitattributes` | Yes | Marks `.knowledge/*.md` as generated (configurable) |
-| `AGENTS.md`, `CLAUDE.md`, or `.claude/CLAUDE.md` | Yes | Contains `@.knowledge/lk-instructions.md` import |
+| `CLAUDE.md` or `.claude/CLAUDE.md` | Yes | Contains `@.knowledge/lk-instructions.md` import |
 | `.knowledge/knowledge.db` | No (auto-ignored) | Local search index |
 | `.knowledge/command.log` | No (auto-ignored) | Command log |
 
@@ -476,9 +476,12 @@ Once installed, Claude has access to these tools:
 
 No manual server startup is needed — Claude Code / Claude Desktop automatically launches `lk mcp` when a tool is called. When multiple projects are registered, each tool accepts an optional `project` parameter to specify which project to operate on.
 
-### Slash Commands
+### Instructions & Agent Integration
 
-`lk init` creates `.knowledge/lk-instructions.md` with Claude Code instructions and adds an `@.knowledge/lk-instructions.md` import line to your `AGENTS.md` (or `CLAUDE.md` if it exists). This keeps your config file minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
+`lk init` creates `.knowledge/lk-instructions.md` containing knowledge base guidelines (search before investigating, save after discovering, etc.).
+
+- **Claude Code**: `lk init` adds an `@.knowledge/lk-instructions.md` import line to `CLAUDE.md` (or `.claude/CLAUDE.md` if it exists, creating `CLAUDE.md` if needed). This keeps your project config minimal while providing full instructions to Claude Code via the [`@import` syntax](https://docs.anthropic.com/en/docs/claude-code/memory#import-additional-files).
+- **Other AI Agents (Cursor, Antigravity, Codex, etc.)**: Connect the `lk-knowledge` MCP server (`lk install-mcp`). The server returns instructions automatically via the MCP `initialize` response (`InitializeResult.instructions`), so no configuration file edits or imports are needed.
 
 `lk-instructions.md` is generated (not meant to be hand-edited), so `lk update` and `lk install-commands` refresh it in place wherever it already exists (the current project and the global `~/.claude/` copy) using the freshly installed binary's content. Locations that haven't run `lk init` are left untouched.
 

@@ -161,10 +161,9 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("Created {}", instructions_path.display());
     }
 
-    // Add import line to AGENTS.md or CLAUDE.md
-    // Priority: root AGENTS.md > root CLAUDE.md > .claude/CLAUDE.md > create root AGENTS.md
+    // Add import line to CLAUDE.md
+    // Priority: root CLAUDE.md > .claude/CLAUDE.md > create root CLAUDE.md
     let candidates = [
-        root.join("AGENTS.md"),
         root.join("CLAUDE.md"),
         root.join(".claude").join("CLAUDE.md"),
     ];
@@ -180,7 +179,59 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("Migrated .claude/lk-instructions.md -> .knowledge/lk-instructions.md");
     }
 
-    // Migrate legacy import line in AGENTS.md / CLAUDE.md
+    // Migrate: if AGENTS.md exists, remove any lk import or legacy marker from it
+    let agents_md_path = root.join("AGENTS.md");
+    if agents_md_path.exists() {
+        let content = std::fs::read_to_string(&agents_md_path)?;
+        let has_import = content.contains(import_line) || content.contains(old_import_line);
+        let has_marker = content.contains(old_marker);
+
+        if has_import || has_marker {
+            let mut new_content = content.clone();
+            if has_import {
+                let lines: Vec<&str> = new_content
+                    .lines()
+                    .filter(|line| {
+                        let trimmed = line.trim();
+                        trimmed != import_line && trimmed != old_import_line
+                    })
+                    .collect();
+                new_content = lines.join("\n");
+                if !new_content.ends_with('\n') && !new_content.is_empty() {
+                    new_content.push('\n');
+                }
+            }
+            if let Some(section_start) = new_content.find(old_marker) {
+                let rest = &new_content[section_start + old_marker.len()..];
+                let section_end = rest
+                    .match_indices("\n## ")
+                    .find(|(i, _)| !rest[i + 4..].starts_with('#'))
+                    .map(|(i, _)| section_start + old_marker.len() + i)
+                    .unwrap_or(new_content.len());
+
+                let mut trimmed = new_content[..section_start].to_string();
+                if section_end < new_content.len() {
+                    trimmed.push_str(&new_content[section_end..]);
+                }
+                new_content = trimmed;
+            }
+
+            // Collapse excessive blank lines
+            while new_content.contains("\n\n\n") {
+                new_content = new_content.replace("\n\n\n", "\n\n");
+            }
+
+            if new_content.trim().is_empty() {
+                std::fs::remove_file(&agents_md_path)?;
+                println!("Migrated lk import from AGENTS.md and removed empty file");
+            } else {
+                std::fs::write(&agents_md_path, new_content)?;
+                println!("Migrated lk import out of {}", agents_md_path.display());
+            }
+        }
+    }
+
+    // Migrate legacy import line in CLAUDE.md
     for candidate in &candidates {
         if candidate.exists() {
             let content = std::fs::read_to_string(candidate)?;
@@ -203,12 +254,12 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     if already_imported {
         println!("lk import already exists in a project config file");
     } else {
-        // Find the first existing file, or create AGENTS.md
+        // Find the first existing file, or create CLAUDE.md
         let target_path = candidates
             .iter()
             .find(|p| p.exists())
             .cloned()
-            .unwrap_or_else(|| root.join("AGENTS.md"));
+            .unwrap_or_else(|| root.join("CLAUDE.md"));
 
         if target_path.exists() {
             let content = std::fs::read_to_string(&target_path)?;
