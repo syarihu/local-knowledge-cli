@@ -76,7 +76,7 @@ fn extract_argument_value(args: Option<&Value>, defined_args: &[PromptArgument])
 
 pub const PROMPTS: &[PromptDef] = &[
     PromptDef {
-        name: "lk-knowledge-search",
+        name: "lk-search",
         filename: "lk-knowledge-search.md",
         description: "Search the local knowledge base for existing knowledge",
         arguments: &[PromptArgument {
@@ -87,7 +87,7 @@ pub const PROMPTS: &[PromptDef] = &[
         raw_content: include_str!("../commands/lk-knowledge-search.md"),
     },
     PromptDef {
-        name: "lk-knowledge-save-context",
+        name: "lk-save-context",
         filename: "lk-knowledge-save-context.md",
         description: "Save conversation context to lk knowledge base",
         arguments: &[PromptArgument {
@@ -98,7 +98,7 @@ pub const PROMPTS: &[PromptDef] = &[
         raw_content: include_str!("../commands/lk-knowledge-save-context.md"),
     },
     PromptDef {
-        name: "lk-knowledge-plan",
+        name: "lk-plan",
         filename: "lk-knowledge-plan.md",
         description: "Save plans to tackle later and resume them from a working list",
         arguments: &[PromptArgument {
@@ -109,7 +109,7 @@ pub const PROMPTS: &[PromptDef] = &[
         raw_content: include_str!("../commands/lk-knowledge-plan.md"),
     },
     PromptDef {
-        name: "lk-knowledge-discover",
+        name: "lk-discover",
         filename: "lk-knowledge-discover.md",
         description: "Explore the entire project and auto-generate knowledge markdown files for .knowledge/",
         arguments: &[PromptArgument {
@@ -120,7 +120,7 @@ pub const PROMPTS: &[PromptDef] = &[
         raw_content: include_str!("../commands/lk-knowledge-discover.md"),
     },
     PromptDef {
-        name: "lk-knowledge-refresh",
+        name: "lk-refresh",
         filename: "lk-knowledge-refresh.md",
         description: "Check all knowledge entries for staleness and update outdated ones",
         arguments: &[PromptArgument {
@@ -131,7 +131,7 @@ pub const PROMPTS: &[PromptDef] = &[
         raw_content: include_str!("../commands/lk-knowledge-refresh.md"),
     },
     PromptDef {
-        name: "lk-knowledge-add-db",
+        name: "lk-add-db",
         filename: "lk-knowledge-add-db.md",
         description: "Add knowledge discovered in this conversation to the local DB",
         arguments: &[PromptArgument {
@@ -142,7 +142,7 @@ pub const PROMPTS: &[PromptDef] = &[
         raw_content: include_str!("../commands/lk-knowledge-add-db.md"),
     },
     PromptDef {
-        name: "lk-knowledge-from-branch",
+        name: "lk-from-branch",
         filename: "lk-knowledge-from-branch.md",
         description: "Extract knowledge entries from the current branch diff before merging",
         arguments: &[PromptArgument {
@@ -153,7 +153,7 @@ pub const PROMPTS: &[PromptDef] = &[
         raw_content: include_str!("../commands/lk-knowledge-from-branch.md"),
     },
     PromptDef {
-        name: "lk-knowledge-write-md",
+        name: "lk-write-md",
         filename: "lk-knowledge-write-md.md",
         description: "Help write well-structured knowledge markdown files from code or design info",
         arguments: &[PromptArgument {
@@ -164,21 +164,21 @@ pub const PROMPTS: &[PromptDef] = &[
         raw_content: include_str!("../commands/lk-knowledge-write-md.md"),
     },
     PromptDef {
-        name: "lk-knowledge-agent-brief",
+        name: "lk-agent-brief",
         filename: "lk-knowledge-agent-brief.md",
         description: "Canonical brief to prepend when delegating code investigation to Explore/general-purpose sub-agents",
         arguments: &[],
         raw_content: include_str!("../commands/lk-knowledge-agent-brief.md"),
     },
     PromptDef {
-        name: "lk-knowledge-export",
+        name: "lk-export",
         filename: "lk-knowledge-export.md",
         description: "Export local knowledge entries to shareable markdown files",
         arguments: &[],
         raw_content: include_str!("../commands/lk-knowledge-export.md"),
     },
     PromptDef {
-        name: "lk-knowledge-sync",
+        name: "lk-sync",
         filename: "lk-knowledge-sync.md",
         description: "Sync shared knowledge markdown files into the local DB",
         arguments: &[],
@@ -187,18 +187,22 @@ pub const PROMPTS: &[PromptDef] = &[
 ];
 
 pub fn find_prompt(name: &str) -> Option<&'static PromptDef> {
-    let normalized = name.trim().to_ascii_lowercase();
-    let norm_stripped = normalized
+    let query = name.trim();
+    let query_base = query
         .strip_prefix("lk-knowledge-")
-        .or_else(|| normalized.strip_prefix("lk-"))
-        .unwrap_or(&normalized);
+        .or_else(|| query.strip_prefix("lk-"))
+        .unwrap_or(query);
 
     PROMPTS.iter().find(|p| {
-        if p.name == normalized {
+        if p.name.eq_ignore_ascii_case(query) {
             return true;
         }
-        let p_short = p.name.strip_prefix("lk-knowledge-").unwrap_or(p.name);
-        p_short == norm_stripped
+        let p_base = p
+            .name
+            .strip_prefix("lk-knowledge-")
+            .or_else(|| p.name.strip_prefix("lk-"))
+            .unwrap_or(p.name);
+        p_base.eq_ignore_ascii_case(query_base)
     })
 }
 
@@ -267,10 +271,12 @@ mod tests {
 
     #[test]
     fn test_find_prompt_canonical_and_alias() {
+        assert!(find_prompt("lk-search").is_some());
         assert!(find_prompt("lk-knowledge-search").is_some());
         assert!(find_prompt("search").is_some());
         assert!(find_prompt("SEARCH").is_some());
-        assert!(find_prompt("lk-search").is_some());
+        assert!(find_prompt("LK-SEARCH").is_some());
+        assert!(find_prompt("lk-plan").is_some());
         assert!(find_prompt("lk-knowledge-plan").is_some());
         assert!(find_prompt("plan").is_some());
         assert!(find_prompt("unknown").is_none());
