@@ -51,14 +51,6 @@ pub fn cmd_add(
     }
     // "auto" (default) saves to project when initialized, else falls back to user.
     let (scope, fell_back) = super::resolve_write_scope(scope)?;
-    super::log_command(
-        "add",
-        &[
-            ("title", title),
-            ("category", category.unwrap_or("")),
-            ("scope", scope.label()),
-        ],
-    );
     if fell_back && !json_output {
         eprintln!(
             "Note: this project is not initialized; saving to user scope (~/.config/lk/knowledge.db). \
@@ -97,21 +89,18 @@ pub fn cmd_add(
 
     // Secret detection
     if !allow_secrets {
-        let config = crate::config::Config::load(&crate::util::get_knowledge_dir());
-        if config.secret_detection {
+        let secret_detection = match scope {
+            super::Scope::Project => {
+                crate::config::Config::load(&crate::util::get_knowledge_dir()).secret_detection
+            }
+            super::Scope::User => crate::config::GlobalConfig::load().secret_detection,
+        };
+        if secret_detection {
             let text = format!("{title}\n{content}");
             let matches = crate::secrets::check_for_secrets(&text);
             if !matches.is_empty() {
                 if json_output {
-                    let warnings: Vec<serde_json::Value> = matches
-                        .iter()
-                        .map(|m| {
-                            serde_json::json!({
-                                "pattern": m.pattern_name,
-                                "matched": m.matched,
-                            })
-                        })
-                        .collect();
+                    let warnings = crate::secrets::warnings_json(&matches);
                     let out = serde_json::json!({
                         "added": false,
                         "secret_detected": true,
@@ -125,6 +114,15 @@ pub fn cmd_add(
             }
         }
     }
+
+    super::log_command(
+        "add",
+        &[
+            ("title", title),
+            ("category", category),
+            ("scope", scope.label()),
+        ],
+    );
 
     // Manually specified keywords are authoritative; auto-extraction (frequency-
     // ranked, capped) is only the fallback when none are provided. Merging auto

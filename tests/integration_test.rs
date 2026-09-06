@@ -2132,6 +2132,23 @@ fn test_mcp_tool_names_mirror_the_cli_subcommands() {
         !names.iter().any(|n| n == "update_knowledge"),
         "`update_knowledge` transliterates to `lk update`, which upgrades the binary: {names:?}"
     );
+
+    let tools: Vec<serde_json::Value> = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+    )
+    .into_iter()
+    .filter_map(|v| v["result"]["tools"].as_array().cloned())
+    .flatten()
+    .collect();
+    let add_tool = tools
+        .iter()
+        .find(|t| t["name"] == "add_knowledge")
+        .expect("add_knowledge tool not found in tools/list");
+    assert!(
+        add_tool["inputSchema"]["properties"]["allow_secrets"].is_object(),
+        "add_knowledge must expose allow_secrets in schema: {add_tool}"
+    );
 }
 
 /// An edit that names no field changes nothing, so reporting success would leave
@@ -3802,6 +3819,197 @@ fn test_mcp_add_records_the_project_it_was_called_for() {
 }
 
 #[test]
+fn test_mcp_add_knowledge_blocks_secrets_by_default() {
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    let replies = mcp_request(
+        proj.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"MCP secret test","content":"aws key is AKIAIOSFODNN7EXAMPLE"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], false, "body: {body}");
+    assert_eq!(out["secret_detected"], true, "body: {body}");
+    let warnings = out["warnings"].as_array().expect("warnings array");
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["pattern"], "AWS Access Key ID");
+    assert_eq!(warnings[0]["matched"], "AKIA***");
+
+    // Entry was not added to the DB.
+    let get = lk_bin()
+        .args(["get", "1", "--json"])
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+    assert!(
+        !get.status.success(),
+        "entry containing a secret must not be stored in DB"
+    );
+}
+
+#[test]
+fn test_mcp_add_knowledge_allows_secrets_with_flag() {
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    let replies = mcp_request(
+        proj.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"MCP secret allowed","content":"aws key is AKIAIOSFODNN7EXAMPLE","allow_secrets":true}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], true, "body: {body}");
+    assert_eq!(out["id"], 1);
+
+    // Entry is stored in the DB.
+    let get = lk_bin()
+        .args(["get", "1", "--json"])
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+    assert!(get.status.success());
+    let entry: serde_json::Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(entry["content"], "aws key is AKIAIOSFODNN7EXAMPLE");
+}
+
+#[test]
+fn test_mcp_add_knowledge_honors_config_secret_detection_false() {
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    // Disable secret_detection in project config.
+    let config_path = proj.path().join(".knowledge/config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str("\nsecret_detection = false\n");
+    std::fs::write(&config_path, config).unwrap();
+
+    let replies = mcp_request(
+        proj.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"MCP config disabled","content":"aws key is AKIAIOSFODNN7EXAMPLE"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], true, "body: {body}");
+    assert_eq!(out["id"], 1);
+}
+
+#[test]
+fn test_mcp_add_knowledge_user_scope_blocks_secrets() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"MCP user secret","content":"aws key is AKIAIOSFODNN7EXAMPLE","scope":"user"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], false, "body: {body}");
+    assert_eq!(out["secret_detected"], true, "body: {body}");
+}
+
+#[test]
+fn test_mcp_add_knowledge_blocks_secret_in_title() {
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    let replies = mcp_request(
+        proj.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"AWS AKIAIOSFODNN7EXAMPLE key","content":"safe content"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], false, "body: {body}");
+    assert_eq!(out["secret_detected"], true, "body: {body}");
+}
+
+#[test]
+fn test_mcp_add_knowledge_user_scope_honors_global_config_false() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    // Disable secret_detection in global user config (~/.config/lk/config.toml).
+    let lk_dir = home.path().join(".config/lk");
+    std::fs::create_dir_all(&lk_dir).unwrap();
+    std::fs::write(lk_dir.join("config.toml"), "secret_detection = false\n").unwrap();
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"MCP user secret","content":"aws key is AKIAIOSFODNN7EXAMPLE","scope":"user"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], true, "body: {body}");
+}
+
+#[test]
 fn test_project_flag_cannot_inject_markdown_metadata() {
     // A newline in the value would become a second metadata line once exported, and
     // the next sync would apply it (`status: deprecated` here). The value must be
@@ -4308,6 +4516,120 @@ fn test_user_scope_export_blocks_secrets() {
         !wrote_md,
         "no markdown should be written when a secret is detected"
     );
+}
+
+/// Secret detection blocks CLI `lk add` of an entry containing a key unless --allow-secrets is given.
+#[test]
+fn test_cli_add_blocks_secrets_by_default() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    let output = lk_bin()
+        .args([
+            "add",
+            "CLI secret test",
+            "--content",
+            "aws key is AKIAIOSFODNN7EXAMPLE",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let out: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["added"], false);
+    assert_eq!(out["secret_detected"], true);
+    let warnings = out["warnings"].as_array().unwrap();
+    assert_eq!(warnings[0]["pattern"], "AWS Access Key ID");
+    assert_eq!(warnings[0]["matched"], "AKIA***");
+
+    // With --allow-secrets it succeeds.
+    let allowed = lk_bin()
+        .args([
+            "add",
+            "CLI secret test allowed",
+            "--content",
+            "aws key is AKIAIOSFODNN7EXAMPLE",
+            "--allow-secrets",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(allowed.status.success());
+    let out_allowed: serde_json::Value = serde_json::from_slice(&allowed.stdout).unwrap();
+    assert_eq!(out_allowed["added"], true);
+}
+
+/// Global user config can disable secret detection for user scope in CLI `lk add`.
+#[test]
+fn test_cli_add_user_scope_honors_global_config_false() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let lk_dir = home.path().join(".config/lk");
+    std::fs::create_dir_all(&lk_dir).unwrap();
+    std::fs::write(lk_dir.join("config.toml"), "secret_detection = false\n").unwrap();
+
+    let output = lk_bin()
+        .args([
+            "add",
+            "CLI user secret",
+            "--content",
+            "aws key is AKIAIOSFODNN7EXAMPLE",
+            "--scope",
+            "user",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let out: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["added"], true);
+}
+
+/// Project config can disable secret detection for project scope in CLI `lk add`.
+#[test]
+fn test_cli_add_honors_config_secret_detection_false() {
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    // Disable secret_detection in project config.
+    let config_path = proj.path().join(".knowledge/config.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config.push_str("\nsecret_detection = false\n");
+    std::fs::write(&config_path, config).unwrap();
+
+    let output = lk_bin()
+        .args([
+            "add",
+            "CLI project secret",
+            "--content",
+            "aws key is AKIAIOSFODNN7EXAMPLE",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let out: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["added"], true);
 }
 
 /// A symlinked user_knowledge_dir (the dotfiles use case) still round-trips:

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::cmd::maybe_auto_sync_for;
 use crate::config::Config;
 use crate::db;
+use crate::secrets;
 use crate::similarity::Tier;
 use crate::util;
 
@@ -364,7 +365,7 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
 fn tool_def_add(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "add_knowledge",
-        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Duplicate handling: an entry whose title matches an existing one — or is all but identical to it — is rejected (`added: false` with `similar_entries`); edit that entry instead with edit_knowledge, or pass force=true to add it anyway. Nothing else is rejected: the add succeeds (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call edit_knowledge on those unless one genuinely covers the same topic. The reply's `recorded_project` is the repo the entry was attributed to (`owner/repo`) — that is how a user-scope entry says where it came from; a top-level `project` names the project this request targeted.",
+        "description": "Save new knowledge to the project's knowledge base. Use this to record design decisions, architecture rationale, bug investigation findings, non-obvious implementation details, or any context that would be valuable for future development. Content rules: use stable identifiers (function/struct names), not line numbers; include the rationale ('why'), not just the 'what'; never store secrets. Secret handling: content containing potential secrets (API keys, tokens, private keys) is rejected (`added: false` with `secret_detected: true` and `warnings`); remove the secret from content, or pass allow_secrets=true to save anyway if it is a false positive. Duplicate handling: an entry whose title matches an existing one — or is all but identical to it — is rejected (`added: false` with `similar_entries`); edit that entry instead with edit_knowledge, or pass force=true to add it anyway. A non-duplicate entry without secrets is saved (`added: true`) and any loosely related entries are listed under `possibly_related` for information only; do NOT call edit_knowledge on those unless one genuinely covers the same topic. The reply's `recorded_project` is the repo the entry was attributed to (`owner/repo`) — that is how a user-scope entry says where it came from; a top-level `project` names the project this request targeted.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -393,7 +394,12 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 },
                 "force": {
                     "type": "boolean",
-                    "description": "Add even if an entry with the same (or an all-but-identical) title already exists (default: false). Nothing else is ever rejected, so this is rarely needed — do not set it pre-emptively.",
+                    "description": "Add even if an entry with the same (or an all-but-identical) title already exists (default: false). Weaker similarity hits are never rejected, so this is rarely needed — do not set it pre-emptively.",
+                    "default": false
+                },
+                "allow_secrets": {
+                    "type": "boolean",
+                    "description": "Save even if potential secrets (API keys, tokens, credentials) are detected (default: false). Content with secrets is rejected by default.",
                     "default": false
                 },
                 "scope": {
@@ -939,6 +945,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             let category = params["category"].as_str().unwrap_or("general");
             let status = params["status"].as_str();
             let force = params["force"].as_bool().unwrap_or(false);
+            let allow_secrets = params["allow_secrets"].as_bool().unwrap_or(false);
             let scope = params["scope"].as_str().unwrap_or("auto");
 
             // Validate status if provided
@@ -976,12 +983,6 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 _ => open_project_conn(&project_root)?,
             };
 
-            log_mcp_command(
-                "add",
-                &[("title", title), ("scope", effective_scope)],
-                &knowledge_dir,
-            );
-
             // Apply category template if content is empty
             let template_content;
             let effective_content = if content.is_empty() {
@@ -995,6 +996,35 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             } else {
                 content
             };
+
+            // Secret detection
+            if !allow_secrets {
+                let secret_detection = match effective_scope {
+                    "user" => crate::config::GlobalConfig::load().secret_detection,
+                    _ => config.secret_detection,
+                };
+                if secret_detection {
+                    let text = format!("{title}\n{effective_content}");
+                    let matches = secrets::check_for_secrets(&text);
+                    if !matches.is_empty() {
+                        let out = json!({
+                            "added": false,
+                            "secret_detected": true,
+                            "reason": "Potential secrets detected in content. Remove the secret from \
+                                       the entry, or pass allow_secrets=true to override this check \
+                                       if it is a false positive.",
+                            "warnings": secrets::warnings_json(&matches),
+                        });
+                        return Ok(decorate_result(out, &project_name));
+                    }
+                }
+            }
+
+            log_mcp_command(
+                "add",
+                &[("title", title), ("scope", effective_scope)],
+                &knowledge_dir,
+            );
 
             // Duplicate check. Only a Block-tier hit (a near-identical title)
             // refuses the add; weaker hits are reported alongside a successful add
