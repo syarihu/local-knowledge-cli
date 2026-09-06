@@ -356,6 +356,10 @@ fn tool_def_search(registry: &ProjectRegistry) -> Value {
                 }
             },
             "required": ["query"]
+        },
+        "annotations": {
+            "readOnlyHint": true,
+            "idempotentHint": true
         }
     });
     inject_project_prop(&mut def, registry);
@@ -410,6 +414,11 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 }
             },
             "required": ["title", "content"]
+        },
+        "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": false,
+            "idempotentHint": false
         }
     });
     inject_project_prop(&mut def, registry);
@@ -456,6 +465,10 @@ fn tool_def_list(registry: &ProjectRegistry) -> Value {
                     "description": "Which knowledge store to list: 'project', 'user' (global), or 'all' (default, merged)."
                 }
             }
+        },
+        "annotations": {
+            "readOnlyHint": true,
+            "idempotentHint": true
         }
     });
     inject_project_prop(&mut def, registry);
@@ -480,6 +493,10 @@ fn tool_def_get(registry: &ProjectRegistry) -> Value {
                 }
             },
             "required": ["id"]
+        },
+        "annotations": {
+            "readOnlyHint": true,
+            "idempotentHint": true
         }
     });
     inject_project_prop(&mut def, registry);
@@ -526,6 +543,11 @@ fn tool_def_edit(registry: &ProjectRegistry) -> Value {
                 }
             },
             "required": ["id"]
+        },
+        "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": false,
+            "idempotentHint": true
         }
     });
     inject_project_prop(&mut def, registry);
@@ -554,6 +576,11 @@ fn tool_def_supersede(registry: &ProjectRegistry) -> Value {
                 }
             },
             "required": ["old_id", "new_id"]
+        },
+        "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": false,
+            "idempotentHint": true
         }
     });
     inject_project_prop(&mut def, registry);
@@ -573,6 +600,10 @@ fn tool_def_stats(registry: &ProjectRegistry) -> Value {
                     "description": "Which knowledge store to summarize: 'project', 'user' (global), or 'all' (default, combined)."
                 }
             }
+        },
+        "annotations": {
+            "readOnlyHint": true,
+            "idempotentHint": true
         }
     });
     inject_project_prop(&mut def, registry);
@@ -586,6 +617,10 @@ fn tool_def_list_projects() -> Value {
         "inputSchema": {
             "type": "object",
             "properties": {}
+        },
+        "annotations": {
+            "readOnlyHint": true,
+            "idempotentHint": true
         }
     })
 }

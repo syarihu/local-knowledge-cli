@@ -2191,6 +2191,65 @@ fn test_mcp_tool_descriptions_include_behavioral_triggers() {
     );
 }
 
+#[test]
+fn test_mcp_tool_annotations() {
+    let dir = setup_temp_project();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let tools: Vec<serde_json::Value> = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    )
+    .into_iter()
+    .filter_map(|v| v["result"]["tools"].as_array().cloned())
+    .flatten()
+    .collect();
+
+    let find_tool = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("tool {name} not found in tools/list"))
+            .clone()
+    };
+
+    // Read-only tools
+    for name in [
+        "search_knowledge",
+        "get_knowledge",
+        "list_knowledge",
+        "get_stats",
+        "list_projects",
+    ] {
+        let tool = find_tool(name);
+        assert_eq!(
+            tool["annotations"]["readOnlyHint"], true,
+            "{name} must have readOnlyHint: true"
+        );
+        assert_eq!(
+            tool["annotations"]["idempotentHint"], true,
+            "{name} must have idempotentHint: true"
+        );
+    }
+
+    // Mutating tools
+    let add_tool = find_tool("add_knowledge");
+    assert_eq!(add_tool["annotations"]["readOnlyHint"], false);
+    assert_eq!(add_tool["annotations"]["destructiveHint"], false);
+    assert_eq!(add_tool["annotations"]["idempotentHint"], false);
+
+    let edit_tool = find_tool("edit_knowledge");
+    assert_eq!(edit_tool["annotations"]["readOnlyHint"], false);
+    assert_eq!(edit_tool["annotations"]["destructiveHint"], false);
+    assert_eq!(edit_tool["annotations"]["idempotentHint"], true);
+
+    let supersede_tool = find_tool("supersede_knowledge");
+    assert_eq!(supersede_tool["annotations"]["readOnlyHint"], false);
+    assert_eq!(supersede_tool["annotations"]["destructiveHint"], false);
+    assert_eq!(supersede_tool["annotations"]["idempotentHint"], true);
+}
+
 /// An edit that names no field changes nothing, so reporting success would leave
 /// the caller believing the entry was updated. The CLI already refuses it; both
 /// surfaces have to answer the same way.
