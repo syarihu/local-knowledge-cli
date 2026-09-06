@@ -43,11 +43,7 @@ fn test_help() {
 #[test]
 fn test_init() {
     let dir = setup_temp_project();
-    let output = lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
     assert!(output.status.success());
 
     // Verify DB was created
@@ -58,8 +54,9 @@ fn test_init() {
     // Verify .gitignore was created
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(gitignore.contains(".knowledge/knowledge.db"));
-    // Verify AGENTS.md was created with import line
-    let claude_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+    // Verify CLAUDE.md was created with import line, and AGENTS.md was not created
+    assert!(!dir.path().join("AGENTS.md").exists());
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
     assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
     // Verify .knowledge/lk-instructions.md was created with full instructions
     let instructions =
@@ -75,22 +72,528 @@ fn test_init_idempotent() {
     let dir = setup_temp_project();
 
     // Run init twice
-    lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    let output = lk_bin()
-        .arg("init")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    lk_in(dir.path()).arg("init").output().unwrap();
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
     assert!(output.status.success());
 
-    // AGENTS.md should not have duplicate import lines
-    let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
-    let count = agents_md.matches("@.knowledge/lk-instructions.md").count();
-    assert_eq!(count, 1, "AGENTS.md should not have duplicate import lines");
+    // CLAUDE.md should not have duplicate import lines, and AGENTS.md was not created
+    assert!(!dir.path().join("AGENTS.md").exists());
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    let count = claude_md.matches("@.knowledge/lk-instructions.md").count();
+    assert_eq!(count, 1, "CLAUDE.md should not have duplicate import lines");
+}
+
+#[test]
+fn test_init_migrates_agents_md_to_claude_md() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    std::fs::write(&agents_md_path, "@.knowledge/lk-instructions.md\n").unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md had only lk import, so it should be removed
+    assert!(!agents_md_path.exists());
+    // CLAUDE.md should now have the import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_removes_import_from_agents_md_with_other_content() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    std::fs::write(
+        &agents_md_path,
+        "# Project Instructions\n\nFollow style guide.\n\n@.knowledge/lk-instructions.md\n",
+    )
+    .unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should still exist with user content, but without lk import
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(agents_md.contains("# Project Instructions"));
+    assert!(agents_md.contains("Follow style guide."));
+    assert!(!agents_md.contains("@.knowledge/lk-instructions.md"));
+
+    // CLAUDE.md should have the import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_uses_existing_dot_claude_claude_md_when_root_absent() {
+    let dir = setup_temp_project();
+    let dot_claude = dir.path().join(".claude");
+    std::fs::create_dir_all(&dot_claude).unwrap();
+    let claude_md_path = dot_claude.join("CLAUDE.md");
+    std::fs::write(&claude_md_path, "# Dot Claude\n").unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    assert!(!dir.path().join("AGENTS.md").exists());
+    assert!(!dir.path().join("CLAUDE.md").exists());
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.starts_with("# Dot Claude\n"));
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_migrates_agents_md_when_claude_md_already_has_content() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    std::fs::write(&agents_md_path, "@.knowledge/lk-instructions.md\n").unwrap();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    std::fs::write(&claude_md_path, "# Existing Claude Rules\n").unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md had only lk import, so it should be removed
+    assert!(!agents_md_path.exists());
+    // CLAUDE.md should keep existing content and have lk import appended
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.starts_with("# Existing Claude Rules\n"));
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_does_not_modify_agents_md_with_prose_mentions() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let original_content = "\
+# Agent Guidelines
+
+Do not import @.knowledge/lk-instructions.md in this file.
+See ## Knowledge Base (local-knowledge-cli) documentation elsewhere.
+
+
+Extra blank lines that should remain untouched.
+";
+    std::fs::write(&agents_md_path, original_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should be completely untouched
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert_eq!(agents_md, original_content);
+
+    // CLAUDE.md was created with import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_migrates_agents_md_with_legacy_heading() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let legacy_content = "\
+# Project Rules
+
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+### Subheading
+Details here.
+
+## Coding Style
+Follow Rust 2021 conventions.
+";
+    std::fs::write(&agents_md_path, legacy_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // Legacy lk section should be removed, but user sections kept
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(agents_md.contains("# Project Rules"));
+    assert!(agents_md.contains("## Coding Style"));
+    assert!(agents_md.contains("Follow Rust 2021 conventions."));
+    assert!(!agents_md.contains("Knowledge Base (local-knowledge-cli)"));
+    assert!(!agents_md.contains("Old inline lk instructions."));
+
+    // CLAUDE.md should have the import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_migrates_agents_md_with_h1_following_legacy_section() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let legacy_content = "\
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+### Subheading
+Details here.
+
+# Next Chapter
+Keep this H1 section.
+";
+    std::fs::write(&agents_md_path, legacy_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // Legacy lk section should be removed, but H1 section kept
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(agents_md.contains("# Next Chapter"));
+    assert!(agents_md.contains("Keep this H1 section."));
+    assert!(!agents_md.contains("Knowledge Base (local-knowledge-cli)"));
+    assert!(!agents_md.contains("Old inline lk instructions."));
+
+    // CLAUDE.md should have the import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_migrates_claude_md_with_h1_following_legacy_section() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let legacy_content = "\
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+### Subheading
+Details here.
+
+# Next Chapter
+Keep this H1 section.
+";
+    std::fs::write(&claude_md_path, legacy_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // Legacy lk section should be replaced with import, and H1 section kept
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+    assert!(claude_md.contains("# Next Chapter"));
+    assert!(claude_md.contains("Keep this H1 section."));
+    assert!(!claude_md.contains("Knowledge Base (local-knowledge-cli)"));
+    assert!(!claude_md.contains("Old inline lk instructions."));
+}
+
+#[test]
+fn test_init_does_not_modify_agents_md_with_marker_inside_code_block() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let original_content = "\
+# My Project
+
+Here is an example:
+```markdown
+## Knowledge Base (local-knowledge-cli)
+@.knowledge/lk-instructions.md
+```
+
+## Real Heading
+Keep this heading.
+";
+    std::fs::write(&agents_md_path, original_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should be completely untouched
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert_eq!(agents_md, original_content);
+
+    // CLAUDE.md was created with import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_preserves_blank_lines_in_code_block_during_migration() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let content = "\
+# My Project
+
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+# Code Example
+```rust
+fn example() {
+
+
+
+    println!(\"keep blanks\");
+}
+```
+";
+    std::fs::write(&agents_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(
+        agents_md.contains("```rust\nfn example() {\n\n\n\n    println!(\"keep blanks\");\n}\n```")
+    );
+    assert!(!agents_md.contains("Knowledge Base (local-knowledge-cli)"));
+}
+
+#[test]
+fn test_init_migrates_claude_md_import_skipping_code_fence() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+Here is an example of the old import:
+```markdown
+@.claude/lk-instructions.md
+```
+
+@.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // The example inside the code block remains untouched
+    assert!(claude_md.contains("```markdown\n@.claude/lk-instructions.md\n```"));
+    // The standalone import outside the code block is migrated
+    assert!(claude_md.ends_with("@.knowledge/lk-instructions.md\n"));
+}
+
+#[test]
+fn test_init_does_not_modify_agents_md_with_indented_marker() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let content = "\
+# My Project
+
+    ## Knowledge Base (local-knowledge-cli)
+    Indented text that is not a heading.
+";
+    std::fs::write(&agents_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should be completely untouched
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert_eq!(agents_md, content);
+}
+
+#[test]
+fn test_init_does_not_delete_indented_import_in_agents_md() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let content = "\
+# Project Instructions
+
+Here is an example import in an indented block:
+
+    @.knowledge/lk-instructions.md
+    @.claude/lk-instructions.md
+";
+    std::fs::write(&agents_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should be untouched because indented imports are examples, not real imports
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert_eq!(agents_md, content);
+
+    // CLAUDE.md should still be created with the real import line
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    assert!(claude_md_path.exists());
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_does_not_migrate_indented_import_in_claude_md() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+Example old import:
+
+    @.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // The indented example should NOT be rewritten
+    assert!(claude_md.contains("    @.claude/lk-instructions.md"));
+    // A real import should be appended because the example is not treated as an existing import
+    assert!(claude_md.ends_with("@.knowledge/lk-instructions.md\n"));
+}
+
+#[test]
+fn test_init_drops_old_import_in_claude_md_if_new_import_already_exists() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+@.knowledge/lk-instructions.md
+
+Some other section
+
+@.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // The old import should be dropped, leaving exactly one new import
+    assert_eq!(
+        claude_md.matches("@.knowledge/lk-instructions.md").count(),
+        1
+    );
+    assert!(!claude_md.contains("@.claude/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_deduplicates_multiple_old_imports_in_claude_md() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+@.claude/lk-instructions.md
+
+Some text
+
+@.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // Only one new import should be present, not two
+    assert_eq!(
+        claude_md.matches("@.knowledge/lk-instructions.md").count(),
+        1
+    );
+    assert!(!claude_md.contains("@.claude/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_preserves_crlf_line_endings_in_claude_md() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "# Documentation\r\n\r\n@.claude/lk-instructions.md\r\n";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("\r\n"));
+    assert!(!claude_md.replace("\r\n", "").contains('\n'));
+    assert_eq!(
+        claude_md,
+        "# Documentation\r\n\r\n@.knowledge/lk-instructions.md\r\n"
+    );
+}
+
+#[test]
+fn test_init_preserves_crlf_line_endings_in_agents_md() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let content = "# AGENTS\r\n\r\n@.knowledge/lk-instructions.md\r\n\r\nUser instructions\r\n";
+    std::fs::write(&agents_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(agents_md.contains("\r\n"));
+    assert!(!agents_md.replace("\r\n", "").contains('\n'));
+    assert_eq!(agents_md, "# AGENTS\r\n\r\nUser instructions\r\n");
+}
+
+#[test]
+fn test_init_migrates_claude_md_import_preserves_user_blank_lines() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+
+
+User notes with multiple blank lines.
+
+
+
+@.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // User multiple blank lines are preserved (not collapsed)
+    assert!(claude_md.contains("# Documentation\n\n\n\nUser notes with multiple blank lines."));
+    assert!(claude_md.ends_with("@.knowledge/lk-instructions.md\n"));
+}
+
+#[test]
+fn test_init_migrates_claude_md_inline_section_preserves_user_blank_lines() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Overview
+
+
+
+Intro text with multiple blank lines.
+
+
+
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+# Next Chapter
+
+
+
+Another section with multiple blank lines.
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(claude_md.contains("# Overview\n\n\n\nIntro text with multiple blank lines."));
+    assert!(claude_md.contains("# Next Chapter\n\n\n\nAnother section with multiple blank lines."));
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+    assert!(!claude_md.contains("Knowledge Base (local-knowledge-cli)"));
 }
 
 #[test]
