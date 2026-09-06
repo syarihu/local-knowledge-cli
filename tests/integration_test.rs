@@ -162,6 +162,69 @@ fn test_init_migrates_agents_md_when_claude_md_already_has_content() {
 }
 
 #[test]
+fn test_init_does_not_modify_agents_md_with_prose_mentions() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let original_content = "\
+# Agent Guidelines
+
+Do not import @.knowledge/lk-instructions.md in this file.
+See ## Knowledge Base (local-knowledge-cli) documentation elsewhere.
+
+
+Extra blank lines that should remain untouched.
+";
+    std::fs::write(&agents_md_path, original_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should be completely untouched
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert_eq!(agents_md, original_content);
+
+    // CLAUDE.md was created with import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_migrates_agents_md_with_legacy_heading() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let legacy_content = "\
+# Project Rules
+
+## Knowledge Base (local-knowledge-cli)
+Old inline lk instructions.
+
+### Subheading
+Details here.
+
+## Coding Style
+Follow Rust 2021 conventions.
+";
+    std::fs::write(&agents_md_path, legacy_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // Legacy lk section should be removed, but user sections kept
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert!(agents_md.contains("# Project Rules"));
+    assert!(agents_md.contains("## Coding Style"));
+    assert!(agents_md.contains("Follow Rust 2021 conventions."));
+    assert!(!agents_md.contains("Knowledge Base (local-knowledge-cli)"));
+    assert!(!agents_md.contains("Old inline lk instructions."));
+
+    // CLAUDE.md should have the import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()

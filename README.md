@@ -154,7 +154,7 @@ All lk-managed files are stored under the `.knowledge/` directory:
 - **Markdown files** in `.knowledge/` (git-tracked) - shareable knowledge
 - **Config file** at `.knowledge/config.toml` (git-tracked) - project settings
 - **Version file** at `.knowledge/.lk-version` (git-tracked) - minimum required lk version for the project
-- **Instructions** at `.knowledge/lk-instructions.md` (git-tracked) - Claude Code instructions, imported via `@` syntax
+- **Instructions** at `.knowledge/lk-instructions.md` (git-tracked) - agent instructions for knowledge base usage (imported via `@` in Claude Code, served via MCP)
 - **Command log** at `.knowledge/command.log` (git-ignored) - optional command logging
 
 ### What to commit
@@ -164,7 +164,7 @@ All lk-managed files are stored under the `.knowledge/` directory:
 | `.knowledge/*.md` | Yes | Shared knowledge (markdown files) |
 | `.knowledge/config.toml` | Yes | Project settings |
 | `.knowledge/.lk-version` | Yes | Minimum required lk version |
-| `.knowledge/lk-instructions.md` | Yes | Claude Code instructions |
+| `.knowledge/lk-instructions.md` | Yes | Agent instructions (Claude Code & MCP) |
 | `.gitattributes` | Yes | Marks `.knowledge/*.md` as generated (configurable) |
 | `CLAUDE.md` or `.claude/CLAUDE.md` | Yes | Contains `@.knowledge/lk-instructions.md` import |
 | `.knowledge/knowledge.db` | No (auto-ignored) | Local search index |

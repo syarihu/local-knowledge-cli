@@ -183,8 +183,11 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     let agents_md_path = root.join("AGENTS.md");
     if agents_md_path.exists() {
         let content = std::fs::read_to_string(&agents_md_path)?;
-        let has_import = content.contains(import_line) || content.contains(old_import_line);
-        let has_marker = content.contains(old_marker);
+        let has_import = content.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == import_line || trimmed == old_import_line
+        });
+        let has_marker = find_heading_pos(&content, old_marker).is_some();
 
         if has_import || has_marker {
             let mut new_content = content.clone();
@@ -201,11 +204,17 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
                     new_content.push('\n');
                 }
             }
-            if let Some(section_start) = new_content.find(old_marker) {
-                let rest = &new_content[section_start + old_marker.len()..];
-                let section_end = rest
+            if let Some(section_start) = find_heading_pos(&new_content, old_marker) {
+                let rest = &new_content[section_start..];
+                let heading_line_len = rest
+                    .split_inclusive('\n')
+                    .next()
+                    .map(|l| l.len())
+                    .unwrap_or(rest.len());
+                let body = &rest[heading_line_len..];
+                let section_end = body
                     .find("\n## ")
-                    .map(|i| section_start + old_marker.len() + i)
+                    .map(|i| section_start + heading_line_len + i)
                     .unwrap_or(new_content.len());
 
                 let mut trimmed = new_content[..section_start].to_string();
@@ -234,8 +243,22 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     for candidate in &candidates {
         if candidate.exists() {
             let content = std::fs::read_to_string(candidate)?;
-            if content.contains(old_import_line) {
-                let new_content = content.replace(old_import_line, import_line);
+            let has_old_import = content.lines().any(|l| l.trim() == old_import_line);
+            if has_old_import {
+                let lines: Vec<String> = content
+                    .lines()
+                    .map(|l| {
+                        if l.trim() == old_import_line {
+                            import_line.to_string()
+                        } else {
+                            l.to_string()
+                        }
+                    })
+                    .collect();
+                let mut new_content = lines.join("\n");
+                if content.ends_with('\n') {
+                    new_content.push('\n');
+                }
                 std::fs::write(candidate, new_content)?;
                 println!("Updated import path in {}", candidate.display());
             }
@@ -246,7 +269,7 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     let already_imported = candidates.iter().any(|p| {
         p.exists()
             && std::fs::read_to_string(p)
-                .map(|c| c.contains(import_line))
+                .map(|c| c.lines().any(|l| l.trim() == import_line))
                 .unwrap_or(false)
     });
 
@@ -263,13 +286,18 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
         if target_path.exists() {
             let content = std::fs::read_to_string(&target_path)?;
 
-            if content.contains(old_marker) {
+            if let Some(section_start) = find_heading_pos(&content, old_marker) {
                 // Migrate: replace old inline section with import line
-                let section_start = content.find(old_marker).unwrap();
-                let rest = &content[section_start + old_marker.len()..];
-                let section_end = rest
+                let rest = &content[section_start..];
+                let heading_line_len = rest
+                    .split_inclusive('\n')
+                    .next()
+                    .map(|l| l.len())
+                    .unwrap_or(rest.len());
+                let body = &rest[heading_line_len..];
+                let section_end = body
                     .find("\n## ")
-                    .map(|i| section_start + old_marker.len() + i)
+                    .map(|i| section_start + heading_line_len + i)
                     .unwrap_or(content.len());
 
                 let mut new_content = content[..section_start].to_string();
@@ -345,7 +373,7 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
 
     if claude_md_path.exists() {
         let content = std::fs::read_to_string(&claude_md_path)?;
-        if content.contains(import_line) {
+        if content.lines().any(|l| l.trim() == import_line) {
             println!("lk import already exists in {}", claude_md_path.display());
         } else {
             use std::io::Write;
@@ -368,6 +396,18 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nGlobal initialization complete!");
     Ok(())
+}
+
+/// Find the byte offset where a markdown heading appears as a standalone line in content.
+fn find_heading_pos(content: &str, heading: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        if line.trim() == heading {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
 }
 
 pub(crate) const LK_INSTRUCTIONS_CONTENT: &str =
