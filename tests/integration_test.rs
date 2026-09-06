@@ -84,6 +84,190 @@ fn test_init_idempotent() {
 }
 
 #[test]
+fn test_init_no_import_skips_claude_md_and_persists_config() {
+    let dir = setup_temp_project();
+
+    let output = lk_in(dir.path())
+        .arg("init")
+        .arg("--no-import")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // No CLAUDE.md is created at all when the import is the only thing it would hold
+    assert!(!dir.path().join("CLAUDE.md").exists());
+    // The instructions file itself is still written — only the import is skipped
+    assert!(dir.path().join(".knowledge/lk-instructions.md").exists());
+    // The choice is recorded so the next `lk init` doesn't re-add the import
+    let config = std::fs::read_to_string(dir.path().join(".knowledge/config.toml")).unwrap();
+    assert!(
+        config.contains("claude_md_import = false"),
+        "config.toml should record the choice, got:\n{config}"
+    );
+}
+
+#[test]
+fn test_init_no_import_removes_existing_import_and_keeps_content() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    std::fs::write(
+        &claude_md_path,
+        "# CLAUDE.md\n\nProject rules go here.\n\n@.knowledge/lk-instructions.md\n",
+    )
+    .unwrap();
+
+    let output = lk_in(dir.path())
+        .arg("init")
+        .arg("--no-import")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(
+        !claude_md.contains("@.knowledge/lk-instructions.md"),
+        "import should be stripped, got:\n{claude_md}"
+    );
+    assert!(
+        claude_md.contains("Project rules go here."),
+        "user content must survive, got:\n{claude_md}"
+    );
+}
+
+#[test]
+fn test_init_no_import_deletes_claude_md_that_held_only_the_import() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    std::fs::write(&claude_md_path, "@.knowledge/lk-instructions.md\n").unwrap();
+
+    let output = lk_in(dir.path())
+        .arg("init")
+        .arg("--no-import")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // Nothing of the user's own was in it, so it goes rather than being left empty
+    assert!(!claude_md_path.exists());
+}
+
+#[test]
+fn test_init_honors_claude_md_import_false_from_config() {
+    let dir = setup_temp_project();
+
+    // A normal init first: CLAUDE.md gets the import
+    lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(dir.path().join("CLAUDE.md").exists());
+
+    // Turn the setting off by hand, then re-run init WITHOUT the flag
+    let config_path = dir.path().join(".knowledge/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("claude_md_import = true", "claude_md_import = false"),
+    )
+    .unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // The import is taken back out, and stays out across runs
+    assert!(!dir.path().join("CLAUDE.md").exists());
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+    assert!(!dir.path().join("CLAUDE.md").exists());
+}
+
+#[test]
+fn test_init_restores_import_when_config_flipped_back_to_true() {
+    let dir = setup_temp_project();
+    lk_in(dir.path())
+        .arg("init")
+        .arg("--no-import")
+        .output()
+        .unwrap();
+    assert!(!dir.path().join("CLAUDE.md").exists());
+
+    let config_path = dir.path().join(".knowledge/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("claude_md_import = false", "claude_md_import = true"),
+    )
+    .unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_no_import_leaves_import_inside_code_fence_alone() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    std::fs::write(
+        &claude_md_path,
+        "# Docs\n\nAdd this line to import lk:\n\n```markdown\n@.knowledge/lk-instructions.md\n```\n",
+    )
+    .unwrap();
+
+    let output = lk_in(dir.path())
+        .arg("init")
+        .arg("--no-import")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    assert!(
+        claude_md.contains("```markdown\n@.knowledge/lk-instructions.md\n```"),
+        "a documented example is not an import, got:\n{claude_md}"
+    );
+}
+
+#[test]
+fn test_init_global_no_import_strips_and_persists() {
+    let dir = setup_temp_project();
+
+    // A normal global init puts the import in ~/.claude/CLAUDE.md (HOME is the temp dir)
+    lk_in(dir.path())
+        .arg("init")
+        .arg("--global")
+        .output()
+        .unwrap();
+    let global_claude_md = dir.path().join(".claude/CLAUDE.md");
+    let content = std::fs::read_to_string(&global_claude_md).unwrap();
+    assert!(content.contains("@lk-instructions.md"));
+
+    let output = lk_in(dir.path())
+        .arg("init")
+        .arg("--global")
+        .arg("--no-import")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // Import gone, and the choice recorded in the global config
+    assert!(!global_claude_md.exists());
+    let config = std::fs::read_to_string(dir.path().join(".config/lk/config.toml")).unwrap();
+    assert!(
+        config.contains("claude_md_import = false"),
+        "global config.toml should record the choice, got:\n{config}"
+    );
+
+    // A later plain `lk init --global` must not bring it back
+    let output = lk_in(dir.path())
+        .arg("init")
+        .arg("--global")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(!global_claude_md.exists());
+}
+
+#[test]
 fn test_init_migrates_agents_md_to_claude_md() {
     let dir = setup_temp_project();
     let agents_md_path = dir.path().join("AGENTS.md");
