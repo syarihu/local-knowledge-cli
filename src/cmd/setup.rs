@@ -174,11 +174,11 @@ pub fn cmd_setup(target: Option<&str>) -> Result<(), Box<dyn std::error::Error>>
             Ok(())
         }
         Some(name) => {
-            if let Some(target) = TARGETS
+            if let Some(agent) = TARGETS
                 .iter()
                 .find(|t| t.id == name || t.aliases.contains(&name))
             {
-                print!("{}", target.template);
+                print!("{}", agent.template);
                 Ok(())
             } else {
                 let original = target.unwrap_or(name);
