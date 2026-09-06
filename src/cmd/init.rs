@@ -183,20 +183,32 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     let agents_md_path = root.join("AGENTS.md");
     if agents_md_path.exists() {
         let content = std::fs::read_to_string(&agents_md_path)?;
+        let mut tracker = CodeFenceTracker::default();
         let has_import = content.lines().any(|line| {
-            let trimmed = line.trim();
-            trimmed == import_line || trimmed == old_import_line
+            let inside = tracker.process_line(line);
+            if !inside && !tracker.is_in_code_block() {
+                let trimmed = line.trim();
+                trimmed == import_line || trimmed == old_import_line
+            } else {
+                false
+            }
         });
         let has_marker = find_heading_pos(&content, old_marker).is_some();
 
         if has_import || has_marker {
             let mut new_content = content.clone();
             if has_import {
+                let mut filter_tracker = CodeFenceTracker::default();
                 let lines: Vec<&str> = new_content
                     .lines()
                     .filter(|line| {
-                        let trimmed = line.trim();
-                        trimmed != import_line && trimmed != old_import_line
+                        let inside = filter_tracker.process_line(line);
+                        if !inside && !filter_tracker.is_in_code_block() {
+                            let trimmed = line.trim();
+                            trimmed != import_line && trimmed != old_import_line
+                        } else {
+                            true
+                        }
                     })
                     .collect();
                 new_content = lines.join("\n");
@@ -268,7 +280,13 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
     let already_imported = candidates.iter().any(|p| {
         p.exists()
             && std::fs::read_to_string(p)
-                .map(|c| c.lines().any(|l| l.trim() == import_line))
+                .map(|c| {
+                    let mut tracker = CodeFenceTracker::default();
+                    c.lines().any(|l| {
+                        let inside = tracker.process_line(l);
+                        !inside && !tracker.is_in_code_block() && l.trim() == import_line
+                    })
+                })
                 .unwrap_or(false)
     });
 
@@ -377,7 +395,12 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
 
     if claude_md_path.exists() {
         let content = std::fs::read_to_string(&claude_md_path)?;
-        if content.lines().any(|l| l.trim() == import_line) {
+        let mut tracker = CodeFenceTracker::default();
+        let already_imported = content.lines().any(|l| {
+            let inside = tracker.process_line(l);
+            !inside && !tracker.is_in_code_block() && l.trim() == import_line
+        });
+        if already_imported {
             println!("lk import already exists in {}", claude_md_path.display());
         } else {
             use std::io::Write;
@@ -402,11 +425,53 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Find the byte offset where a markdown heading appears as a standalone line in content.
+/// Tracks CommonMark fenced code blocks (``` or ~~~) across lines.
+#[derive(Default)]
+struct CodeFenceTracker {
+    active_fence: Option<(char, usize)>,
+}
+
+impl CodeFenceTracker {
+    fn is_in_code_block(&self) -> bool {
+        self.active_fence.is_some()
+    }
+
+    /// Process a line. If the line opens or closes a fence, updates state and returns false.
+    /// Returns true if this line is content inside an active code block.
+    fn process_line(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if let Some((fence_char, min_len)) = self.active_fence {
+            let fence_count = trimmed.chars().take_while(|&c| c == fence_char).count();
+            if fence_count >= min_len && trimmed[fence_count..].trim().is_empty() {
+                self.active_fence = None;
+                return false;
+            }
+            true
+        } else if let Some(first @ ('`' | '~')) = trimmed.chars().next() {
+            let count = trimmed.chars().take_while(|&c| c == first).count();
+            if count >= 3 {
+                let rest = &trimmed[count..];
+                if first == '`' && rest.contains('`') {
+                    return false;
+                }
+                self.active_fence = Some((first, count));
+                return false;
+            }
+            false
+        } else {
+            false
+        }
+    }
+}
+
+/// Find the byte offset where a markdown heading appears as a standalone line in content
+/// outside of any fenced code block.
 fn find_heading_pos(content: &str, heading: &str) -> Option<usize> {
+    let mut tracker = CodeFenceTracker::default();
     let mut offset = 0;
     for line in content.split_inclusive('\n') {
-        if line.trim() == heading {
+        let inside_code = tracker.process_line(line);
+        if !inside_code && !tracker.is_in_code_block() && line.trim() == heading {
             return Some(offset);
         }
         offset += line.len();
@@ -417,13 +482,11 @@ fn find_heading_pos(content: &str, heading: &str) -> Option<usize> {
 /// Find the byte offset in `body` where the next H1 (`# `) or H2 (`## `) heading begins.
 /// Skips any headings that occur inside code fences.
 fn find_next_h1_or_h2_pos(body: &str) -> Option<usize> {
-    let mut in_code_block = false;
+    let mut tracker = CodeFenceTracker::default();
     let mut offset = 0;
     for line in body.split_inclusive('\n') {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_code_block = !in_code_block;
-        } else if !in_code_block {
+        let inside_code = tracker.process_line(line);
+        if !inside_code && !tracker.is_in_code_block() {
             let s = line.trim_start();
             if s.starts_with("# ") || s.starts_with("## ") {
                 return Some(offset);
@@ -453,5 +516,87 @@ pub fn refresh_instructions_if_exists(
         Ok(true)
     } else {
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_code_fence_tracker_backticks_and_tildes() {
+        let mut tracker = CodeFenceTracker::default();
+        assert!(!tracker.process_line("```markdown"));
+        assert!(tracker.is_in_code_block());
+
+        // ~~~ inside ``` does not close it
+        assert!(tracker.process_line("~~~"));
+        assert!(tracker.is_in_code_block());
+
+        // Heading inside ``` is inside code block
+        assert!(tracker.process_line("## Heading"));
+        assert!(tracker.is_in_code_block());
+
+        // Closing ``` closes it
+        assert!(!tracker.process_line("```"));
+        assert!(!tracker.is_in_code_block());
+
+        // Outside fence again
+        assert!(!tracker.process_line("## Heading"));
+        assert!(!tracker.is_in_code_block());
+    }
+
+    #[test]
+    fn test_code_fence_tracker_longer_fence_requires_matching_length() {
+        let mut tracker = CodeFenceTracker::default();
+        // 4 backticks opens a fence requiring at least 4 backticks to close
+        assert!(!tracker.process_line("````"));
+        assert!(tracker.is_in_code_block());
+
+        // 3 backticks inside is just content
+        assert!(tracker.process_line("```"));
+        assert!(tracker.is_in_code_block());
+
+        // 4 backticks closes it
+        assert!(!tracker.process_line("````"));
+        assert!(!tracker.is_in_code_block());
+    }
+
+    #[test]
+    fn test_find_heading_pos_skips_code_fences() {
+        let content = "\
+# Documentation
+
+Here is an example:
+```markdown
+## Knowledge Base (local-knowledge-cli)
+inside code fence
+```
+
+## Knowledge Base (local-knowledge-cli)
+real heading
+";
+        let pos = find_heading_pos(content, "## Knowledge Base (local-knowledge-cli)");
+        assert!(pos.is_some());
+        assert!(
+            content[pos.unwrap()..]
+                .starts_with("## Knowledge Base (local-knowledge-cli)\nreal heading")
+        );
+    }
+
+    #[test]
+    fn test_find_next_h1_or_h2_pos_skips_code_fences() {
+        let body = "\
+Some text
+```markdown
+# Fake H1 inside code block
+## Fake H2 inside code block
+```
+More text
+# Real H1
+";
+        let pos = find_next_h1_or_h2_pos(body);
+        assert!(pos.is_some());
+        assert!(body[pos.unwrap()..].starts_with("# Real H1"));
     }
 }

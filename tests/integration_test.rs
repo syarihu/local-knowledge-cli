@@ -285,6 +285,37 @@ Keep this H1 section.
 }
 
 #[test]
+fn test_init_does_not_modify_agents_md_with_marker_inside_code_block() {
+    let dir = setup_temp_project();
+    let agents_md_path = dir.path().join("AGENTS.md");
+    let original_content = "\
+# My Project
+
+Here is an example:
+```markdown
+## Knowledge Base (local-knowledge-cli)
+@.knowledge/lk-instructions.md
+```
+
+## Real Heading
+Keep this heading.
+";
+    std::fs::write(&agents_md_path, original_content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    // AGENTS.md should be completely untouched
+    assert!(agents_md_path.exists());
+    let agents_md = std::fs::read_to_string(&agents_md_path).unwrap();
+    assert_eq!(agents_md, original_content);
+
+    // CLAUDE.md was created with import
+    let claude_md = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("@.knowledge/lk-instructions.md"));
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()
