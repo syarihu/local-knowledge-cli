@@ -321,7 +321,7 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-const LK_INSTRUCTIONS_CONTENT: &str = include_str!("../../.knowledge/lk-instructions.md");
+pub(crate) const LK_INSTRUCTIONS_CONTENT: &str = include_str!("../../.knowledge/lk-instructions.md");
 
 /// Refresh an existing lk-instructions.md with the embedded content if it differs.
 /// Does nothing when the file is absent, so it never imposes lk on a location that
