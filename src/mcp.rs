@@ -983,12 +983,6 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 _ => open_project_conn(&project_root)?,
             };
 
-            log_mcp_command(
-                "add",
-                &[("title", title), ("scope", effective_scope)],
-                &knowledge_dir,
-            );
-
             // Apply category template if content is empty
             let template_content;
             let effective_content = if content.is_empty() {
@@ -1023,6 +1017,12 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     return Ok(decorate_result(out, &project_name));
                 }
             }
+
+            log_mcp_command(
+                "add",
+                &[("title", title), ("scope", effective_scope)],
+                &knowledge_dir,
+            );
 
             // Duplicate check. Only a Block-tier hit (a near-identical title)
             // refuses the add; weaker hits are reported alongside a successful add

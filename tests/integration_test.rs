@@ -4518,6 +4518,87 @@ fn test_user_scope_export_blocks_secrets() {
     );
 }
 
+/// Secret detection blocks CLI `lk add` of an entry containing a key unless --allow-secrets is given.
+#[test]
+fn test_cli_add_blocks_secrets_by_default() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+    lk_bin()
+        .arg("init")
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    let output = lk_bin()
+        .args([
+            "add",
+            "CLI secret test",
+            "--content",
+            "aws key is AKIAIOSFODNN7EXAMPLE",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let out: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["added"], false);
+    assert_eq!(out["secret_detected"], true);
+    let warnings = out["warnings"].as_array().unwrap();
+    assert_eq!(warnings[0]["pattern"], "AWS Access Key ID");
+    assert_eq!(warnings[0]["matched"], "AKIA***");
+
+    // With --allow-secrets it succeeds.
+    let allowed = lk_bin()
+        .args([
+            "add",
+            "CLI secret test allowed",
+            "--content",
+            "aws key is AKIAIOSFODNN7EXAMPLE",
+            "--allow-secrets",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(allowed.status.success());
+    let out_allowed: serde_json::Value = serde_json::from_slice(&allowed.stdout).unwrap();
+    assert_eq!(out_allowed["added"], true);
+}
+
+/// Global user config can disable secret detection for user scope in CLI `lk add`.
+#[test]
+fn test_cli_add_user_scope_honors_global_config_false() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let lk_dir = home.path().join(".config/lk");
+    std::fs::create_dir_all(&lk_dir).unwrap();
+    std::fs::write(lk_dir.join("config.toml"), "secret_detection = false\n").unwrap();
+
+    let output = lk_bin()
+        .args([
+            "add",
+            "CLI user secret",
+            "--content",
+            "aws key is AKIAIOSFODNN7EXAMPLE",
+            "--scope",
+            "user",
+            "--json",
+        ])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let out: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["added"], true);
+}
+
 /// A symlinked user_knowledge_dir (the dotfiles use case) still round-trips:
 /// export → edit md → sync reflects the change (canonicalized rel-path agreement).
 #[cfg(unix)]
