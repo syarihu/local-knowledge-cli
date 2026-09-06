@@ -1574,6 +1574,24 @@ fn mcp_request_env(
         .collect()
 }
 
+#[test]
+fn test_mcp_initialize_returns_instructions() {
+    let dir = setup_temp_project();
+    let replies = mcp_request(
+        dir.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0"}}}"#,
+    );
+    assert_eq!(replies.len(), 1);
+    let result = &replies[0]["result"];
+    assert_eq!(result["protocolVersion"], "2024-11-05");
+    assert_eq!(result["serverInfo"]["name"], "lk-knowledge");
+    let instructions = result["instructions"]
+        .as_str()
+        .expect("initialize response must contain instructions string");
+    assert!(instructions.contains("Knowledge Base (local-knowledge-cli)"));
+    assert!(instructions.contains("Search BEFORE investigating"));
+}
+
 /// Every MCP tool is named after the CLI subcommand it mirrors, so an agent that
 /// learns one surface can transliterate to the other. `update_knowledge` was the
 /// one exception, and it transliterated to `lk update` — the binary self-updater.

@@ -13,6 +13,7 @@ mod update;
 pub use add::cmd_add;
 pub use entry::{cmd_delete, cmd_edit, cmd_get, cmd_purge, cmd_supersede};
 pub use export::{cmd_export, cmd_import};
+pub(crate) use init::LK_INSTRUCTIONS_CONTENT;
 pub use init::cmd_init;
 pub use install_mcp::{cmd_install_mcp, cmd_uninstall_mcp};
 pub use list::cmd_list;

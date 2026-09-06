@@ -1477,7 +1477,8 @@ pub fn run_server(project_paths: Vec<PathBuf>) -> Result<(), Box<dyn std::error:
                     "serverInfo": {
                         "name": "lk-knowledge",
                         "version": util::VERSION,
-                    }
+                    },
+                    "instructions": crate::cmd::LK_INSTRUCTIONS_CONTENT,
                 }),
             ),
 
