@@ -448,6 +448,60 @@ Example old import:
 }
 
 #[test]
+fn test_init_drops_old_import_in_claude_md_if_new_import_already_exists() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+@.knowledge/lk-instructions.md
+
+Some other section
+
+@.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // The old import should be dropped, leaving exactly one new import
+    assert_eq!(
+        claude_md.matches("@.knowledge/lk-instructions.md").count(),
+        1
+    );
+    assert!(!claude_md.contains("@.claude/lk-instructions.md"));
+}
+
+#[test]
+fn test_init_deduplicates_multiple_old_imports_in_claude_md() {
+    let dir = setup_temp_project();
+    let claude_md_path = dir.path().join("CLAUDE.md");
+    let content = "\
+# Documentation
+
+@.claude/lk-instructions.md
+
+Some text
+
+@.claude/lk-instructions.md
+";
+    std::fs::write(&claude_md_path, content).unwrap();
+
+    let output = lk_in(dir.path()).arg("init").output().unwrap();
+    assert!(output.status.success());
+
+    let claude_md = std::fs::read_to_string(&claude_md_path).unwrap();
+    // Only one new import should be present, not two
+    assert_eq!(
+        claude_md.matches("@.knowledge/lk-instructions.md").count(),
+        1
+    );
+    assert!(!claude_md.contains("@.claude/lk-instructions.md"));
+}
+
+#[test]
 fn test_add_and_get() {
     let dir = setup_temp_project();
     lk_bin()

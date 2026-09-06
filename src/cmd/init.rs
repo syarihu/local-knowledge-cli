@@ -251,32 +251,42 @@ pub fn cmd_init(global: bool) -> Result<(), Box<dyn std::error::Error>> {
         if candidate.exists() {
             let content = std::fs::read_to_string(candidate)?;
             let mut check_tracker = CodeFenceTracker::default();
-            let has_old_import = content.lines().any(|l| {
+            let mut has_old_import = false;
+            let mut has_new_import = false;
+            for l in content.lines() {
                 let inside = check_tracker.process_line(l);
-                !inside
-                    && !check_tracker.is_in_code_block()
-                    && is_matching_import(l, old_import_line)
-            });
+                if !inside && !check_tracker.is_in_code_block() {
+                    if is_matching_import(l, old_import_line) {
+                        has_old_import = true;
+                    }
+                    if is_matching_import(l, import_line) {
+                        has_new_import = true;
+                    }
+                }
+            }
             if has_old_import {
                 let mut replace_tracker = CodeFenceTracker::default();
-                let lines: Vec<String> = content
-                    .lines()
-                    .map(|l| {
-                        let inside = replace_tracker.process_line(l);
-                        if !inside
-                            && !replace_tracker.is_in_code_block()
-                            && is_matching_import(l, old_import_line)
-                        {
-                            import_line.to_string()
-                        } else {
-                            l.to_string()
+                let mut replaced_or_already_present = has_new_import;
+                let mut lines: Vec<String> = Vec::new();
+                for l in content.lines() {
+                    let inside = replace_tracker.process_line(l);
+                    if !inside
+                        && !replace_tracker.is_in_code_block()
+                        && is_matching_import(l, old_import_line)
+                    {
+                        if !replaced_or_already_present {
+                            lines.push(import_line.to_string());
+                            replaced_or_already_present = true;
                         }
-                    })
-                    .collect();
+                    } else {
+                        lines.push(l.to_string());
+                    }
+                }
                 let mut new_content = lines.join("\n");
-                if content.ends_with('\n') {
+                if content.ends_with('\n') && !new_content.is_empty() {
                     new_content.push('\n');
                 }
+                new_content = collapse_blank_lines(&new_content);
                 std::fs::write(candidate, new_content)?;
                 println!("Updated import path in {}", candidate.display());
             }
@@ -430,9 +440,10 @@ fn cmd_init_global() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// If `line` has up to 3 leading ASCII spaces (and no leading tab), returns the remainder of the line.
+/// If `line` has up to 3 leading ASCII spaces (and no leading tab) followed by a non-whitespace
+/// character, returns the remainder of the line starting from that character.
 /// In CommonMark, block elements (fences, ATX headings) allow at most 3 spaces of indentation;
-/// lines indented by 4 or more spaces or tabs are indented blocks.
+/// lines indented by 4 or more spaces, tabs, or whitespace-only lines (including empty lines) return `None`.
 fn strip_indent_up_to_3(line: &str) -> Option<&str> {
     let mut space_count = 0;
     for (i, c) in line.char_indices() {
