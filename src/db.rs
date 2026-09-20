@@ -1714,6 +1714,9 @@ fn score_candidates(
 /// Split a query into words by whitespace, hyphens, underscores, and CamelCase boundaries.
 /// This ensures queries like "auth-API", "feature_name", and "AuthAPI" are split into
 /// individual tokens for better search coverage.
+/// When a segment splits at CamelCase boundaries, the original compound spelling is also
+/// included alongside the individual parts (mirroring `score_identifier` in `keywords.rs`),
+/// so the precise compound can match while preserving the parts as fallbacks.
 fn split_query_words(query: &str) -> Vec<&str> {
     let mut words = Vec::new();
     for segment in query.split(|c: char| c.is_whitespace() || c == '-' || c == '_') {
@@ -1723,6 +1726,7 @@ fn split_query_words(query: &str) -> Vec<&str> {
         // Split CamelCase: find boundaries where lowercase->uppercase transition occurs
         let bytes = segment.as_bytes();
         let mut start = 0;
+        let mut parts = Vec::new();
         for i in 1..bytes.len() {
             let prev = bytes[i - 1] as char;
             let curr = bytes[i] as char;
@@ -1736,15 +1740,19 @@ fn split_query_words(query: &str) -> Vec<&str> {
             if split_here {
                 let part = &segment[start..i];
                 if !part.is_empty() {
-                    words.push(part);
+                    parts.push(part);
                 }
                 start = i;
             }
         }
         let rest = &segment[start..];
         if !rest.is_empty() {
-            words.push(rest);
+            parts.push(rest);
         }
+        if parts.len() > 1 {
+            words.push(segment);
+        }
+        words.extend(parts);
     }
     words
 }
@@ -3729,11 +3737,14 @@ mod tests {
 
     #[test]
     fn test_split_query_words_camel_case() {
-        assert_eq!(split_query_words("AuthAPI"), vec!["Auth", "API"]);
-        assert_eq!(split_query_words("authFlow"), vec!["auth", "Flow"]);
+        assert_eq!(split_query_words("AuthAPI"), vec!["AuthAPI", "Auth", "API"]);
+        assert_eq!(
+            split_query_words("authFlow"),
+            vec!["authFlow", "auth", "Flow"]
+        );
         assert_eq!(
             split_query_words("APIKeyManager"),
-            vec!["API", "Key", "Manager"]
+            vec!["APIKeyManager", "API", "Key", "Manager"]
         );
     }
 
@@ -3741,7 +3752,7 @@ mod tests {
     fn test_split_query_words_camel_case_with_separators() {
         assert_eq!(
             split_query_words("AuthFlow-apiKey"),
-            vec!["Auth", "Flow", "api", "Key"]
+            vec!["AuthFlow", "Auth", "Flow", "apiKey", "api", "Key"]
         );
     }
 
@@ -3763,7 +3774,10 @@ mod tests {
 
     #[test]
     fn test_sanitize_fts_query_splits_camel_case() {
-        assert_eq!(sanitize_fts_query("AuthAPI"), "\"Auth\" OR \"API\"");
+        assert_eq!(
+            sanitize_fts_query("AuthAPI"),
+            "\"AuthAPI\" OR \"Auth\" OR \"API\""
+        );
     }
 
     #[test]
@@ -3831,6 +3845,44 @@ mod tests {
         .unwrap();
         assert!(!results.is_empty(), "hyphenated query should find entry");
         assert!(results[0].title.contains("Auth"));
+    }
+
+    #[test]
+    fn test_search_camel_case_query_matches_compound_entry() {
+        let (conn, _tmp) = setup_test_db();
+        add_entry(
+            &conn,
+            "AuthAPI client docs",
+            "Details about using AuthAPI in frontend services",
+            &["authapi".to_string()],
+            "arch",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        add_entry(
+            &conn,
+            "Generic API Auth overview",
+            "General authorization and API key configuration",
+            &["auth".to_string(), "api".to_string()],
+            "arch",
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let results = search_entries(
+            &conn, "AuthAPI", false, None, None, None, None, None, None, 10,
+        )
+        .unwrap();
+        assert!(!results.is_empty(), "CamelCase query should find entries");
+        assert_eq!(
+            results[0].title, "AuthAPI client docs",
+            "compound entry should rank highest for CamelCase query"
+        );
     }
 }
 
