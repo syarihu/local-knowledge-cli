@@ -4104,6 +4104,244 @@ fn test_mcp_add_records_the_project_it_was_called_for() {
 }
 
 #[test]
+fn test_mcp_add_knowledge_with_explicit_recorded_project() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    let replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"custom project note","content":"body","keywords":["kw"],"scope":"user","recorded_project":"custom-org/custom-repo"}}}"#,
+    );
+    let body = replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{replies:?}"));
+    let out: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("add_knowledge did not return JSON ({e}): {body}"));
+    assert_eq!(out["added"], true, "body: {body}");
+    assert_eq!(out["recorded_project"], "custom-org/custom-repo");
+
+    let uid = out["uid"].as_str().unwrap();
+    let get = lk_bin()
+        .args(["get", uid, "--json"])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(entry["project"], "custom-org/custom-repo");
+
+    // Rejects non-string value
+    let err_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"bad project note","content":"body","scope":"user","recorded_project":12345}}}"#,
+    );
+    let err_body = err_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_replies:?}"));
+    assert!(
+        err_body.contains("recorded_project must be a string"),
+        "must reject non-string recorded_project: {err_body}"
+    );
+
+    // Rejects newline injection
+    let err_nl_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"bad newline project note","content":"body","scope":"user","recorded_project":"foo\nbar"}}}"#,
+    );
+    let err_nl_body = err_nl_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_nl_replies:?}"));
+    assert!(
+        err_nl_body.contains("recorded_project cannot contain newlines"),
+        "must reject newline in recorded_project: {err_nl_body}"
+    );
+
+    // Rejects unnormalizable project key
+    let err_unnorm_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"bad project note","content":"body","scope":"user","recorded_project":"///"}}}"#,
+    );
+    let err_unnorm_body = err_unnorm_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_unnorm_replies:?}"));
+    assert!(
+        err_unnorm_body.contains("Invalid recorded_project"),
+        "must reject unnormalizable recorded_project: {err_unnorm_body}"
+    );
+}
+
+#[test]
+fn test_mcp_edit_knowledge_with_recorded_project() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = setup_temp_project();
+
+    // First add an entry
+    let add_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"edit project note","content":"body","keywords":["kw"],"scope":"user","recorded_project":"orig-org/orig-repo"}}}"#,
+    );
+    let add_body = add_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{add_replies:?}"));
+    let add_out: serde_json::Value = serde_json::from_str(&add_body).unwrap();
+    assert_eq!(add_out["recorded_project"], "orig-org/orig-repo");
+    let uid = add_out["uid"].as_str().unwrap().to_string();
+
+    // Edit only recorded_project
+    let edit_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"edit_knowledge","arguments":{{"id":"{uid}","recorded_project":"updated-org/updated-repo"}}}}}}"#
+        ),
+    );
+    let edit_body = edit_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{edit_replies:?}"));
+    let edit_out: serde_json::Value = serde_json::from_str(&edit_body)
+        .unwrap_or_else(|e| panic!("edit_knowledge did not return JSON ({e}): {edit_body}"));
+    assert_eq!(edit_out["updated"], true, "edit body: {edit_body}");
+    assert_eq!(edit_out["recorded_project"], "updated-org/updated-repo");
+
+    // Verify persisted via get
+    let get = lk_bin()
+        .args(["get", &uid, "--json"])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    let entry: serde_json::Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(entry["project"], "updated-org/updated-repo");
+
+    // Clear recorded_project with empty string
+    let clear_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"edit_knowledge","arguments":{{"id":"{uid}","recorded_project":""}}}}}}"#
+        ),
+    );
+    let clear_body = clear_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{clear_replies:?}"));
+    let clear_out: serde_json::Value = serde_json::from_str(&clear_body).unwrap();
+    assert_eq!(clear_out["updated"], true);
+    assert_eq!(clear_out["recorded_project"], serde_json::Value::Null);
+
+    let get_cleared = lk_bin()
+        .args(["get", &uid, "--json"])
+        .current_dir(proj.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    let entry_cleared: serde_json::Value = serde_json::from_slice(&get_cleared.stdout).unwrap();
+    assert_eq!(entry_cleared["project"], serde_json::Value::Null);
+
+    // Rejects non-string value
+    let err_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"edit_knowledge","arguments":{{"id":"{uid}","recorded_project":12345}}}}}}"#
+        ),
+    );
+    let err_body = err_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_replies:?}"));
+    assert!(
+        err_body.contains("recorded_project must be a string"),
+        "must reject non-string recorded_project: {err_body}"
+    );
+
+    // Rejects newline injection
+    let err_nl_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"edit_knowledge","arguments":{{"id":"{uid}","recorded_project":"foo\nbar"}}}}}}"#
+        ),
+    );
+    let err_nl_body = err_nl_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_nl_replies:?}"));
+    assert!(
+        err_nl_body.contains("recorded_project cannot contain newlines"),
+        "must reject newline in recorded_project: {err_nl_body}"
+    );
+
+    // Rejects unnormalizable project key
+    let err_unnorm_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{{"name":"edit_knowledge","arguments":{{"id":"{uid}","recorded_project":"///"}}}}}}"#
+        ),
+    );
+    let err_unnorm_body = err_unnorm_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_unnorm_replies:?}"));
+    assert!(
+        err_unnorm_body.contains("Invalid recorded_project"),
+        "must reject unnormalizable recorded_project: {err_unnorm_body}"
+    );
+}
+
+#[test]
 fn test_mcp_add_knowledge_blocks_secrets_by_default() {
     let proj = setup_temp_project();
     lk_bin()
