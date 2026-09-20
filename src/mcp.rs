@@ -411,6 +411,10 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                     "enum": ["auto", "project", "user"],
                     "default": "auto",
                     "description": "Where to save (default 'auto'): 'auto' = project's .knowledge DB if the project is initialized, otherwise the global user store; 'project' = this repo's .knowledge DB (errors if the project isn't initialized); 'user' = global ~/.config/lk/knowledge.db, persists across projects (good for cross-project context/preferences). The user DB is created on first use. On auto-fallback the result includes a 'note'."
+                },
+                "recorded_project": {
+                    "type": "string",
+                    "description": "Project attribution ('owner/repo' or bare repo name) to record on the entry. By default, entries record the repo at the MCP server's startup directory; pass this when saving knowledge discovered about a different repository (e.g. another checkout, worktree, or submodule)."
                 }
             },
             "required": ["title", "content"]
@@ -540,6 +544,10 @@ fn tool_def_edit(registry: &ProjectRegistry) -> Value {
                     "type": "string",
                     "enum": ["project", "user"],
                     "description": "Optional: force the lookup scope. Omit to auto-resolve (numeric id = project; uid = project then user)."
+                },
+                "recorded_project": {
+                    "type": "string",
+                    "description": "Project attribution ('owner/repo' or bare repo name) recorded on the entry; pass 'none' or '' to clear. By default the recorded project is unchanged; pass this to correct entries attributed to the wrong repo."
                 }
             },
             "required": ["id"]
@@ -1104,7 +1112,27 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 return Ok(decorate_result(out, &project_name));
             }
 
-            let recorded_project = util::project_key_for(&project_root);
+            if let Some(val) = params.get("recorded_project")
+                && !val.is_null()
+                && !val.is_string()
+            {
+                return Err("recorded_project must be a string".to_string());
+            }
+
+            let recorded_project = match params["recorded_project"].as_str() {
+                Some(p) => {
+                    if p.contains('\n') || p.contains('\r') {
+                        return Err("recorded_project cannot contain newlines".to_string());
+                    }
+                    if p == "none" || p.trim().is_empty() {
+                        None
+                    } else {
+                        let (key, _note) = util::resolve_project_arg(p);
+                        key
+                    }
+                }
+                None => util::project_key_for(&project_root),
+            };
             let id = db::add_entry_full(
                 &conn,
                 title,
@@ -1304,11 +1332,19 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 && params["keywords"].is_null()
                 && params["status"].is_null()
                 && params["superseded_by"].is_null()
+                && params["recorded_project"].is_null()
             {
                 return Err(
-                    "Nothing to edit. Specify at least one of: title, content, keywords, status, superseded_by."
+                    "Nothing to edit. Specify at least one of: title, content, keywords, status, superseded_by, recorded_project."
                         .to_string(),
                 );
+            }
+
+            if let Some(val) = params.get("recorded_project")
+                && !val.is_null()
+                && !val.is_string()
+            {
+                return Err("recorded_project must be a string".to_string());
             }
 
             let (conn, entry, _label) = mcp_resolve_target(&arg, scope, &project_root)?;
@@ -1324,6 +1360,18 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             // superseded_by may be an integer id or a uid string; "0" clears it.
             // Resolved within the SAME DB as the edited entry (no cross-scope refs).
             let sb_arg = id_param(&params["superseded_by"])?;
+
+            let project_update: Option<Option<String>> = match params["recorded_project"].as_str() {
+                None => None,
+                Some("none") | Some("") => Some(None), // Clear the recorded project
+                Some(p) => {
+                    if p.contains('\n') || p.contains('\r') {
+                        return Err("recorded_project cannot contain newlines".to_string());
+                    }
+                    let (key, _note) = util::resolve_project_arg(p);
+                    Some(key)
+                }
+            };
 
             log_mcp_command("edit", &[("id", &arg)], &knowledge_dir);
 
@@ -1363,6 +1411,10 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     db::update_entry_status(&conn, local_id, st, sb.as_deref())
                         .map_err(|e| format!("status update error: {e}"))?;
                 }
+                if let Some(p) = &project_update {
+                    db::update_entry_project(&conn, local_id, p.as_deref())
+                        .map_err(|e| format!("project update error: {e}"))?;
+                }
                 Ok(())
             })();
             match result {
@@ -1375,13 +1427,19 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 }
             }
 
-            Ok(decorate_result(
-                json!({
-                    "updated": true,
-                    "id": local_id,
-                }),
-                &project_name,
-            ))
+            let mut out = json!({
+                "updated": true,
+                "id": local_id,
+            });
+            if let Some(p) = &project_update {
+                if let Some(recorded) = p {
+                    out["recorded_project"] = json!(recorded);
+                } else {
+                    out["recorded_project"] = json!(null);
+                }
+            }
+
+            Ok(decorate_result(out, &project_name))
         }
 
         "supersede_knowledge" => {
