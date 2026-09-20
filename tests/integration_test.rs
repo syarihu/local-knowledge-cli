@@ -4173,6 +4173,25 @@ fn test_mcp_add_knowledge_with_explicit_recorded_project() {
         err_nl_body.contains("recorded_project cannot contain newlines"),
         "must reject newline in recorded_project: {err_nl_body}"
     );
+
+    // Rejects unnormalizable project key
+    let err_unnorm_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"add_knowledge","arguments":{"title":"bad project note","content":"body","scope":"user","recorded_project":"///"}}}"#,
+    );
+    let err_unnorm_body = err_unnorm_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_unnorm_replies:?}"));
+    assert!(
+        err_unnorm_body.contains("Invalid recorded_project"),
+        "must reject unnormalizable recorded_project: {err_unnorm_body}"
+    );
 }
 
 #[test]
@@ -4257,6 +4276,69 @@ fn test_mcp_edit_knowledge_with_recorded_project() {
         .unwrap();
     let entry_cleared: serde_json::Value = serde_json::from_slice(&get_cleared.stdout).unwrap();
     assert_eq!(entry_cleared["project"], serde_json::Value::Null);
+
+    // Rejects non-string value
+    let err_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"edit_knowledge","arguments":{{"id":"{uid}","recorded_project":12345}}}}}}"#
+        ),
+    );
+    let err_body = err_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_replies:?}"));
+    assert!(
+        err_body.contains("recorded_project must be a string"),
+        "must reject non-string recorded_project: {err_body}"
+    );
+
+    // Rejects newline injection
+    let err_nl_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"edit_knowledge","arguments":{{"id":"{uid}","recorded_project":"foo\nbar"}}}}}}"#
+        ),
+    );
+    let err_nl_body = err_nl_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_nl_replies:?}"));
+    assert!(
+        err_nl_body.contains("recorded_project cannot contain newlines"),
+        "must reject newline in recorded_project: {err_nl_body}"
+    );
+
+    // Rejects unnormalizable project key
+    let err_unnorm_replies = mcp_request_with_home(
+        proj.path(),
+        home.path(),
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{{"name":"edit_knowledge","arguments":{{"id":"{uid}","recorded_project":"///"}}}}}}"#
+        ),
+    );
+    let err_unnorm_body = err_unnorm_replies
+        .iter()
+        .find_map(|r| {
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{err_unnorm_replies:?}"));
+    assert!(
+        err_unnorm_body.contains("Invalid recorded_project"),
+        "must reject unnormalizable recorded_project: {err_unnorm_body}"
+    );
 }
 
 #[test]

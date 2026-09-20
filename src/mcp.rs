@@ -414,7 +414,7 @@ fn tool_def_add(registry: &ProjectRegistry) -> Value {
                 },
                 "recorded_project": {
                     "type": "string",
-                    "description": "Project attribution ('owner/repo' or bare repo name) to record on the entry. By default, entries record the repo at the MCP server's startup directory; pass this when saving knowledge discovered about a different repository (e.g. another checkout, worktree, or submodule)."
+                    "description": "Project attribution ('owner/repo' or bare repo name) to record on the entry. By default, entries record the project resolved for the request (the startup directory in single-project mode); pass this when saving knowledge discovered about a different repository (e.g. another checkout, worktree, or submodule)."
                 }
             },
             "required": ["title", "content"]
@@ -1127,6 +1127,11 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     if p == "none" || p.trim().is_empty() {
                         None
                     } else {
+                        if util::normalize_project_key(p).is_none() {
+                            return Err(format!(
+                                "Invalid recorded_project {p:?} (expected owner/repo or a repo name; pass \"none\" or \"\" to clear)"
+                            ));
+                        }
                         let (key, _note) = util::resolve_project_arg(p);
                         key
                     }
@@ -1367,6 +1372,11 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 Some(p) => {
                     if p.contains('\n') || p.contains('\r') {
                         return Err("recorded_project cannot contain newlines".to_string());
+                    }
+                    if util::normalize_project_key(p).is_none() {
+                        return Err(format!(
+                            "Invalid recorded_project {p:?} (expected owner/repo or a repo name; pass \"\" or \"none\" to clear)"
+                        ));
                     }
                     let (key, _note) = util::resolve_project_arg(p);
                     Some(key)

@@ -469,7 +469,7 @@ Once installed, clients have access to these tools and prompt templates:
 | Tool | Description |
 |------|-------------|
 | `search_knowledge` | Search the knowledge base with full-text or keyword search |
-| `add_knowledge` | Add new entries with duplicate and secret detection |
+| `add_knowledge` | Add new entries with duplicate and secret detection, and optional recorded_project |
 | `list_knowledge` | Browse entries with source/category filtering and pagination |
 | `get_knowledge` | Retrieve full content of an entry by ID |
 | `edit_knowledge` | Edit title, content, keywords, status, or recorded_project of an entry (CLI: `lk edit`) |
