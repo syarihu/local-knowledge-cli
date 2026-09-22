@@ -293,7 +293,11 @@ class LayaServer:
                     await asyncio.sleep(1)
         finally:
             idle_task.cancel()
-            self.executor.shutdown(wait=False)
+            await asyncio.to_thread(
+                self.executor.shutdown,
+                wait=True,
+                cancel_futures=True,
+            )
             if self.socket_path.exists():
                 try:
                     self.socket_path.unlink()

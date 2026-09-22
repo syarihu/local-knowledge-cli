@@ -442,10 +442,17 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn test_is_process_alive() {
         let my_pid = std::process::id();
         assert!(is_process_alive(my_pid));
         assert!(!is_process_alive(4_000_000));
+    }
+
+    #[test]
+    #[cfg(not(unix))]
+    fn test_is_process_alive_non_unix() {
+        assert!(!is_process_alive(std::process::id()));
     }
 
     #[test]
