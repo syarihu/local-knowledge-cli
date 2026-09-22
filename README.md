@@ -580,7 +580,7 @@ claude_md_import = true
 
 # Laya MLX integration (Apple Silicon)
 # Note: Laya is machine-specific and must be enabled globally in ~/.config/lk/config.toml (or LK_LAYA=1).
-# A project can opt out by setting enabled = false, or configure the duplicate threshold.
+# A project can opt out by setting enabled = false (overridable via LK_LAYA=1), or configure the duplicate threshold.
 # [laya]
 # enabled = false               # Opt out for this project
 # duplicate_threshold = 0.85   # Semantic duplicate threshold (default: 0.85)
@@ -653,7 +653,7 @@ lk command-log -n 50  # Show last 50 entries
 
 On Apple Silicon (macOS arm64), `lk` can leverage [laya-mlx](https://github.com/mizorewww/laya-mlx) — a low-latency typed decision model runtime executing on Apple Neural Engine / Metal — to enhance duplicate detection, keyword extraction, and search ranking.
 
-This feature is **disabled by default (opt-in)**. To enable it, set `[laya] enabled = true` in `~/.config/lk/config.toml`, or set `LK_LAYA=1` in your environment (individual projects can opt out via `.knowledge/config.toml`):
+This feature is **disabled by default (opt-in)**. To enable it, set `[laya] enabled = true` in `~/.config/lk/config.toml`, or set `LK_LAYA=1` in your environment (individual projects can opt out via `.knowledge/config.toml`, which `LK_LAYA=1` overrides):
 
 - **Semantic Duplicate Warning**: Identifies paraphrased entries that share identical meaning during `lk add`, flagging them in `possibly_related` with match reason `semantic-duplicate` without blocking the add.
 - **Smart Auto-Keywords**: When adding an entry without explicit keywords, `lk` extracts candidates including Japanese kanji compound words (e.g. `排他制御`, `有効期限`) and uses Laya to filter out uninformative terms, retaining high-quality domain keywords.
