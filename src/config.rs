@@ -553,7 +553,8 @@ mod tests {
 
         // Project config cannot force-enable laya if disabled globally,
         // and cannot override socket_path or model
-        let disabled_global = GlobalConfig::load_from(&home.path().join("nonexistent.toml"), home.path());
+        let disabled_global =
+            GlobalConfig::load_from(&home.path().join("nonexistent.toml"), home.path());
         assert!(!disabled_global.laya.enabled);
         let untrusted_dir = TempDir::new().unwrap();
         std::fs::write(
@@ -562,9 +563,18 @@ mod tests {
         )
         .unwrap();
         let config = Config::load_with_global(untrusted_dir.path(), &disabled_global);
-        assert!(!config.laya.enabled, "project cannot force-enable Laya when globally disabled");
-        assert_eq!(config.laya.socket_path, None, "project cannot override socket_path");
-        assert_eq!(config.laya.model, disabled_global.laya.model, "project cannot override model");
+        assert!(
+            !config.laya.enabled,
+            "project cannot force-enable Laya when globally disabled"
+        );
+        assert_eq!(
+            config.laya.socket_path, None,
+            "project cannot override socket_path"
+        );
+        assert_eq!(
+            config.laya.model, disabled_global.laya.model,
+            "project cannot override model"
+        );
     }
 
     #[test]
