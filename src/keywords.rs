@@ -18,13 +18,18 @@ const STOP_WORDS: &[&str] = &[
 /// covers the entire title/content, so keywords only need to be the terms that best
 /// represent the entry — an uncapped dump of every word just adds noise to keyword
 /// search and duplicate detection.
-pub const MAX_AUTO_KEYWORDS: usize = 15;
+pub const MAX_AUTO_KEYWORDS: usize = 8;
 
 /// Japanese general stopwords for candidate filtering.
 const JP_STOP_WORDS: &[&str] = &[
     "場合", "設定", "追加", "確認", "対応", "実行", "作成", "更新", "取得", "処理", "使用", "問題",
     "修正", "機能", "変更", "必要", "可能", "利用", "対象", "詳細", "理由", "手順", "記述", "指定",
     "管理", "表示", "発生", "関係", "存在", "関連", "完了", "状況", "現在",
+    // General procedural / relational stopwords
+    "自動", "手動", "検討", "概要", "目的", "方法", "方針", "結果", "注意", "内容", "前提", "実施",
+    "導入", "参照", "共有", "反映", "保存", "調査", "動作", "連携", "提供", "定義", "考慮", "適用",
+    "部分", "全体", "自身", "以降", "以前", "程度", "通常", "以下", "以上", "未満", "各種", "複数",
+    "一覧",
 ];
 
 /// A term occurring in the title counts this many times a content occurrence.
@@ -45,19 +50,24 @@ pub fn extract_keywords_auto(
         if !candidates.is_empty()
             && let Ok(ranked) = client.filter_keywords(title, content, &candidates)
         {
-            // Keep terms with score >= 0.50, capped at MAX_AUTO_KEYWORDS
-            let mut selected: Vec<String> = ranked
+            // Filter terms with score >= 0.50
+            let qualified: Vec<String> = ranked
                 .iter()
                 .filter(|(_, score)| *score >= 0.50)
                 .map(|(kw, _)| kw.clone())
-                .take(MAX_AUTO_KEYWORDS)
                 .collect();
 
-            // If threshold filtered everything out, take top 5 from Laya's ranked results
+            let mut selected = deduplicate_substrings(&qualified);
+            selected.truncate(MAX_AUTO_KEYWORDS);
+
+            // If threshold filtered everything out, take top from Laya's ranked results
             if selected.is_empty() && !ranked.is_empty() {
-                selected = ranked.into_iter().take(5).map(|(kw, _)| kw).collect();
+                let fallback: Vec<String> = ranked.into_iter().map(|(kw, _)| kw).collect();
+                selected = deduplicate_substrings(&fallback);
+                selected.truncate(MAX_AUTO_KEYWORDS.min(5));
             } else if selected.is_empty() && !candidates.is_empty() {
-                selected = candidates.into_iter().take(5).collect();
+                selected = deduplicate_substrings(&candidates);
+                selected.truncate(MAX_AUTO_KEYWORDS.min(5));
             }
 
             if !selected.is_empty() {
@@ -68,6 +78,65 @@ pub fn extract_keywords_auto(
     }
 
     extract_keywords(title, content)
+}
+
+/// Check if `shorter` is a sub-compound / substring of `longer`.
+///
+/// For Japanese terms (kanji, katakana), substring containment indicates
+/// a sub-compound relationship (e.g. "排他制御" contains "排他" / "制御",
+/// "アクセストークン" contains "トークン").
+///
+/// For pure ASCII words, simple containment would produce false positives
+/// (e.g. "format" in "information"). We only match if `longer` contains `shorter`
+/// as a delimited token (separated by '_' or '-') or as a prefix/suffix
+/// with a substantive remainder (>= 3 chars).
+pub fn is_subword(longer: &str, shorter: &str) -> bool {
+    if longer.len() <= shorter.len() || longer == shorter {
+        return false;
+    }
+
+    let has_non_ascii = !longer.is_ascii() || !shorter.is_ascii();
+    if has_non_ascii {
+        return longer.contains(shorter);
+    }
+
+    // Pure ASCII
+    for part in longer.split(['_', '-']) {
+        if part.eq_ignore_ascii_case(shorter) {
+            return true;
+        }
+    }
+
+    let l_lower = longer.to_ascii_lowercase();
+    let s_lower = shorter.to_ascii_lowercase();
+    if l_lower.starts_with(&s_lower) {
+        let remainder = &l_lower[s_lower.len()..];
+        if remainder.len() >= 3 {
+            return true;
+        }
+    }
+    if l_lower.ends_with(&s_lower) {
+        let remainder = &l_lower[..l_lower.len() - s_lower.len()];
+        if remainder.len() >= 3 {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Remove shorter keywords that are sub-compounds of a longer keyword present in the list.
+/// Preserves the original relative order of non-subword keywords.
+pub fn deduplicate_substrings(keywords: &[String]) -> Vec<String> {
+    keywords
+        .iter()
+        .filter(|kw| {
+            !keywords
+                .iter()
+                .any(|other| other.as_str() != kw.as_str() && is_subword(other, kw))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Extract candidate keywords for Laya ranking, including ASCII words, katakana,
@@ -117,26 +186,33 @@ fn score_text_with_kanji(text: &str, weight: u32, scores: &mut HashMap<String, u
     // Kanji compounds (2-6 chars)
     for mat in KANJI_RE.find_iter(text) {
         let s = mat.as_str();
-        if !JP_STOP_WORDS.contains(&s) {
-            *scores.entry(s.to_string()).or_insert(0) += weight;
-        }
-
         let chars: Vec<char> = s.chars().collect();
         let len = chars.len();
-        if len >= 4 {
-            // Sub-compound candidates: 2-char and 4-char prefixes/suffixes
-            for w in [2, 4] {
-                if w < len {
-                    let prefix: String = chars[..w].iter().collect();
-                    if !JP_STOP_WORDS.contains(&prefix.as_str()) {
-                        *scores.entry(prefix).or_insert(0) += weight;
-                    }
-                    let suffix: String = chars[len - w..].iter().collect();
-                    if !JP_STOP_WORDS.contains(&suffix.as_str()) {
-                        *scores.entry(suffix).or_insert(0) += weight;
-                    }
-                }
+
+        // 1. If compound ends with '時' (e.g. 発生時 -> skip because 発生 is a stop word; 失効時 -> 失効)
+        if len >= 3 && chars.last() == Some(&'時') {
+            let stem: String = chars[..len - 1].iter().collect();
+            if !JP_STOP_WORDS.contains(&stem.as_str()) && stem.chars().count() >= 2 {
+                *scores.entry(stem).or_insert(0) += weight;
             }
+            continue;
+        }
+
+        // 2. If compound (>= 4 chars) ends with a 2-char stop word (e.g. 排他制御手順 -> 排他制御, 自動更新処理 -> 自動更新)
+        if len >= 4 {
+            let suffix: String = chars[len - 2..].iter().collect();
+            if JP_STOP_WORDS.contains(&suffix.as_str()) {
+                let stem: String = chars[..len - 2].iter().collect();
+                if !JP_STOP_WORDS.contains(&stem.as_str()) && stem.chars().count() >= 2 {
+                    *scores.entry(stem).or_insert(0) += weight;
+                }
+                continue;
+            }
+        }
+
+        // 3. Normal compound if not in JP_STOP_WORDS
+        if !JP_STOP_WORDS.contains(&s) {
+            *scores.entry(s.to_string()).or_insert(0) += weight;
         }
     }
 }
@@ -332,5 +408,86 @@ mod tests {
         let kws = extract_keywords_auto("Session Management", "Token expiration handling", None);
         assert!(!kws.is_empty());
         assert!(kws.contains(&"session".to_string()));
+    }
+
+    #[test]
+    fn test_is_subword() {
+        // Japanese compounds
+        assert!(is_subword("アクセストークン", "トークン"));
+        assert!(is_subword("排他制御", "排他"));
+        assert!(is_subword("排他制御", "制御"));
+        assert!(is_subword("自動更新", "自動"));
+        assert!(!is_subword("トークン", "アクセストークン"));
+        assert!(!is_subword("排他制御", "排他制御"));
+
+        // ASCII words
+        assert!(is_subword("sessionmanager", "session"));
+        assert!(is_subword("sessionmanager", "manager"));
+        assert!(is_subword("access_token", "token"));
+        assert!(!is_subword("information", "format"));
+        assert!(!is_subword("token", "token"));
+    }
+
+    #[test]
+    fn test_deduplicate_substrings() {
+        let input = vec![
+            "oauth2".to_string(),
+            "アクセストークン".to_string(),
+            "トークン".to_string(),
+            "バックグラウンド".to_string(),
+            "リトライ".to_string(),
+            "再取得".to_string(),
+            "制御".to_string(),
+            "排他".to_string(),
+            "排他制御".to_string(),
+            "更新処理".to_string(),
+            "自動".to_string(),
+            "自動更新".to_string(),
+            "通信".to_string(),
+        ];
+        let deduped = deduplicate_substrings(&input);
+        assert!(deduped.contains(&"アクセストークン".to_string()));
+        assert!(!deduped.contains(&"トークン".to_string()));
+        assert!(deduped.contains(&"排他制御".to_string()));
+        assert!(!deduped.contains(&"排他".to_string()));
+        assert!(!deduped.contains(&"制御".to_string()));
+        assert!(deduped.contains(&"自動更新".to_string()));
+        assert!(!deduped.contains(&"自動".to_string()));
+        assert!(deduped.contains(&"oauth2".to_string()));
+        assert!(deduped.contains(&"通信".to_string()));
+    }
+
+    #[test]
+    fn test_user_example_candidate_extraction() {
+        let title = "OAuth2トークンの自動更新処理";
+        let content = "401エラー発生時にバックグラウンドで新しいアクセストークンを再取得して通信をリトライする排他制御フロー。";
+        let candidates = extract_candidates_for_laya(title, content);
+
+        // Sub-compound suppression: 4-char compounds must not be split into 2-char pieces
+        assert!(candidates.contains(&"排他制御".to_string()));
+        assert!(!candidates.contains(&"排他".to_string()));
+        assert!(!candidates.contains(&"制御".to_string()));
+
+        // Suffix stopword trimming: "自動更新処理" -> "自動更新", and "自動" stopword
+        assert!(candidates.contains(&"自動更新".to_string()));
+        assert!(!candidates.contains(&"自動更新処理".to_string()));
+        assert!(!candidates.contains(&"自動".to_string()));
+
+        // '〜時' suffix attached to stopword "発生" -> completely skipped
+        assert!(!candidates.contains(&"発生時".to_string()));
+        assert!(!candidates.contains(&"発生".to_string()));
+
+        // Katakana and ASCII
+        assert!(candidates.contains(&"oauth2".to_string()));
+        assert!(candidates.contains(&"アクセストークン".to_string()));
+        assert!(candidates.contains(&"バックグラウンド".to_string()));
+        assert!(candidates.contains(&"リトライ".to_string()));
+        assert!(candidates.contains(&"再取得".to_string()));
+        assert!(candidates.contains(&"通信".to_string()));
+
+        // After deduplication, "トークン" is excluded because "アクセストークン" exists
+        let deduped = deduplicate_substrings(&candidates);
+        assert!(deduped.contains(&"アクセストークン".to_string()));
+        assert!(!deduped.contains(&"トークン".to_string()));
     }
 }
