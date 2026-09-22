@@ -99,7 +99,16 @@ impl Config {
     /// - `LK_NO_AUTO_SYNC=1` → auto_sync = false
     /// - `LK_COMMAND_LOG=1` or `LK_SEARCH_LOG=1` → command_log = true
     pub fn load(knowledge_dir: &Path) -> Self {
-        let mut config = Self::default();
+        let global = GlobalConfig::load();
+        Self::load_with_global(knowledge_dir, &global)
+    }
+
+    /// Load config from `.knowledge/config.toml`, inheriting `laya` from `global` as default.
+    pub fn load_with_global(knowledge_dir: &Path, global: &GlobalConfig) -> Self {
+        let mut config = Self {
+            laya: global.laya.clone(),
+            ..Self::default()
+        };
         let config_path = knowledge_dir.join("config.toml");
 
         if let Ok(content) = std::fs::read_to_string(&config_path) {
@@ -531,6 +540,29 @@ mod tests {
 
         std::fs::write(&config_path, "claude_md_import = no\n").unwrap();
         assert!(!GlobalConfig::load_from(&config_path, home.path()).claude_md_import);
+    }
+
+    #[test]
+    fn test_config_inherits_global_laya_config() {
+        let home = TempDir::new().unwrap();
+        let config_path = home.path().join("config.toml");
+        std::fs::write(&config_path, "[laya]\nenabled = true\n").unwrap();
+        let global = GlobalConfig::load_from(&config_path, home.path());
+        assert!(global.laya.enabled);
+
+        let project_dir = TempDir::new().unwrap();
+        // Project without laya config inherits global laya
+        let config = Config::load_with_global(project_dir.path(), &global);
+        assert!(config.laya.enabled);
+
+        // Project with laya.enabled = false overrides global laya
+        std::fs::write(
+            project_dir.path().join("config.toml"),
+            "[laya]\nenabled = false\n",
+        )
+        .unwrap();
+        let config = Config::load_with_global(project_dir.path(), &global);
+        assert!(!config.laya.enabled);
     }
 
     #[test]
