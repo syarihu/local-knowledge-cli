@@ -942,14 +942,56 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             // targets, then fall back to the per-DB order (updated_at DESC). Same
             // rule as the CLI, resolved against the request's project rather than
             // the server's own directory.
+            let is_mine = |label: &str, e: &db::Entry| {
+                label == "project" || (here.is_some() && e.project.as_deref() == here.as_deref())
+            };
             items.sort_by(|a, b| {
-                let mine =
-                    |e: &db::Entry| here.is_some() && e.project.as_deref() == here.as_deref();
                 a.0.partial_cmp(&b.0)
                     .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| mine(&b.2).cmp(&mine(&a.2)))
+                    .then_with(|| is_mine(b.1, &b.2).cmp(&is_mine(a.1, &a.2)))
                     .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
             });
+
+            // Semantic reranking with Laya (if available)
+            let mut semantic_scores: std::collections::HashMap<String, f64> =
+                std::collections::HashMap::new();
+            if !items.is_empty() {
+                let mut laya_client = crate::laya::LayaClient::connect(&config.laya);
+                if laya_client.is_some() {
+                    let cand_count = items.len().min(15);
+                    let candidates: Vec<crate::laya::RerankCandidate> = items[..cand_count]
+                        .iter()
+                        .map(|(_, _, r, _)| crate::laya::RerankCandidate {
+                            id: r.uid.clone(),
+                            title: r.title.clone(),
+                            content: r.content.clone(),
+                        })
+                        .collect();
+
+                    semantic_scores = crate::laya::compute_rerank_scores(
+                        query,
+                        &candidates,
+                        laya_client.as_mut(),
+                    );
+
+                    if !semantic_scores.is_empty() {
+                        items.sort_by(|a, b| {
+                            let sa = semantic_scores.get(&a.2.uid).copied().unwrap_or(0.0);
+                            let sb = semantic_scores.get(&b.2.uid).copied().unwrap_or(0.0);
+                            is_mine(b.1, &b.2)
+                                .cmp(&is_mine(a.1, &a.2))
+                                .then_with(|| {
+                                    sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .then_with(|| {
+                                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
+                        });
+                    }
+                }
+            }
+
             items.truncate(limit);
 
             let results: Vec<Value> = items
@@ -957,6 +999,9 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 .map(|(_, label, e, kws)| {
                     let mut obj = entry_to_json(e, kws, &config);
                     obj["scope"] = json!(label);
+                    if let Some(sem) = semantic_scores.get(&e.uid) {
+                        obj["semantic_score"] = json!(util::round2(*sem));
+                    }
                     obj
                 })
                 .collect();
@@ -1069,15 +1114,31 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 &knowledge_dir,
             );
 
-            // Duplicate check. Only a Block-tier hit (a near-identical title)
-            // refuses the add; weaker hits are reported alongside a successful add
-            // as `possibly_related` further down.
-            let similar = if force {
+            let laya_config = match effective_scope {
+                "user" => crate::config::GlobalConfig::load().laya,
+                _ => config.laya.clone(),
+            };
+            let mut laya_client = crate::laya::LayaClient::connect(&laya_config);
+
+            let mut final_keywords = keywords;
+            if final_keywords.is_empty() {
+                final_keywords = crate::keywords::extract_keywords_auto(
+                    title,
+                    effective_content,
+                    laya_client.as_mut(),
+                );
+            }
+
+            // Duplicate check. Only a Block-tier hit (a near-identical title or
+            // semantic duplicate) refuses the add; weaker hits are reported
+            // alongside a successful add as `possibly_related` further down.
+            let mut similar = if force {
                 Vec::new()
             } else {
-                db::find_similar_entries(&conn, title, &keywords, category)
+                db::find_similar_entries(&conn, title, &final_keywords, category)
                     .map_err(|e| format!("duplicate check error: {e}"))?
             };
+
             // Shared with `lk add --json` so a hit looks identical on both surfaces.
             let describe = |s: &db::SimilarEntry| -> Value {
                 util::similar_entry_json(&conn, s, effective_scope)
@@ -1142,7 +1203,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                 &conn,
                 title,
                 effective_content,
-                &keywords,
+                &final_keywords,
                 category,
                 "local",
                 None,
@@ -1181,6 +1242,16 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     "Project not initialized; saved to user scope (global). Run `lk init` for project scope."
                 );
             }
+            if !force && !similar.is_empty() {
+                crate::similarity::refine_similar_with_laya(
+                    &mut similar,
+                    title,
+                    effective_content,
+                    laya_config.duplicate_threshold,
+                    laya_client.as_mut(),
+                );
+            }
+
             // A different key from the block path's `similar_entries`, which means
             // "not added". Stating the outcome explicitly stops an agent from
             // reading a weak hit as a rejection and overwriting an unrelated entry.

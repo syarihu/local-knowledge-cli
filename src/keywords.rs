@@ -20,12 +20,70 @@ const STOP_WORDS: &[&str] = &[
 /// search and duplicate detection.
 pub const MAX_AUTO_KEYWORDS: usize = 15;
 
+/// Japanese general stopwords for candidate filtering.
+const JP_STOP_WORDS: &[&str] = &[
+    "場合", "設定", "追加", "確認", "対応", "実行", "作成", "更新", "取得", "処理", "使用", "問題",
+    "修正", "機能", "変更", "必要", "可能", "利用", "対象", "詳細", "理由", "手順", "記述", "指定",
+    "管理", "表示", "発生", "関係", "存在", "関連", "完了", "状況", "現在",
+];
+
 /// A term occurring in the title counts this many times a content occurrence.
 const TITLE_WEIGHT: u32 = 5;
 
 /// Extra multiplier for tokens that come from file paths — path segments are
 /// high-signal identifiers (module/file names) worth keeping over prose words.
 const PATH_WEIGHT: u32 = 3;
+
+/// Extract keywords with Laya if available, falling back to heuristic frequency extraction.
+pub fn extract_keywords_auto(
+    title: &str,
+    content: &str,
+    mut laya: Option<&mut crate::laya::LayaClient>,
+) -> Vec<String> {
+    if let Some(ref mut client) = laya {
+        let candidates = extract_candidates_for_laya(title, content);
+        if !candidates.is_empty()
+            && let Ok(ranked) = client.filter_keywords(title, content, &candidates)
+        {
+            // Keep terms with score >= 0.50, capped at MAX_AUTO_KEYWORDS
+            let mut selected: Vec<String> = ranked
+                .iter()
+                .filter(|(_, score)| *score >= 0.50)
+                .map(|(kw, _)| kw.clone())
+                .take(MAX_AUTO_KEYWORDS)
+                .collect();
+
+            // If threshold filtered everything out, take top 5 from Laya's ranked results
+            if selected.is_empty() && !ranked.is_empty() {
+                selected = ranked.into_iter().take(5).map(|(kw, _)| kw).collect();
+            } else if selected.is_empty() && !candidates.is_empty() {
+                selected = candidates.into_iter().take(5).collect();
+            }
+
+            if !selected.is_empty() {
+                selected.sort();
+                return selected;
+            }
+        }
+    }
+
+    extract_keywords(title, content)
+}
+
+/// Extract candidate keywords for Laya ranking, including ASCII words, katakana,
+/// and Japanese kanji compounds (2-6 chars).
+pub fn extract_candidates_for_laya(title: &str, content: &str) -> Vec<String> {
+    let mut scores: HashMap<String, u32> = HashMap::new();
+    score_text_with_kanji(title, TITLE_WEIGHT, &mut scores);
+    score_text_with_kanji(content, 1, &mut scores);
+
+    let mut ranked: Vec<(String, u32)> = scores.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    // Offer up to 25 candidates to Laya
+    ranked.truncate(25);
+
+    ranked.into_iter().map(|(kw, _)| kw).collect()
+}
 
 /// Extract keywords from title and content, ranked by weighted frequency and
 /// capped at `MAX_AUTO_KEYWORDS`. Title occurrences and file-path segments are
@@ -50,7 +108,38 @@ pub fn extract_keywords(title: &str, content: &str) -> Vec<String> {
 static PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\w./\\-]+\.[\w]+").unwrap());
 static WORD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]*").unwrap());
 static KATAKANA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u30A0-\u30FF]{4,}").unwrap());
+static KANJI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u4E00-\u9FFF]{2,6}").unwrap());
 static CAMEL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([a-z])([A-Z])").unwrap());
+
+fn score_text_with_kanji(text: &str, weight: u32, scores: &mut HashMap<String, u32>) {
+    score_text(text, weight, scores);
+
+    // Kanji compounds (2-6 chars)
+    for mat in KANJI_RE.find_iter(text) {
+        let s = mat.as_str();
+        if !JP_STOP_WORDS.contains(&s) {
+            *scores.entry(s.to_string()).or_insert(0) += weight;
+        }
+
+        let chars: Vec<char> = s.chars().collect();
+        let len = chars.len();
+        if len >= 4 {
+            // Sub-compound candidates: 2-char and 4-char prefixes/suffixes
+            for w in [2, 4] {
+                if w < len {
+                    let prefix: String = chars[..w].iter().collect();
+                    if !JP_STOP_WORDS.contains(&prefix.as_str()) {
+                        *scores.entry(prefix).or_insert(0) += weight;
+                    }
+                    let suffix: String = chars[len - w..].iter().collect();
+                    if !JP_STOP_WORDS.contains(&suffix.as_str()) {
+                        *scores.entry(suffix).or_insert(0) += weight;
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn score_text(text: &str, weight: u32, scores: &mut HashMap<String, u32>) {
     // File path segments. Path ranges are masked out of the word scan below so
@@ -214,5 +303,34 @@ mod tests {
         content.push_str(" webhook webhook webhook");
         let kws = extract_keywords("", &content);
         assert!(kws.contains(&"webhook".to_string()));
+    }
+
+    #[test]
+    fn test_candidates_for_laya_extracts_kanji() {
+        let candidates = extract_candidates_for_laya(
+            "OAuth2トークン失効時の自動リフレッシュ処理",
+            "アクセストークンの有効期限切れにより401 Unauthorizedが返却された場合の排他制御手順。",
+        );
+        assert!(
+            candidates.contains(&"oauth2".to_string())
+                || candidates.contains(&"OAuth2".to_string())
+        );
+        assert!(candidates.contains(&"トークン".to_string()));
+        assert!(
+            candidates.contains(&"失効時".to_string())
+                || candidates.contains(&"失効".to_string())
+                || candidates.contains(&"排他制御".to_string())
+        );
+        assert!(candidates.contains(&"排他制御".to_string()));
+        // Stopwords like "処理" and "場合" should be excluded
+        assert!(!candidates.contains(&"処理".to_string()));
+        assert!(!candidates.contains(&"場合".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keywords_auto_none_laya() {
+        let kws = extract_keywords_auto("Session Management", "Token expiration handling", None);
+        assert!(!kws.is_empty());
+        assert!(kws.contains(&"session".to_string()));
     }
 }

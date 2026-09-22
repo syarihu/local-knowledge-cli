@@ -14,3 +14,7 @@
 # Added by cargo
 
 /target
+
+# Python
+__pycache__/
+*.pyc

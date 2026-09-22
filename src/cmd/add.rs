@@ -1,6 +1,6 @@
 use crate::db;
 use crate::keywords;
-use crate::similarity::Tier;
+use crate::similarity::{self, Tier};
 use crate::util::open_db_with_migrate;
 
 /// User-scope ids collide with project ids, so user entries are referenced by
@@ -76,7 +76,32 @@ pub fn cmd_add(
         super::Scope::Project => open_db_with_migrate()?,
         super::Scope::User => crate::util::open_or_create_user_db()?,
     };
-    let category = category.unwrap_or("");
+
+    let laya_config = match scope {
+        super::Scope::Project => {
+            crate::config::Config::load(&crate::util::get_knowledge_dir()).laya
+        }
+        super::Scope::User => crate::config::GlobalConfig::load().laya,
+    };
+    let mut laya_client = crate::laya::LayaClient::connect(&laya_config);
+
+    // Auto-detect category with Laya if not specified
+    let auto_category;
+    let category = match category {
+        Some(c) if !c.is_empty() => c,
+        _ => {
+            if let Some(ref mut client) = laya_client {
+                auto_category = client
+                    .categorize(title, content.unwrap_or(""))
+                    .map(|r| r.category)
+                    .unwrap_or_default();
+                &auto_category
+            } else {
+                ""
+            }
+        }
+    };
+
     // Apply category template if content is not provided or empty
     let template_content;
     let content = match content {
@@ -136,7 +161,7 @@ pub fn cmd_add(
         Vec::new()
     };
     if kws.is_empty() {
-        kws = keywords::extract_keywords(title, content);
+        kws = keywords::extract_keywords_auto(title, content, laya_client.as_mut());
     }
     kws.sort_by_key(|a| a.to_lowercase());
     let mut seen = std::collections::HashSet::new();
@@ -148,8 +173,8 @@ pub fn cmd_add(
 
     let result = (|| -> Result<(i64, Vec<db::SimilarEntry>), Box<dyn std::error::Error>> {
         // Duplicate check (skip with --force). Only a Block-tier hit refuses the
-        // add — a near-identical title. Weaker hits are advisory: they are
-        // reported *after* the entry is committed, because refusing on them is
+        // add — a near-identical title or semantic duplicate. Weaker hits are advisory:
+        // they are reported *after* the entry is committed, because refusing on them is
         // what made duplicate detection reject almost every add.
         let similar = if force {
             Vec::new()
@@ -213,8 +238,19 @@ pub fn cmd_add(
     })();
 
     match result {
-        Ok((entry_id, similar)) => {
+        Ok((entry_id, mut similar)) => {
             conn.execute_batch("COMMIT")?;
+
+            if !force && !similar.is_empty() {
+                similarity::refine_similar_with_laya(
+                    &mut similar,
+                    title,
+                    content,
+                    laya_config.duplicate_threshold,
+                    laya_client.as_mut(),
+                );
+            }
+
             let uid = db::get_entry(&conn, entry_id)
                 .ok()
                 .flatten()

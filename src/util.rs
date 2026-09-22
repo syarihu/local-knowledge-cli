@@ -703,7 +703,7 @@ pub fn similar_entry_json(
 
 /// Two decimal places — the scores are advisory, and full float noise in the
 /// output only invites agents to treat them as precise.
-fn round2(v: f64) -> f64 {
+pub fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 

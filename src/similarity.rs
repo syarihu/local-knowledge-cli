@@ -120,6 +120,8 @@ pub enum Reason {
     SimilarTitle,
     /// Keyword agreement carried the hit.
     SimilarKeywords,
+    /// Semantic duplicate detected by Laya decision model.
+    SemanticDuplicate,
 }
 
 impl Reason {
@@ -128,6 +130,7 @@ impl Reason {
             Reason::SameTitle => "same-title",
             Reason::SimilarTitle => "similar-title",
             Reason::SimilarKeywords => "similar-keywords",
+            Reason::SemanticDuplicate => "semantic-duplicate",
         }
     }
 }
@@ -275,6 +278,38 @@ pub fn reason(title_sim: f64, kw_sim: f64, title_exact: bool) -> Reason {
         Reason::SimilarKeywords
     } else {
         Reason::SimilarTitle
+    }
+}
+
+/// Refine candidate similar entries with Laya. If Laya finds that a candidate
+/// is a semantic duplicate, ensure its tier is at least Tier::Warn and record
+/// Reason::SemanticDuplicate.
+pub fn refine_similar_with_laya(
+    similar: &mut [crate::db::SimilarEntry],
+    incoming_title: &str,
+    incoming_content: &str,
+    threshold: f64,
+    mut laya: Option<&mut crate::laya::LayaClient>,
+) {
+    if let Some(ref mut client) = laya {
+        for s in similar.iter_mut() {
+            // Only examine candidates that aren't already hard-blocked by title equality.
+            if s.tier != Tier::Block
+                && let Ok(res) = client.check_duplicate(
+                    incoming_title,
+                    incoming_content,
+                    &s.entry.title,
+                    &s.entry.content,
+                    threshold,
+                )
+                && res.is_duplicate
+            {
+                if s.tier == Tier::None {
+                    s.tier = Tier::Warn;
+                }
+                s.reason = Reason::SemanticDuplicate;
+            }
+        }
     }
 }
 
