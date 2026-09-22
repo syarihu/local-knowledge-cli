@@ -953,35 +953,42 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
             });
 
             // Semantic reranking with Laya (if available)
-            let mut laya_client = crate::laya::LayaClient::connect(&config.laya);
             let mut semantic_scores: std::collections::HashMap<String, f64> =
                 std::collections::HashMap::new();
-            if laya_client.is_some() && !items.is_empty() {
-                let cand_count = items.len().min(15);
-                let candidates: Vec<crate::laya::RerankCandidate> = items[..cand_count]
-                    .iter()
-                    .map(|(_, _, r, _)| crate::laya::RerankCandidate {
-                        id: r.uid.clone(),
-                        title: r.title.clone(),
-                        content: r.content.clone(),
-                    })
-                    .collect();
+            if !items.is_empty() {
+                let mut laya_client = crate::laya::LayaClient::connect(&config.laya);
+                if laya_client.is_some() {
+                    let cand_count = items.len().min(15);
+                    let candidates: Vec<crate::laya::RerankCandidate> = items[..cand_count]
+                        .iter()
+                        .map(|(_, _, r, _)| crate::laya::RerankCandidate {
+                            id: r.uid.clone(),
+                            title: r.title.clone(),
+                            content: r.content.clone(),
+                        })
+                        .collect();
 
-                semantic_scores =
-                    crate::laya::compute_rerank_scores(query, &candidates, laya_client.as_mut());
+                    semantic_scores = crate::laya::compute_rerank_scores(
+                        query,
+                        &candidates,
+                        laya_client.as_mut(),
+                    );
 
-                if !semantic_scores.is_empty() {
-                    items.sort_by(|a, b| {
-                        let sa = semantic_scores.get(&a.2.uid).copied().unwrap_or(0.0);
-                        let sb = semantic_scores.get(&b.2.uid).copied().unwrap_or(0.0);
-                        is_mine(b.1, &b.2)
-                            .cmp(&is_mine(a.1, &a.2))
-                            .then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal))
-                            .then_with(|| {
-                                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                            .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
-                    });
+                    if !semantic_scores.is_empty() {
+                        items.sort_by(|a, b| {
+                            let sa = semantic_scores.get(&a.2.uid).copied().unwrap_or(0.0);
+                            let sb = semantic_scores.get(&b.2.uid).copied().unwrap_or(0.0);
+                            is_mine(b.1, &b.2)
+                                .cmp(&is_mine(a.1, &a.2))
+                                .then_with(|| {
+                                    sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .then_with(|| {
+                                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
+                        });
+                    }
                 }
             }
 
@@ -1132,16 +1139,6 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     .map_err(|e| format!("duplicate check error: {e}"))?
             };
 
-            if !force && !similar.is_empty() {
-                crate::similarity::refine_similar_with_laya(
-                    &mut similar,
-                    title,
-                    effective_content,
-                    laya_config.duplicate_threshold,
-                    laya_client.as_mut(),
-                );
-            }
-
             // Shared with `lk add --json` so a hit looks identical on both surfaces.
             let describe = |s: &db::SimilarEntry| -> Value {
                 util::similar_entry_json(&conn, s, effective_scope)
@@ -1245,6 +1242,16 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     "Project not initialized; saved to user scope (global). Run `lk init` for project scope."
                 );
             }
+            if !force && !similar.is_empty() {
+                crate::similarity::refine_similar_with_laya(
+                    &mut similar,
+                    title,
+                    effective_content,
+                    laya_config.duplicate_threshold,
+                    laya_client.as_mut(),
+                );
+            }
+
             // A different key from the block path's `similar_entries`, which means
             // "not added". Stating the outcome explicitly stops an agent from
             // reading a weak hit as a rejection and overwriting an unrelated entry.

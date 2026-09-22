@@ -176,21 +176,11 @@ pub fn cmd_add(
         // add — a near-identical title or semantic duplicate. Weaker hits are advisory:
         // they are reported *after* the entry is committed, because refusing on them is
         // what made duplicate detection reject almost every add.
-        let mut similar = if force {
+        let similar = if force {
             Vec::new()
         } else {
             db::find_similar_entries(&conn, title, &kws, category)?
         };
-
-        if !force && !similar.is_empty() {
-            similarity::refine_similar_with_laya(
-                &mut similar,
-                title,
-                content,
-                laya_config.duplicate_threshold,
-                laya_client.as_mut(),
-            );
-        }
 
         // Report only what actually refused the add. `similar` can also carry
         // Warn hits, and a keyword-only hit may have nothing to do with this
@@ -248,8 +238,19 @@ pub fn cmd_add(
     })();
 
     match result {
-        Ok((entry_id, similar)) => {
+        Ok((entry_id, mut similar)) => {
             conn.execute_batch("COMMIT")?;
+
+            if !force && !similar.is_empty() {
+                similarity::refine_similar_with_laya(
+                    &mut similar,
+                    title,
+                    content,
+                    laya_config.duplicate_threshold,
+                    laya_client.as_mut(),
+                );
+            }
+
             let uid = db::get_entry(&conn, entry_id)
                 .ok()
                 .flatten()

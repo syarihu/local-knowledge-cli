@@ -14,6 +14,7 @@ import os
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -41,6 +42,7 @@ class LayaServer:
         self.agent: Optional[Any] = None
         self.server: Optional[asyncio.Server] = None
         self._running = True
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="laya-worker")
 
     def load_model(self) -> None:
         print(f"Loading Laya model: {self.model_name}...", file=sys.stderr)
@@ -235,7 +237,13 @@ class LayaServer:
                 self._running = False
                 break
 
-            resp = self.dispatch(req)
+            # Handle ping immediately on event loop so liveness checks never wait behind inference
+            if req.get("task") == "ping":
+                resp = {"id": req.get("id"), "result": self.handle_ping(req.get("params", {}))}
+            else:
+                loop = asyncio.get_running_loop()
+                resp = await loop.run_in_executor(self.executor, self.dispatch, req)
+
             self.last_active_time = time.time()
             writer.write((json.dumps(resp) + "\n").encode("utf-8"))
             await writer.drain()
@@ -258,7 +266,8 @@ class LayaServer:
                 break
 
     async def run(self) -> None:
-        self.load_model()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self.executor, self.load_model)
 
         # Ensure parent directory exists
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -284,6 +293,7 @@ class LayaServer:
                     await asyncio.sleep(1)
         finally:
             idle_task.cancel()
+            self.executor.shutdown(wait=False)
             if self.socket_path.exists():
                 try:
                     self.socket_path.unlink()

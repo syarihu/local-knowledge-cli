@@ -77,9 +77,32 @@ struct RerankResponse {
 
 pub struct LayaClient {
     #[cfg(unix)]
-    stream: UnixStream,
+    writer: UnixStream,
+    #[cfg(unix)]
+    reader: BufReader<UnixStream>,
     #[allow(dead_code)]
     socket_path: PathBuf,
+    #[allow(dead_code)]
+    broken: bool,
+}
+
+#[allow(dead_code)]
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 #[allow(dead_code)]
@@ -96,17 +119,33 @@ impl LayaClient {
         let socket_path = resolve_socket_path(config);
 
         // 1. Try connecting to an already-running daemon.
-        if let Some(client) = Self::try_connect(&socket_path) {
-            return Some(client);
+        if let Some((mut client, model_matches)) = Self::try_connect(&socket_path, &config.model) {
+            if model_matches {
+                return Some(client);
+            }
+            // Model mismatch: shut down the outdated daemon
+            let _ = client.send_request("shutdown", json!({}));
+            let pid_path = socket_path.with_extension("pid");
+            if let Ok(content) = std::fs::read_to_string(&pid_path)
+                && let Ok(pid) = content.trim().parse::<u32>()
+            {
+                let wait_start = Instant::now();
+                while is_process_alive(pid) && wait_start.elapsed() < Duration::from_millis(1000) {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
         }
 
-        // 2. Not running: attempt to spawn the daemon in the background.
+        // 2. Not running (or shut down): attempt to spawn the daemon in the background.
         if Self::spawn_daemon(config, &socket_path) {
             // Poll for socket readiness up to 5 seconds.
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(5) {
                 std::thread::sleep(Duration::from_millis(150));
-                if let Some(client) = Self::try_connect(&socket_path) {
+                if let Some((client, model_matches)) =
+                    Self::try_connect(&socket_path, &config.model)
+                    && model_matches
+                {
                     return Some(client);
                 }
             }
@@ -121,38 +160,52 @@ impl LayaClient {
         None
     }
 
-    /// Try connecting to the socket and verifying with a quick ping.
-    fn try_connect(path: &Path) -> Option<Self> {
+    /// Try connecting to the socket and verifying with a quick ping and model check.
+    #[allow(dead_code)]
+    fn try_connect(path: &Path, expected_model: &str) -> Option<(Self, bool)> {
         #[cfg(unix)]
         {
             let stream = UnixStream::connect(path).ok()?;
             let _ = stream.set_read_timeout(Some(Duration::from_millis(3000)));
             let _ = stream.set_write_timeout(Some(Duration::from_millis(3000)));
+            let reader_stream = stream.try_clone().ok()?;
             let mut client = Self {
-                stream,
+                writer: stream,
+                reader: BufReader::new(reader_stream),
                 socket_path: path.to_path_buf(),
+                broken: false,
             };
-            if client.ping().is_ok() {
-                Some(client)
-            } else {
-                None
-            }
+            let ping_res = client.ping().ok()?;
+            let model_matches = ping_res
+                .get("model")
+                .and_then(|m| m.as_str())
+                .map(|m| m == expected_model)
+                .unwrap_or(true);
+            Some((client, model_matches))
         }
         #[cfg(not(unix))]
         {
+            let _ = (path, expected_model);
             None
         }
     }
 
     /// Spawn the Python daemon process using `uv run`.
+    #[allow(dead_code)]
     fn spawn_daemon(config: &LayaConfig, socket_path: &Path) -> bool {
-        // Clean up any dead socket or pid file before starting
-        if socket_path.exists() {
-            let _ = std::fs::remove_file(socket_path);
-        }
         let pid_path = socket_path.with_extension("pid");
         if pid_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&pid_path)
+                && let Ok(pid) = content.trim().parse::<u32>()
+                && is_process_alive(pid)
+            {
+                // Daemon process is already alive; don't remove files or re-spawn
+                return true;
+            }
             let _ = std::fs::remove_file(&pid_path);
+        }
+        if socket_path.exists() {
+            let _ = std::fs::remove_file(socket_path);
         }
 
         let script_path = match locate_or_extract_server_script() {
@@ -200,6 +253,10 @@ impl LayaClient {
         task: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        if self.broken {
+            return Err("Laya socket is in a broken state from a previous error".to_string());
+        }
+
         let req = json!({
             "id": 1,
             "task": task,
@@ -208,21 +265,32 @@ impl LayaClient {
         let mut line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
         line.push('\n');
 
-        self.stream
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("Failed to send to Laya socket: {e}"))?;
-        self.stream
-            .flush()
-            .map_err(|e| format!("Failed to flush Laya socket: {e}"))?;
+        if let Err(e) = self.writer.write_all(line.as_bytes()) {
+            self.broken = true;
+            return Err(format!("Failed to send to Laya socket: {e}"));
+        }
+        if let Err(e) = self.writer.flush() {
+            self.broken = true;
+            return Err(format!("Failed to flush Laya socket: {e}"));
+        }
 
-        let mut reader = BufReader::new(&self.stream);
         let mut resp_line = String::new();
-        reader
-            .read_line(&mut resp_line)
-            .map_err(|e| format!("Failed to read from Laya socket: {e}"))?;
+        if let Err(e) = self.reader.read_line(&mut resp_line) {
+            self.broken = true;
+            return Err(format!("Failed to read from Laya socket: {e}"));
+        }
+        if resp_line.is_empty() {
+            self.broken = true;
+            return Err("Laya socket closed by peer".to_string());
+        }
 
-        let resp: serde_json::Value = serde_json::from_str(resp_line.trim())
-            .map_err(|e| format!("Failed to parse Laya response: {e}"))?;
+        let resp: serde_json::Value = match serde_json::from_str(resp_line.trim()) {
+            Ok(v) => v,
+            Err(e) => {
+                self.broken = true;
+                return Err(format!("Failed to parse Laya response: {e}"));
+            }
+        };
 
         if let Some(err) = resp.get("error") {
             let msg = err.as_str().unwrap_or("Unknown server error");
@@ -343,20 +411,58 @@ pub fn resolve_socket_path(config: &LayaConfig) -> PathBuf {
     }
 }
 
-/// Locate `scripts/laya_server.py` in the workspace, or write the embedded script
-/// to `~/.cache/lk/laya_server.py`.
+/// Locate server script via explicit environment override (`LK_LAYA_SERVER_SCRIPT`), or write
+/// the embedded script to `~/.cache/lk/laya_server.py`.
 #[allow(dead_code)]
 fn locate_or_extract_server_script() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    // 1. Check relative to workspace or current dir
-    let dev_script = PathBuf::from("scripts/laya_server.py");
-    if dev_script.exists() {
-        return Ok(dev_script);
+    // 1. Check explicit override via environment variable (e.g. for development)
+    if let Ok(env_path) = std::env::var("LK_LAYA_SERVER_SCRIPT") {
+        let p = PathBuf::from(env_path);
+        if p.exists() {
+            return Ok(p);
+        }
     }
 
     // 2. Extract embedded script into cache directory
     let cache_dir = crate::util::home_dir().join(".cache").join("lk");
     std::fs::create_dir_all(&cache_dir)?;
     let target = cache_dir.join("laya_server.py");
-    std::fs::write(&target, EMBEDDED_SERVER_SCRIPT)?;
+    let need_write = match std::fs::read_to_string(&target) {
+        Ok(existing) => existing != EMBEDDED_SERVER_SCRIPT,
+        Err(_) => true,
+    };
+    if need_write {
+        std::fs::write(&target, EMBEDDED_SERVER_SCRIPT)?;
+    }
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_process_alive() {
+        let my_pid = std::process::id();
+        assert!(is_process_alive(my_pid));
+        assert!(!is_process_alive(4_000_000));
+    }
+
+    #[test]
+    fn test_locate_or_extract_server_script() {
+        let script = locate_or_extract_server_script().expect("script extracted");
+        assert!(script.exists());
+        let content = std::fs::read_to_string(&script).expect("readable script");
+        assert_eq!(content, EMBEDDED_SERVER_SCRIPT);
+    }
+
+    #[test]
+    fn test_resolve_socket_path() {
+        let mut cfg = LayaConfig::default();
+        let default_sock = resolve_socket_path(&cfg);
+        assert!(default_sock.ends_with(DEFAULT_SOCKET_NAME));
+
+        cfg.socket_path = Some(PathBuf::from("/tmp/custom.sock"));
+        assert_eq!(resolve_socket_path(&cfg), PathBuf::from("/tmp/custom.sock"));
+    }
 }

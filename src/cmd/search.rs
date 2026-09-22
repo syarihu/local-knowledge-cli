@@ -80,34 +80,36 @@ pub fn cmd_search(
     });
 
     // Semantic reranking with Laya (if available)
-    let mut laya_client = crate::laya::LayaClient::connect(&config.laya);
     let mut semantic_scores: std::collections::HashMap<String, f64> =
         std::collections::HashMap::new();
-    if laya_client.is_some() && !items.is_empty() {
-        let cand_count = items.len().min(15);
-        let candidates: Vec<crate::laya::RerankCandidate> = items[..cand_count]
-            .iter()
-            .map(|(_, _, r, _)| crate::laya::RerankCandidate {
-                id: r.uid.clone(),
-                title: r.title.clone(),
-                content: r.content.clone(),
-            })
-            .collect();
+    if !items.is_empty() {
+        let mut laya_client = crate::laya::LayaClient::connect(&config.laya);
+        if laya_client.is_some() {
+            let cand_count = items.len().min(15);
+            let candidates: Vec<crate::laya::RerankCandidate> = items[..cand_count]
+                .iter()
+                .map(|(_, _, r, _)| crate::laya::RerankCandidate {
+                    id: r.uid.clone(),
+                    title: r.title.clone(),
+                    content: r.content.clone(),
+                })
+                .collect();
 
-        semantic_scores =
-            crate::laya::compute_rerank_scores(query, &candidates, laya_client.as_mut());
+            semantic_scores =
+                crate::laya::compute_rerank_scores(query, &candidates, laya_client.as_mut());
 
-        if !semantic_scores.is_empty() {
-            // Sort by current project priority first, then semantic score descending, falling back to BM25 order
-            items.sort_by(|a, b| {
-                let sa = semantic_scores.get(&a.2.uid).copied().unwrap_or(0.0);
-                let sb = semantic_scores.get(&b.2.uid).copied().unwrap_or(0.0);
-                is_mine(b.1, &b.2)
-                    .cmp(&is_mine(a.1, &a.2))
-                    .then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal))
-                    .then_with(|| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-                    .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
-            });
+            if !semantic_scores.is_empty() {
+                // Sort by current project priority first, then semantic score descending, falling back to BM25 order
+                items.sort_by(|a, b| {
+                    let sa = semantic_scores.get(&a.2.uid).copied().unwrap_or(0.0);
+                    let sb = semantic_scores.get(&b.2.uid).copied().unwrap_or(0.0);
+                    is_mine(b.1, &b.2)
+                        .cmp(&is_mine(a.1, &a.2))
+                        .then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal))
+                        .then_with(|| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                        .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
+                });
+            }
         }
     }
 

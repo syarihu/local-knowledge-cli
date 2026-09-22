@@ -47,14 +47,16 @@ pub fn extract_keywords_auto(
         {
             // Keep terms with score >= 0.50, capped at MAX_AUTO_KEYWORDS
             let mut selected: Vec<String> = ranked
-                .into_iter()
+                .iter()
                 .filter(|(_, score)| *score >= 0.50)
-                .map(|(kw, _)| kw)
+                .map(|(kw, _)| kw.clone())
                 .take(MAX_AUTO_KEYWORDS)
                 .collect();
 
-            // If threshold filtered everything out, take top 5
-            if selected.is_empty() && !candidates.is_empty() {
+            // If threshold filtered everything out, take top 5 from Laya's ranked results
+            if selected.is_empty() && !ranked.is_empty() {
+                selected = ranked.into_iter().take(5).map(|(kw, _)| kw).collect();
+            } else if selected.is_empty() && !candidates.is_empty() {
                 selected = candidates.into_iter().take(5).collect();
             }
 
@@ -323,5 +325,12 @@ mod tests {
         // Stopwords like "処理" and "場合" should be excluded
         assert!(!candidates.contains(&"処理".to_string()));
         assert!(!candidates.contains(&"場合".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keywords_auto_none_laya() {
+        let kws = extract_keywords_auto("Session Management", "Token expiration handling", None);
+        assert!(!kws.is_empty());
+        assert!(kws.contains(&"session".to_string()));
     }
 }
