@@ -664,7 +664,7 @@ This feature is **disabled by default (opt-in)**. To enable it, set `[laya] enab
 - **On-Demand & Singleton**: A single Python daemon process is spawned on the first command requiring semantic decisions, communicating via a Unix Domain Socket (`~/.cache/lk/laya.sock`). All CLI and MCP sessions share this single daemon without redundant memory usage or model loading latency.
 - **Auto-Shutdown**: If no requests are received for 10 minutes (configurable via `idle_timeout`), the daemon shuts down automatically and frees all unified memory.
 - **Graceful Fallback**: If Python/MLX or dependencies are unavailable, or on non-macOS platforms, `lk` falls back transparently to trigram FTS5 and frequency-based keyword heuristics without errors.
-- **Checking Status**: `lk stats` (and the MCP `get_stats` tool, under `laya`) shows whether Laya is enabled and whether the daemon is running. The check only pings a running daemon and never spawns one, so `daemon stopped` is normal while idle — it starts on the next command that needs it. Search results carry a `semantic_score` field when reranking was applied.
+- **Checking Status**: `lk stats` (and the MCP `get_stats` tool, under `laya`) shows whether Laya is enabled and whether the daemon is running. The check only pings a running daemon and never spawns one, so `daemon stopped` is normal while idle — it starts on the next command that needs it. When reranking was applied, search results from the MCP `search_knowledge` tool and `lk search --json` carry a `semantic_score` field (the plain-text output does not show it).
 
 ## Supported Platforms
 
