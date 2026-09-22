@@ -475,7 +475,7 @@ Once installed, clients have access to these tools and prompt templates:
 | `get_knowledge` | Retrieve full content of an entry by ID |
 | `edit_knowledge` | Edit title, content, keywords, status, or recorded_project of an entry (CLI: `lk edit`) |
 | `supersede_knowledge` | Mark an entry as superseded by another (bidirectional) |
-| `get_stats` | Get knowledge base statistics |
+| `get_stats` | Get knowledge base statistics and Laya status |
 | `list_projects` | List registered projects (multi-project mode only) |
 
 #### MCP Prompts (`prompts/list`, `prompts/get`)
@@ -664,6 +664,7 @@ This feature is **disabled by default (opt-in)**. To enable it, set `[laya] enab
 - **On-Demand & Singleton**: A single Python daemon process is spawned on the first command requiring semantic decisions, communicating via a Unix Domain Socket (`~/.cache/lk/laya.sock`). All CLI and MCP sessions share this single daemon without redundant memory usage or model loading latency.
 - **Auto-Shutdown**: If no requests are received for 10 minutes (configurable via `idle_timeout`), the daemon shuts down automatically and frees all unified memory.
 - **Graceful Fallback**: If Python/MLX or dependencies are unavailable, or on non-macOS platforms, `lk` falls back transparently to trigram FTS5 and frequency-based keyword heuristics without errors.
+- **Checking Status**: `lk stats` (and the MCP `get_stats` tool, under `laya`) shows whether Laya is enabled and whether the daemon is running. The check only pings a running daemon and never spawns one, so `daemon stopped` is normal while idle — it starts on the next command that needs it. Search results carry a `semantic_score` field when reranking was applied.
 
 ## Supported Platforms
 

@@ -598,7 +598,7 @@ fn tool_def_supersede(registry: &ProjectRegistry) -> Value {
 fn tool_def_stats(registry: &ProjectRegistry) -> Value {
     let mut def = json!({
         "name": "get_stats",
-        "description": "Get a quick overview of the knowledge base: total number of entries, shared vs local counts, and unique keyword count. Useful to check if a knowledge base exists and how much content is available before searching. Includes a per-scope breakdown.",
+        "description": "Get a quick overview of the knowledge base: total number of entries, shared vs local counts, and unique keyword count, plus Laya (semantic reranking/duplicate detection) status: whether it is enabled and whether its daemon is running. Useful to check if a knowledge base exists and how much content is available before searching. Includes a per-scope breakdown.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1620,6 +1620,7 @@ fn call_tool(name: &str, params: &Value, registry: &ProjectRegistry) -> Result<V
                     "local": local,
                     "keywords": kw_union.len(),
                     "scopes": scopes,
+                    "laya": crate::laya::status(&config.laya),
                 }),
                 &project_name,
             ))
