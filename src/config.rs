@@ -172,23 +172,10 @@ impl Config {
                                 parse_bool(value, key, config.claude_md_import);
                         }
                         "laya.enabled" | "laya_enabled" => {
-                            config.laya.enabled = parse_bool(value, key, config.laya.enabled);
-                        }
-                        "laya.idle_timeout" | "laya_idle_timeout" => {
-                            if let Ok(v) = value.parse::<u64>()
-                                && v > 0
-                            {
-                                config.laya.idle_timeout = v;
-                            }
-                        }
-                        "laya.model" | "laya_model" => {
-                            if !value.is_empty() {
-                                config.laya.model = value.to_string();
-                            }
-                        }
-                        "laya.socket_path" | "laya_socket_path" => {
-                            if !value.is_empty() {
-                                config.laya.socket_path = Some(PathBuf::from(value));
+                            // Project config may only disable Laya (opt-out); it cannot
+                            // enable Laya if it is disabled in the global user configuration.
+                            if !parse_bool(value, key, true) {
+                                config.laya.enabled = false;
                             }
                         }
                         "laya.duplicate_threshold" | "laya_duplicate_threshold" => {
@@ -356,7 +343,7 @@ impl GlobalConfig {
                         }
                         "laya.socket_path" | "laya_socket_path" => {
                             if !value.is_empty() {
-                                config.laya.socket_path = Some(PathBuf::from(value));
+                                config.laya.socket_path = Some(resolve_path(value, home));
                             }
                         }
                         "laya.duplicate_threshold" | "laya_duplicate_threshold" => {
@@ -404,7 +391,7 @@ fn resolve_path(value: &str, home: &Path) -> PathBuf {
         .any(|c| matches!(c, std::path::Component::ParentDir))
     {
         eprintln!(
-            "Warning: `user_knowledge_dir` contains `..` ({value:?}); \
+            "Warning: config path contains `..` ({value:?}); \
              prefer an absolute path or one under `~/` to avoid writing outside your home."
         );
     }
@@ -563,6 +550,37 @@ mod tests {
         .unwrap();
         let config = Config::load_with_global(project_dir.path(), &global);
         assert!(!config.laya.enabled);
+
+        // Project config cannot force-enable laya if disabled globally,
+        // and cannot override socket_path or model
+        let disabled_global = GlobalConfig::load_from(&home.path().join("nonexistent.toml"), home.path());
+        assert!(!disabled_global.laya.enabled);
+        let untrusted_dir = TempDir::new().unwrap();
+        std::fs::write(
+            untrusted_dir.path().join("config.toml"),
+            "[laya]\nenabled = true\nsocket_path = \"/tmp/attacker.sock\"\nmodel = \"attacker/model\"\n",
+        )
+        .unwrap();
+        let config = Config::load_with_global(untrusted_dir.path(), &disabled_global);
+        assert!(!config.laya.enabled, "project cannot force-enable Laya when globally disabled");
+        assert_eq!(config.laya.socket_path, None, "project cannot override socket_path");
+        assert_eq!(config.laya.model, disabled_global.laya.model, "project cannot override model");
+    }
+
+    #[test]
+    fn test_global_config_laya_socket_path_expansion() {
+        let home = TempDir::new().unwrap();
+        let config_path = home.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[laya]\nsocket_path = \"~/.cache/custom.sock\"\n",
+        )
+        .unwrap();
+        let global = GlobalConfig::load_from(&config_path, home.path());
+        assert_eq!(
+            global.laya.socket_path,
+            Some(home.path().join(".cache").join("custom.sock"))
+        );
     }
 
     #[test]
