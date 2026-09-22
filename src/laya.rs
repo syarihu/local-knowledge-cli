@@ -398,6 +398,63 @@ pub fn compute_rerank_scores(
     HashMap::new()
 }
 
+/// Report whether Laya is usable, for `lk stats` / MCP `get_stats`.
+///
+/// Only pings an already-running daemon — never spawns one — so checking the
+/// status stays fast and does not load the model. A stopped daemon is normal:
+/// it starts on the next command that needs it and exits after `idle_timeout`.
+pub fn status(config: &LayaConfig) -> serde_json::Value {
+    let supported = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let socket_path = resolve_socket_path(config);
+    let running = if supported {
+        LayaClient::try_connect(&socket_path, &config.model).map(|(mut client, _)| {
+            client
+                .ping()
+                .ok()
+                .and_then(|r| r.get("model").and_then(|m| m.as_str()).map(String::from))
+        })
+    } else {
+        None
+    };
+
+    let mut obj = json!({
+        "supported": supported,
+        "enabled": config.enabled,
+        "daemon": if running.is_some() { "running" } else { "stopped" },
+        "model": config.model,
+        "socket_path": socket_path.to_string_lossy(),
+    });
+    if let Some(Some(model)) = running {
+        obj["daemon_model"] = json!(model);
+    }
+    obj
+}
+
+/// One-line human-readable summary of [`status`] for `lk stats`.
+pub fn status_line(status: &serde_json::Value) -> String {
+    if !status["supported"].as_bool().unwrap_or(false) {
+        return "unsupported (macOS Apple Silicon only)".to_string();
+    }
+    let enabled = if status["enabled"].as_bool().unwrap_or(false) {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    match status["daemon"].as_str() {
+        Some("running") => format!(
+            "{enabled}, daemon running ({})",
+            status["daemon_model"]
+                .as_str()
+                .or(status["model"].as_str())
+                .unwrap_or("unknown model")
+        ),
+        _ if enabled == "enabled" => {
+            format!("{enabled}, daemon stopped (starts on demand)")
+        }
+        _ => format!("{enabled}, daemon stopped"),
+    }
+}
+
 /// Resolve the socket path to use, defaulting to `~/.cache/lk/laya.sock`.
 #[allow(dead_code)]
 pub fn resolve_socket_path(config: &LayaConfig) -> PathBuf {
@@ -461,6 +518,45 @@ mod tests {
         assert!(script.exists());
         let content = std::fs::read_to_string(&script).expect("readable script");
         assert_eq!(content, EMBEDDED_SERVER_SCRIPT);
+    }
+
+    #[test]
+    fn test_status_does_not_spawn_when_socket_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LayaConfig {
+            enabled: true,
+            socket_path: Some(dir.path().join("missing.sock")),
+            ..LayaConfig::default()
+        };
+        let st = status(&cfg);
+        assert_eq!(st["enabled"], json!(true));
+        assert_eq!(st["daemon"], json!("stopped"));
+        assert!(st.get("daemon_model").is_none());
+        assert!(
+            !dir.path().join("missing.pid").exists(),
+            "status must not spawn the daemon"
+        );
+    }
+
+    #[test]
+    fn test_status_line() {
+        let unsupported = json!({"supported": false, "enabled": true, "daemon": "stopped"});
+        assert!(status_line(&unsupported).starts_with("unsupported"));
+
+        let stopped = json!({"supported": true, "enabled": true, "daemon": "stopped"});
+        assert_eq!(
+            status_line(&stopped),
+            "enabled, daemon stopped (starts on demand)"
+        );
+
+        let running = json!({
+            "supported": true, "enabled": true, "daemon": "running",
+            "model": "a/b", "daemon_model": "c/d",
+        });
+        assert_eq!(status_line(&running), "enabled, daemon running (c/d)");
+
+        let disabled = json!({"supported": true, "enabled": false, "daemon": "stopped"});
+        assert_eq!(status_line(&disabled), "disabled, daemon stopped");
     }
 
     #[test]
