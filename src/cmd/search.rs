@@ -69,13 +69,48 @@ pub fn cmd_search(
     // the keyword and LIKE fallbacks carry no score and every row ties. Among equals,
     // knowledge recorded in the repo you are standing in is the better guess; only
     // then does the per-DB order (updated_at DESC) decide.
+    let is_mine = |label: &str, e: &db::Entry| {
+        label == "project" || (here.is_some() && e.project.as_deref() == here.as_deref())
+    };
     items.sort_by(|a, b| {
-        let mine = |e: &db::Entry| here.is_some() && e.project.as_deref() == here.as_deref();
         a.0.partial_cmp(&b.0)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| mine(&b.2).cmp(&mine(&a.2)))
+            .then_with(|| is_mine(b.1, &b.2).cmp(&is_mine(a.1, &a.2)))
             .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
     });
+
+    // Semantic reranking with Laya (if available)
+    let mut laya_client = crate::laya::LayaClient::connect(&config.laya);
+    let mut semantic_scores: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
+    if laya_client.is_some() && !items.is_empty() {
+        let cand_count = items.len().min(15);
+        let candidates: Vec<crate::laya::RerankCandidate> = items[..cand_count]
+            .iter()
+            .map(|(_, _, r, _)| crate::laya::RerankCandidate {
+                id: r.uid.clone(),
+                title: r.title.clone(),
+                content: r.content.clone(),
+            })
+            .collect();
+
+        semantic_scores =
+            crate::laya::compute_rerank_scores(query, &candidates, laya_client.as_mut());
+
+        if !semantic_scores.is_empty() {
+            // Sort by current project priority first, then semantic score descending, falling back to BM25 order
+            items.sort_by(|a, b| {
+                let sa = semantic_scores.get(&a.2.uid).copied().unwrap_or(0.0);
+                let sb = semantic_scores.get(&b.2.uid).copied().unwrap_or(0.0);
+                is_mine(b.1, &b.2)
+                    .cmp(&is_mine(a.1, &a.2))
+                    .then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal))
+                    .then_with(|| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                    .then_with(|| b.2.updated_at.cmp(&a.2.updated_at))
+            });
+        }
+    }
+
     items.truncate(limit);
 
     let result_count = items.len().to_string();
@@ -101,6 +136,9 @@ pub fn cmd_search(
                     "status": r.status,
                     "stale": stale,
                 });
+                if let Some(sem) = semantic_scores.get(&r.uid) {
+                    obj["semantic_score"] = serde_json::json!(crate::util::round2(*sem));
+                }
                 if let Some(ref project) = r.project {
                     obj["project"] = serde_json::json!(project);
                 }

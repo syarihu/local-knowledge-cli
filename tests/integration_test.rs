@@ -2,7 +2,14 @@ use std::path::Path;
 use std::process::Command;
 
 fn lk_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_lk"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_lk"));
+    // By default, disable Laya MLX daemon during integration tests to prevent
+    // parallel test workers from spawning dozens of concurrent Python/MLX processes
+    // in temp directories. Run with LK_LAYA=1 to test with Laya active.
+    if std::env::var("LK_LAYA").is_err() {
+        cmd.env("LK_NO_LAYA", "1");
+    }
+    cmd
 }
 
 /// `lk` run in `dir`, with `HOME` pointed at it too.

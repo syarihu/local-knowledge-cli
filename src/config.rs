@@ -37,6 +37,35 @@ pub struct Config {
     /// Set to false when agents receive the instructions over the lk-knowledge MCP
     /// server instead, which serves the same content in its `initialize` response.
     pub claude_md_import: bool,
+    /// Laya MLX integration settings.
+    pub laya: LayaConfig,
+}
+
+/// Configuration for Laya MLX integration (typed decisions on Apple Silicon).
+#[derive(Debug, Clone)]
+pub struct LayaConfig {
+    /// Whether Laya integration is enabled (default: false, opt-in).
+    pub enabled: bool,
+    /// Path to the Unix domain socket. Defaults to `~/.cache/lk/laya.sock`.
+    pub socket_path: Option<PathBuf>,
+    /// Seconds of inactivity before the background daemon auto-shuts down (default: 600).
+    pub idle_timeout: u64,
+    /// Hugging Face model repository or local path.
+    pub model: String,
+    /// Semantic duplicate detection probability threshold (default: 0.85).
+    pub duplicate_threshold: f64,
+}
+
+impl Default for LayaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            socket_path: None,
+            idle_timeout: 600,
+            model: "aac6fef/laya-multilingual-mlx".to_string(),
+            duplicate_threshold: 0.85,
+        }
+    }
 }
 
 impl Default for Config {
@@ -50,6 +79,7 @@ impl Default for Config {
             command_log: false,
             gitattributes_generated: true,
             claude_md_import: true,
+            laya: LayaConfig::default(),
         }
     }
 }
@@ -73,16 +103,26 @@ impl Config {
         let config_path = knowledge_dir.join("config.toml");
 
         if let Ok(content) = std::fs::read_to_string(&config_path) {
+            let mut section = String::new();
             for line in content.lines() {
                 let line = line.trim();
                 // Skip comments and empty lines
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
+                if line.starts_with('[') && line.ends_with(']') {
+                    section = line[1..line.len() - 1].trim().to_ascii_lowercase();
+                    continue;
+                }
                 if let Some((key, value)) = line.split_once('=') {
                     let key = key.trim();
-                    let value = value.trim();
-                    match key {
+                    let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+                    let full_key = if section.is_empty() {
+                        key.to_string()
+                    } else {
+                        format!("{section}.{key}")
+                    };
+                    match full_key.as_str() {
                         "stale_threshold_days" => {
                             if let Ok(v) = value.parse::<i64>()
                                 && v > 0
@@ -122,6 +162,33 @@ impl Config {
                             config.claude_md_import =
                                 parse_bool(value, key, config.claude_md_import);
                         }
+                        "laya.enabled" | "laya_enabled" => {
+                            config.laya.enabled = parse_bool(value, key, config.laya.enabled);
+                        }
+                        "laya.idle_timeout" | "laya_idle_timeout" => {
+                            if let Ok(v) = value.parse::<u64>()
+                                && v > 0
+                            {
+                                config.laya.idle_timeout = v;
+                            }
+                        }
+                        "laya.model" | "laya_model" => {
+                            if !value.is_empty() {
+                                config.laya.model = value.to_string();
+                            }
+                        }
+                        "laya.socket_path" | "laya_socket_path" => {
+                            if !value.is_empty() {
+                                config.laya.socket_path = Some(PathBuf::from(value));
+                            }
+                        }
+                        "laya.duplicate_threshold" | "laya_duplicate_threshold" => {
+                            if let Ok(v) = value.parse::<f64>()
+                                && (0.0..=1.0).contains(&v)
+                            {
+                                config.laya.duplicate_threshold = v;
+                            }
+                        }
                         _ => {} // Ignore unknown keys
                     }
                 }
@@ -136,6 +203,13 @@ impl Config {
             || std::env::var("LK_SEARCH_LOG").unwrap_or_default() == "1"
         {
             config.command_log = true;
+        }
+        if std::env::var("LK_NO_LAYA").unwrap_or_default() == "1"
+            || std::env::var("LK_LAYA").unwrap_or_default() == "0"
+        {
+            config.laya.enabled = false;
+        } else if std::env::var("LK_LAYA").unwrap_or_default() == "1" {
+            config.laya.enabled = true;
         }
 
         config
@@ -196,6 +270,8 @@ pub struct GlobalConfig {
     /// Add the lk-instructions import to `~/.claude/CLAUDE.md` (default: true).
     /// The user-scope counterpart of [`Config::claude_md_import`].
     pub claude_md_import: bool,
+    /// Laya MLX integration settings.
+    pub laya: LayaConfig,
 }
 
 impl GlobalConfig {
@@ -204,6 +280,7 @@ impl GlobalConfig {
             user_knowledge_dir: home.join(".config").join("lk").join("knowledge"),
             secret_detection: true,
             claude_md_import: true,
+            laya: LayaConfig::default(),
         }
     }
 
@@ -220,16 +297,26 @@ impl GlobalConfig {
         let mut config = Self::default_with_home(home);
 
         if let Ok(content) = std::fs::read_to_string(config_path) {
+            let mut section = String::new();
             for line in content.lines() {
                 let line = line.trim();
                 if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if line.starts_with('[') && line.ends_with(']') {
+                    section = line[1..line.len() - 1].trim().to_ascii_lowercase();
                     continue;
                 }
                 if let Some((key, value)) = line.split_once('=') {
                     let key = key.trim();
                     // Strip optional surrounding quotes from the value.
                     let value = value.trim().trim_matches('"').trim_matches('\'').trim();
-                    match key {
+                    let full_key = if section.is_empty() {
+                        key.to_string()
+                    } else {
+                        format!("{section}.{key}")
+                    };
+                    match full_key.as_str() {
                         "user_knowledge_dir" => {
                             if !value.is_empty() {
                                 config.user_knowledge_dir = resolve_path(value, home);
@@ -243,10 +330,45 @@ impl GlobalConfig {
                             config.claude_md_import =
                                 parse_bool(value, key, config.claude_md_import);
                         }
+                        "laya.enabled" | "laya_enabled" => {
+                            config.laya.enabled = parse_bool(value, key, config.laya.enabled);
+                        }
+                        "laya.idle_timeout" | "laya_idle_timeout" => {
+                            if let Ok(v) = value.parse::<u64>()
+                                && v > 0
+                            {
+                                config.laya.idle_timeout = v;
+                            }
+                        }
+                        "laya.model" | "laya_model" => {
+                            if !value.is_empty() {
+                                config.laya.model = value.to_string();
+                            }
+                        }
+                        "laya.socket_path" | "laya_socket_path" => {
+                            if !value.is_empty() {
+                                config.laya.socket_path = Some(PathBuf::from(value));
+                            }
+                        }
+                        "laya.duplicate_threshold" | "laya_duplicate_threshold" => {
+                            if let Ok(v) = value.parse::<f64>()
+                                && (0.0..=1.0).contains(&v)
+                            {
+                                config.laya.duplicate_threshold = v;
+                            }
+                        }
                         _ => {} // Ignore unknown keys
                     }
                 }
             }
+        }
+
+        if std::env::var("LK_NO_LAYA").unwrap_or_default() == "1"
+            || std::env::var("LK_LAYA").unwrap_or_default() == "0"
+        {
+            config.laya.enabled = false;
+        } else if std::env::var("LK_LAYA").unwrap_or_default() == "1" {
+            config.laya.enabled = true;
         }
 
         config

@@ -23,6 +23,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Self-update from GitHub Releases
 - Git worktree support — all worktrees share the main worktree's DB, so knowledge is available across worktrees
 - MCP (Model Context Protocol) server — Claude Code / Claude Desktop can autonomously search, add, and manage knowledge
+- Semantic intelligence with Laya (Apple Silicon / MLX) — on-demand background daemon providing semantic duplicate warning, Japanese kanji compound auto-keyword selection, and search result semantic reranking with graceful fallback
 - Installs Claude Code slash commands for seamless integration
 
 ## Installation
@@ -576,6 +577,13 @@ gitattributes_generated = true
 # instead; `lk init` then removes the import line rather than adding it.
 # `lk init --no-import` sets this for you.
 claude_md_import = true
+
+# Laya MLX integration (Apple Silicon, opt-in)
+# [laya]
+# enabled = false               # Default: false (set to true to enable)
+# idle_timeout = 600            # Seconds before daemon auto-shuts down (default: 600)
+# model = "aac6fef/laya-multilingual-mlx"  # Hugging Face model or local path
+# duplicate_threshold = 0.85   # Semantic duplicate threshold (default: 0.85)
 ```
 
 ### Global config (user scope)
@@ -597,6 +605,10 @@ secret_detection = true
 # Set to false when agents read the instructions from the lk-knowledge MCP server.
 # `lk init --global --no-import` sets this for you.
 claude_md_import = true
+
+# Laya MLX integration (Apple Silicon, opt-in)
+# [laya]
+# enabled = false
 ```
 
 ### Environment variable overrides
@@ -607,6 +619,8 @@ Environment variables take precedence over config file values:
 |----------|--------|
 | `LK_NO_AUTO_SYNC=1` | Disable auto-sync |
 | `LK_COMMAND_LOG=1` | Enable command logging |
+| `LK_LAYA=1` | Enable Laya semantic features |
+| `LK_NO_LAYA=1` | Disable Laya semantic features |
 
 ### Auto-sync
 
@@ -630,6 +644,22 @@ When enabled, all `lk` commands are logged to `.knowledge/command.log` with time
 lk command-log        # Show last 20 entries
 lk command-log -n 50  # Show last 50 entries
 ```
+
+### Semantic intelligence (Laya)
+
+On Apple Silicon (macOS arm64), `lk` can leverage [laya-mlx](https://github.com/mizorewww/laya-mlx) — a low-latency typed decision model runtime executing on Apple Neural Engine / Metal — to enhance duplicate detection, keyword extraction, and search ranking.
+
+This feature is **disabled by default (opt-in)**. To enable it, set `[laya] enabled = true` in `.knowledge/config.toml` (or `~/.config/lk/config.toml`), or set `LK_LAYA=1` in your environment:
+
+- **Semantic Duplicate Warning**: Identifies paraphrased entries that share identical meaning during `lk add`, flagging them in `possibly_related` with match reason `semantic-duplicate` without blocking the add.
+- **Smart Auto-Keywords**: When adding an entry without explicit keywords, `lk` extracts candidates including Japanese kanji compound words (e.g. `排他制御`, `有効期限`) and uses Laya to filter out uninformative terms, retaining high-quality domain keywords.
+- **Search Reranking**: Re-scores the top BM25 search results with query-content semantic relevance while strictly preserving current-project (`mine`) priority.
+
+#### Daemon Lifecycle
+
+- **On-Demand & Singleton**: A single Python daemon process is spawned on the first command requiring semantic decisions, communicating via a Unix Domain Socket (`~/.cache/lk/laya.sock`). All CLI and MCP sessions share this single daemon without redundant memory usage or model loading latency.
+- **Auto-Shutdown**: If no requests are received for 10 minutes (configurable via `idle_timeout`), the daemon shuts down automatically and frees all unified memory.
+- **Graceful Fallback**: If Python/MLX or dependencies are unavailable, or on non-macOS platforms, `lk` falls back transparently to trigram FTS5 and frequency-based keyword heuristics without errors.
 
 ## Supported Platforms
 

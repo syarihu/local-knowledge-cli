@@ -2,6 +2,7 @@ mod cmd;
 mod config;
 mod db;
 mod keywords;
+mod laya;
 mod markdown;
 mod mcp;
 mod prompts;
