@@ -10,6 +10,7 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - Full-text search with trigram tokenizer (supports Japanese/CJK), keyword search, and LIKE fallback
 - Smart query splitting — hyphens, underscores, and CamelCase are automatically split into separate tokens (e.g., `auth-API` → `auth` + `API`)
 - OR-matched, relevance-ranked queries — multi-word queries match entries containing *any* term (not all), with bm25 ranking entries that hit more/rarer terms highest, so even a loosely-worded query still surfaces the most relevant entries
+- Japanese sentence queries — a pasted sentence such as `OAuth2のトークンをEncryptedSharedPreferencesに移した理由は？` is split into the words worth searching for (ASCII words, katakana, kanji compounds) instead of being matched as one long phrase
 - Duplicate detection when adding entries (skip with `--force`)
 - Sync knowledge from `.knowledge/` markdown files (shareable via Git)
 - Auto-sync on command execution — no manual `lk sync` needed after `git pull`
@@ -19,11 +20,10 @@ A local knowledge base CLI for [Claude Code](https://docs.anthropic.com/en/docs/
 - User-scope (global) knowledge at `~/.config/lk/knowledge.db` — carry personal notes and cross-project context (e.g. session handoff logs) across all projects with `--scope user`; reads merge project + user by default. In projects without `lk init`, `lk add` automatically falls back to this global store, so it works anywhere
 - User-scope markdown export/sync — `lk export/sync --scope user` mirrors user knowledge to `~/.config/lk/knowledge/*.md` so personal notes can be versioned and synced across machines (e.g. via a dotfiles repo)
 - Bulk delete with `purge` by category or source
-- Auto-extract keywords from entries — frequency-ranked and capped (top 15; title/file-path terms weighted higher), used only as a fallback when no keywords are given; `lk keywords --regen` cleans up noisy keyword sets from older versions
+- Auto-extract keywords from entries — frequency-ranked and capped (top 8, plus up to 3 Japanese terms such as kanji compounds; title/file-path terms weighted higher), used only as a fallback when no keywords are given; `lk keywords --regen` cleans up noisy keyword sets from older versions
 - Self-update from GitHub Releases
 - Git worktree support — all worktrees share the main worktree's DB, so knowledge is available across worktrees
 - MCP (Model Context Protocol) server — Claude Code / Claude Desktop can autonomously search, add, and manage knowledge
-- Semantic intelligence with Laya (Apple Silicon / MLX) — on-demand background daemon providing semantic duplicate warning, Japanese kanji compound auto-keyword selection, and search result semantic reranking with graceful fallback
 - Installs Claude Code slash commands for seamless integration
 
 ## Installation
@@ -122,12 +122,12 @@ Commands:
 Keywords are the terms that best represent an entry — they power keyword search (fallback), duplicate detection, and human scanning. Full-text search already covers the whole title/content, so keywords don't need to (and shouldn't) mirror every word.
 
 - When `--keywords` is given, it is used as-is (curated keywords are authoritative).
-- When omitted, keywords are auto-extracted as a fallback: candidate terms (ASCII words, CamelCase/snake_case parts, file-path segments, katakana) are ranked by frequency — title and file-path terms weighted higher — and capped at 15.
+- When omitted, keywords are auto-extracted as a fallback: candidate terms (ASCII words, CamelCase/snake_case parts, file-path segments, katakana) are ranked by frequency — title and file-path terms weighted higher — and capped at 8. Up to 3 Japanese terms (mostly kanji compounds such as `排他制御`, with generic words like `処理` or `場合` excluded) are added on top, so Japanese notes get Japanese keywords without pushing out English identifiers.
 - Entries created by older versions may carry large, noisy auto-extracted keyword sets. Clean them up with:
 
 ```bash
 lk keywords --regen --dry-run   # preview which entries would change
-lk keywords --regen             # regenerate local entries with > 15 keywords
+lk keywords --regen             # regenerate local entries with > 11 keywords
 lk keywords --regen --all       # regenerate every local entry
 ```
 
@@ -475,7 +475,7 @@ Once installed, clients have access to these tools and prompt templates:
 | `get_knowledge` | Retrieve full content of an entry by ID |
 | `edit_knowledge` | Edit title, content, keywords, status, or recorded_project of an entry (CLI: `lk edit`) |
 | `supersede_knowledge` | Mark an entry as superseded by another (bidirectional) |
-| `get_stats` | Get knowledge base statistics and Laya status |
+| `get_stats` | Get knowledge base statistics |
 | `list_projects` | List registered projects (multi-project mode only) |
 
 #### MCP Prompts (`prompts/list`, `prompts/get`)
@@ -577,13 +577,6 @@ gitattributes_generated = true
 # instead; `lk init` then removes the import line rather than adding it.
 # `lk init --no-import` sets this for you.
 claude_md_import = true
-
-# Laya MLX integration (Apple Silicon)
-# Note: Laya is machine-specific and must be enabled globally in ~/.config/lk/config.toml (or LK_LAYA=1).
-# A project can opt out by setting enabled = false (overridable via LK_LAYA=1), or configure the duplicate threshold.
-# [laya]
-# enabled = false               # Opt out for this project
-# duplicate_threshold = 0.85   # Semantic duplicate threshold (default: 0.85)
 ```
 
 ### Global config (user scope)
@@ -605,14 +598,6 @@ secret_detection = true
 # Set to false when agents read the instructions from the lk-knowledge MCP server.
 # `lk init --global --no-import` sets this for you.
 claude_md_import = true
-
-# Laya MLX integration (Apple Silicon, opt-in)
-# [laya]
-# enabled = false               # Default: false (set to true to enable)
-# idle_timeout = 600            # Seconds before daemon auto-shuts down (default: 600)
-# model = "aac6fef/laya-multilingual-mlx"  # Hugging Face model or local path
-# socket_path = "~/.cache/lk/laya.sock"     # Optional custom socket path
-# duplicate_threshold = 0.85   # Semantic duplicate threshold (default: 0.85)
 ```
 
 ### Environment variable overrides
@@ -623,8 +608,6 @@ Environment variables take precedence over config file values:
 |----------|--------|
 | `LK_NO_AUTO_SYNC=1` | Disable auto-sync |
 | `LK_COMMAND_LOG=1` | Enable command logging |
-| `LK_LAYA=1` | Enable Laya semantic features |
-| `LK_NO_LAYA=1` | Disable Laya semantic features |
 
 ### Auto-sync
 
@@ -648,23 +631,6 @@ When enabled, all `lk` commands are logged to `.knowledge/command.log` with time
 lk command-log        # Show last 20 entries
 lk command-log -n 50  # Show last 50 entries
 ```
-
-### Semantic intelligence (Laya)
-
-On Apple Silicon (macOS arm64), `lk` can leverage [laya-mlx](https://github.com/mizorewww/laya-mlx) — a low-latency typed decision model runtime executing on Apple Neural Engine / Metal — to enhance duplicate detection, keyword extraction, and search ranking.
-
-This feature is **disabled by default (opt-in)**. To enable it, set `[laya] enabled = true` in `~/.config/lk/config.toml`, or set `LK_LAYA=1` in your environment (individual projects can opt out via `.knowledge/config.toml`, which `LK_LAYA=1` overrides):
-
-- **Semantic Duplicate Warning**: Identifies paraphrased entries that share identical meaning during `lk add`, flagging them in `possibly_related` with match reason `semantic-duplicate` without blocking the add.
-- **Smart Auto-Keywords**: When adding an entry without explicit keywords, `lk` extracts candidates including Japanese kanji compound words (e.g. `排他制御`, `有効期限`) and uses Laya to filter out uninformative terms, retaining high-quality domain keywords.
-- **Search Reranking**: Re-scores the top BM25 search results with query-content semantic relevance while strictly preserving current-project (`mine`) priority.
-
-#### Daemon Lifecycle
-
-- **On-Demand & Singleton**: A single Python daemon process is spawned on the first command requiring semantic decisions, communicating via a Unix Domain Socket (`~/.cache/lk/laya.sock`). All CLI and MCP sessions share this single daemon without redundant memory usage or model loading latency.
-- **Auto-Shutdown**: If no requests are received for 10 minutes (configurable via `idle_timeout`), the daemon shuts down automatically and frees all unified memory.
-- **Graceful Fallback**: If Python/MLX or dependencies are unavailable, or on non-macOS platforms, `lk` falls back transparently to trigram FTS5 and frequency-based keyword heuristics without errors.
-- **Checking Status**: `lk stats` (and the MCP `get_stats` tool, under `laya`) shows whether Laya is enabled and whether the daemon is running. The check only pings a running daemon and never spawns one, so `daemon stopped` is normal while idle — it starts on the next command that needs it. When reranking was applied, search results from the MCP `search_knowledge` tool and `lk search --json` carry a `semantic_score` field (the plain-text output does not show it).
 
 ## Supported Platforms
 

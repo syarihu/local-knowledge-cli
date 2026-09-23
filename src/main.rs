@@ -2,7 +2,6 @@ mod cmd;
 mod config;
 mod db;
 mod keywords;
-mod laya;
 mod markdown;
 mod mcp;
 mod prompts;
@@ -258,7 +257,7 @@ enum Commands {
         #[arg(long, requires = "regen")]
         all: bool,
         /// With --regen: entries with more keywords than this are considered noisy
-        #[arg(long, default_value = "8", requires = "regen")]
+        #[arg(long, default_value_t = keywords::MAX_AUTO_KEYWORDS, requires = "regen")]
         threshold: usize,
         /// With --regen: show what would change without writing
         #[arg(long, requires = "regen")]

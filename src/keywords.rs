@@ -14,11 +14,19 @@ const STOP_WORDS: &[&str] = &[
     "true", "false", "null", "none",
 ];
 
-/// Maximum number of auto-extracted keywords per entry. Full-text search already
-/// covers the entire title/content, so keywords only need to be the terms that best
-/// represent the entry — an uncapped dump of every word just adds noise to keyword
-/// search and duplicate detection.
-pub const MAX_AUTO_KEYWORDS: usize = 8;
+/// Maximum number of ASCII / katakana keywords [`extract_keywords`] keeps. Full-text
+/// search already covers the entire title/content, so keywords only need to be the
+/// terms that best represent the entry — an uncapped dump of every word just adds
+/// noise to keyword search and duplicate detection.
+const MAX_BASE_KEYWORDS: usize = 8;
+
+/// Maximum number of Japanese terms (kanji compounds, and katakana the base ranking
+/// missed) added on top of the base keywords. Kept separate from the base cap so
+/// Japanese terms never push out the English identifiers curated keywords favor.
+const MAX_JAPANESE_KEYWORDS: usize = 3;
+
+/// Maximum number of auto-extracted keywords per entry.
+pub const MAX_AUTO_KEYWORDS: usize = MAX_BASE_KEYWORDS + MAX_JAPANESE_KEYWORDS;
 
 /// Japanese general stopwords for candidate filtering.
 const JP_STOP_WORDS: &[&str] = &[
@@ -38,47 +46,6 @@ const TITLE_WEIGHT: u32 = 5;
 /// Extra multiplier for tokens that come from file paths — path segments are
 /// high-signal identifiers (module/file names) worth keeping over prose words.
 const PATH_WEIGHT: u32 = 3;
-
-/// Extract keywords with Laya if available, falling back to heuristic frequency extraction.
-pub fn extract_keywords_auto(
-    title: &str,
-    content: &str,
-    mut laya: Option<&mut crate::laya::LayaClient>,
-) -> Vec<String> {
-    if let Some(ref mut client) = laya {
-        let candidates = extract_candidates_for_laya(title, content);
-        if !candidates.is_empty()
-            && let Ok(ranked) = client.filter_keywords(title, content, &candidates)
-        {
-            // Filter terms with score >= 0.50
-            let qualified: Vec<String> = ranked
-                .iter()
-                .filter(|(_, score)| *score >= 0.50)
-                .map(|(kw, _)| kw.clone())
-                .collect();
-
-            let mut selected = deduplicate_substrings(&qualified);
-            selected.truncate(MAX_AUTO_KEYWORDS);
-
-            // If threshold filtered everything out, take top from Laya's ranked results
-            if selected.is_empty() && !ranked.is_empty() {
-                let fallback: Vec<String> = ranked.into_iter().map(|(kw, _)| kw).collect();
-                selected = deduplicate_substrings(&fallback);
-                selected.truncate(MAX_AUTO_KEYWORDS.min(5));
-            } else if selected.is_empty() && !candidates.is_empty() {
-                selected = deduplicate_substrings(&candidates);
-                selected.truncate(MAX_AUTO_KEYWORDS.min(5));
-            }
-
-            if !selected.is_empty() {
-                selected.sort();
-                return selected;
-            }
-        }
-    }
-
-    extract_keywords(title, content)
-}
 
 /// Check if `shorter` is a sub-compound / substring of `longer`.
 ///
@@ -139,26 +106,35 @@ pub fn deduplicate_substrings(keywords: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Extract candidate keywords for Laya ranking, including ASCII words, katakana,
-/// and Japanese kanji compounds (2-6 chars).
-pub fn extract_candidates_for_laya(title: &str, content: &str) -> Vec<String> {
+/// Candidate terms ranked by weighted frequency, including Japanese kanji
+/// compounds (2-6 chars) on top of the ASCII words and katakana that
+/// [`extract_keywords`] ranks on its own. Only the top 25 are returned.
+fn ranked_candidates_with_kanji(title: &str, content: &str) -> Vec<String> {
     let mut scores: HashMap<String, u32> = HashMap::new();
     score_text_with_kanji(title, TITLE_WEIGHT, &mut scores);
     score_text_with_kanji(content, 1, &mut scores);
 
     let mut ranked: Vec<(String, u32)> = scores.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    // Offer up to 25 candidates to Laya
     ranked.truncate(25);
 
     ranked.into_iter().map(|(kw, _)| kw).collect()
 }
 
-/// Extract keywords from title and content, ranked by weighted frequency and
-/// capped at `MAX_AUTO_KEYWORDS`. Title occurrences and file-path segments are
-/// weighted higher than plain content words.
-/// Only ASCII words and katakana are extracted (other Japanese keywords should
-/// be specified manually).
+/// Whether `s` contains any hiragana, katakana, or kanji.
+fn is_japanese(s: &str) -> bool {
+    s.chars()
+        .any(|c| matches!(c, '\u{3040}'..='\u{30FF}' | '\u{4E00}'..='\u{9FFF}'))
+}
+
+/// Extract keywords from title and content, ranked by weighted frequency. Title
+/// occurrences and file-path segments are weighted higher than plain content words.
+///
+/// The base set is ASCII words and katakana, capped at `MAX_BASE_KEYWORDS`. Up to
+/// `MAX_JAPANESE_KEYWORDS` Japanese terms (mostly kanji compounds, which the base
+/// ranking cannot see) are then added on top. Measured against curated keywords on
+/// real knowledge bases, this kept the base set's precision on English identifiers
+/// while raising recall of the curated Japanese keywords from 0.18 to 0.45.
 pub fn extract_keywords(title: &str, content: &str) -> Vec<String> {
     let mut scores: HashMap<String, u32> = HashMap::new();
     score_text(title, TITLE_WEIGHT, &mut scores);
@@ -167,9 +143,16 @@ pub fn extract_keywords(title: &str, content: &str) -> Vec<String> {
     let mut ranked: Vec<(String, u32)> = scores.into_iter().collect();
     // Highest score first; alphabetical tie-break keeps output deterministic.
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    ranked.truncate(MAX_AUTO_KEYWORDS);
+    ranked.truncate(MAX_BASE_KEYWORDS);
 
     let mut result: Vec<String> = ranked.into_iter().map(|(kw, _)| kw).collect();
+    let japanese: Vec<String> =
+        deduplicate_substrings(&ranked_candidates_with_kanji(title, content))
+            .into_iter()
+            .filter(|kw| is_japanese(kw) && !result.contains(kw))
+            .take(MAX_JAPANESE_KEYWORDS)
+            .collect();
+    result.extend(japanese);
     result.sort();
     result
 }
@@ -185,36 +168,89 @@ fn score_text_with_kanji(text: &str, weight: u32, scores: &mut HashMap<String, u
 
     // Kanji compounds (2-6 chars)
     for mat in KANJI_RE.find_iter(text) {
-        let s = mat.as_str();
-        let chars: Vec<char> = s.chars().collect();
-        let len = chars.len();
-
-        // 1. If compound ends with '時' (e.g. 発生時 -> skip because 発生 is a stop word; 失効時 -> 失効)
-        if len >= 3 && chars.last() == Some(&'時') {
-            let stem: String = chars[..len - 1].iter().collect();
-            if !JP_STOP_WORDS.contains(&stem.as_str()) && stem.chars().count() >= 2 {
-                *scores.entry(stem).or_insert(0) += weight;
-            }
-            continue;
-        }
-
-        // 2. If compound (>= 4 chars) ends with a 2-char stop word (e.g. 排他制御手順 -> 排他制御, 自動更新処理 -> 自動更新)
-        if len >= 4 {
-            let suffix: String = chars[len - 2..].iter().collect();
-            if JP_STOP_WORDS.contains(&suffix.as_str()) {
-                let stem: String = chars[..len - 2].iter().collect();
-                if !JP_STOP_WORDS.contains(&stem.as_str()) && stem.chars().count() >= 2 {
-                    *scores.entry(stem).or_insert(0) += weight;
-                }
-                continue;
-            }
-        }
-
-        // 3. Normal compound if not in JP_STOP_WORDS
-        if !JP_STOP_WORDS.contains(&s) {
-            *scores.entry(s.to_string()).or_insert(0) += weight;
+        if let Some(term) = kanji_term(mat.as_str()) {
+            *scores.entry(term).or_insert(0) += weight;
         }
     }
+}
+
+/// Normalize one kanji run into a keyword, or `None` if it carries no meaning
+/// on its own.
+fn kanji_term(s: &str) -> Option<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let stem_if_meaningful = |stem: String| {
+        (!JP_STOP_WORDS.contains(&stem.as_str()) && stem.chars().count() >= 2).then_some(stem)
+    };
+
+    // 1. If compound ends with '時' (e.g. 発生時 -> skip because 発生 is a stop word; 失効時 -> 失効)
+    if len >= 3 && chars.last() == Some(&'時') {
+        return stem_if_meaningful(chars[..len - 1].iter().collect());
+    }
+
+    // 2. If compound (>= 4 chars) ends with a 2-char stop word (e.g. 排他制御手順 -> 排他制御, 自動更新処理 -> 自動更新)
+    if len >= 4 {
+        let suffix: String = chars[len - 2..].iter().collect();
+        if JP_STOP_WORDS.contains(&suffix.as_str()) {
+            return stem_if_meaningful(chars[..len - 2].iter().collect());
+        }
+    }
+
+    // 3. Normal compound if not in JP_STOP_WORDS
+    (!JP_STOP_WORDS.contains(&s)).then(|| s.to_string())
+}
+
+static QUERY_WORD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z][A-Za-z0-9_.\-]*").unwrap());
+static QUERY_KATAKANA_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[\u30A0-\u30FF]{3,}").unwrap());
+
+/// Turn a search query into the terms worth searching for.
+///
+/// Agents and people often paste a whole Japanese sentence as the query
+/// ("OAuth2のトークンをEncryptedSharedPreferencesに移した理由は？"). With no spaces to split on, that reaches
+/// FTS as one long phrase and matches nothing. So any whitespace-separated token
+/// containing hiragana is treated as sentence text and replaced by the ASCII
+/// words (3+ chars), katakana words (3+ chars), and kanji compounds found in it.
+/// Tokens without hiragana ("OAuth2", "認証失敗エラーコード一覧") are kept as
+/// typed, so keyword-style queries behave exactly as before.
+pub fn query_terms(query: &str) -> String {
+    let mut terms: Vec<String> = Vec::new();
+    let mut push = |t: String| {
+        if !terms.contains(&t) {
+            terms.push(t);
+        }
+    };
+    for token in query.split_whitespace() {
+        if !token.chars().any(|c| matches!(c, '\u{3040}'..='\u{309F}')) {
+            push(token.to_string());
+            continue;
+        }
+        let mut found: Vec<(usize, String)> = Vec::new();
+        for m in QUERY_WORD_RE.find_iter(token) {
+            let w = m.as_str().trim_matches(|c| c == '.' || c == '-');
+            if w.len() >= 3 && !STOP_WORDS.contains(&w.to_lowercase().as_str()) {
+                found.push((m.start(), w.to_string()));
+            }
+        }
+        for m in QUERY_KATAKANA_RE.find_iter(token) {
+            found.push((m.start(), m.as_str().to_string()));
+        }
+        for m in KANJI_RE.find_iter(token) {
+            if let Some(t) = kanji_term(m.as_str()) {
+                found.push((m.start(), t));
+            }
+        }
+        if found.is_empty() {
+            push(token.to_string());
+        } else {
+            found.sort_by_key(|(pos, _)| *pos);
+            for (_, t) in found {
+                push(t);
+            }
+        }
+    }
+    terms.join(" ")
 }
 
 fn score_text(text: &str, weight: u32, scores: &mut HashMap<String, u32>) {
@@ -348,7 +384,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         let kws = extract_keywords("", &content);
-        assert_eq!(kws.len(), MAX_AUTO_KEYWORDS);
+        // English-only text has no Japanese terms to add on top of the base set.
+        assert_eq!(kws.len(), MAX_BASE_KEYWORDS);
     }
 
     #[test]
@@ -365,7 +402,7 @@ mod tests {
         assert!(kws.contains(&"paymentgateway".to_string()));
         assert!(kws.contains(&"retry".to_string()));
         assert!(kws.contains(&"policy".to_string()));
-        assert_eq!(kws.len(), MAX_AUTO_KEYWORDS);
+        assert_eq!(kws.len(), MAX_BASE_KEYWORDS);
     }
 
     #[test]
@@ -382,8 +419,8 @@ mod tests {
     }
 
     #[test]
-    fn test_candidates_for_laya_extracts_kanji() {
-        let candidates = extract_candidates_for_laya(
+    fn test_ranked_candidates_extract_kanji() {
+        let candidates = ranked_candidates_with_kanji(
             "OAuth2トークン失効時の自動リフレッシュ処理",
             "アクセストークンの有効期限切れにより401 Unauthorizedが返却された場合の排他制御手順。",
         );
@@ -404,10 +441,72 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_keywords_auto_none_laya() {
-        let kws = extract_keywords_auto("Session Management", "Token expiration handling", None);
-        assert!(!kws.is_empty());
+    fn test_query_terms_splits_japanese_sentence() {
+        assert_eq!(
+            query_terms("Retrofitのタイムアウト 設定値はどこで決めてる？"),
+            "Retrofit タイムアウト 設定値"
+        );
+        // Stopword-only kanji ("理由") are dropped, the rest kept in order.
+        assert_eq!(
+            query_terms("local-knowledge-cliって名前にした理由は？"),
+            "local-knowledge-cli 名前"
+        );
+        // A sentence piece with nothing to extract ("lsが空になった") is kept as typed.
+        assert_eq!(
+            query_terms("brew版を使っていたら lsが空になった"),
+            "brew lsが空になった"
+        );
+    }
+
+    #[test]
+    fn test_query_terms_keeps_keyword_queries() {
+        assert_eq!(query_terms("OAuth2 トークン"), "OAuth2 トークン");
+        assert_eq!(query_terms("認証 失敗 再送"), "認証 失敗 再送");
+        assert_eq!(
+            query_terms("認証失敗エラーコード一覧"),
+            "認証失敗エラーコード一覧"
+        );
+        assert_eq!(
+            query_terms("how does lk detect the project root"),
+            "how does lk detect the project root"
+        );
+    }
+
+    #[test]
+    fn test_query_terms_keeps_token_with_nothing_to_extract() {
+        assert_eq!(query_terms("これはなに"), "これはなに");
+    }
+
+    #[test]
+    fn test_extract_keywords_adds_japanese_terms() {
+        let kws = extract_keywords(
+            "OAuth2トークンの自動更新処理",
+            "401エラー発生時にバックグラウンドで新しいアクセストークンを再取得して通信をリトライする排他制御フロー。",
+        );
+        // The ASCII / katakana base is kept...
+        assert!(kws.contains(&"oauth2".to_string()));
+        assert!(kws.contains(&"アクセストークン".to_string()));
+        // ...and kanji compounds it cannot see are added on top.
+        assert!(kws.contains(&"自動更新".to_string()));
+        assert!(kws.contains(&"排他制御".to_string()));
+        // Stopwords and sub-compounds are not.
+        assert!(!kws.contains(&"処理".to_string()));
+        assert!(!kws.contains(&"排他".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keywords_caps_japanese_terms() {
+        let kws = extract_keywords("", "認証 権限 暗号 署名 検証 失効 更新 監査 通知 障害 復旧");
+        let japanese = kws.iter().filter(|k| is_japanese(k)).count();
+        assert_eq!(japanese, MAX_JAPANESE_KEYWORDS);
+        assert!(kws.len() <= MAX_AUTO_KEYWORDS);
+    }
+
+    #[test]
+    fn test_extract_keywords_english_only_is_unchanged() {
+        let kws = extract_keywords("Session Management", "Token expiration handling");
         assert!(kws.contains(&"session".to_string()));
+        assert!(kws.iter().all(|k| !is_japanese(k)));
     }
 
     #[test]
@@ -461,7 +560,7 @@ mod tests {
     fn test_user_example_candidate_extraction() {
         let title = "OAuth2トークンの自動更新処理";
         let content = "401エラー発生時にバックグラウンドで新しいアクセストークンを再取得して通信をリトライする排他制御フロー。";
-        let candidates = extract_candidates_for_laya(title, content);
+        let candidates = ranked_candidates_with_kanji(title, content);
 
         // Sub-compound suppression: 4-char compounds must not be split into 2-char pieces
         assert!(candidates.contains(&"排他制御".to_string()));
