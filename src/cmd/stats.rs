@@ -182,8 +182,6 @@ pub fn cmd_stats(
         ));
     }
     let unique_keywords = kw_union.len();
-    let laya =
-        crate::laya::status(&crate::config::Config::load(&crate::util::get_knowledge_dir()).laya);
 
     // Merged across scopes: the same project can hold entries in both stores, and
     // seeing them split by DB answers a different question than "how much do I know
@@ -208,7 +206,6 @@ pub fn cmd_stats(
             "local_entries": local,
             "unique_keywords": unique_keywords,
             "scopes": per_scope,
-            "laya": laya,
         });
         if verbose {
             obj["project_root"] = serde_json::json!(get_project_root().to_string_lossy());
@@ -231,7 +228,6 @@ pub fn cmd_stats(
         println!("  Shared entries:   {shared}");
         println!("  Local entries:    {local}");
         println!("  Unique keywords:  {unique_keywords}");
-        println!("  Laya:             {}", crate::laya::status_line(&laya));
         for line in &per_scope_text {
             println!("{line}");
         }

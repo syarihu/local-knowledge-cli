@@ -832,6 +832,9 @@ pub fn search_entries(
     if limit == 0 {
         return Ok(Vec::new());
     }
+    // A pasted Japanese sentence would otherwise reach FTS as one unmatchable phrase.
+    let expanded = crate::keywords::query_terms(query);
+    let query = expanded.as_str();
     // An all-separator/whitespace query tokenizes to zero content words; the keyword and
     // LIKE paths would then build invalid SQL (`WHERE ()`), so return early rather than
     // error.

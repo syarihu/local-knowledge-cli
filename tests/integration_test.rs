@@ -2,14 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 fn lk_bin() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_lk"));
-    // By default, disable Laya MLX daemon during integration tests to prevent
-    // parallel test workers from spawning dozens of concurrent Python/MLX processes
-    // in temp directories. Run with LK_LAYA=1 to test with Laya active.
-    if std::env::var("LK_LAYA").is_err() {
-        cmd.env("LK_NO_LAYA", "1");
-    }
-    cmd
+    Command::new(env!("CARGO_BIN_EXE_lk"))
 }
 
 /// `lk` run in `dir`, with `HOME` pointed at it too.
@@ -876,6 +869,43 @@ fn test_search() {
     let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert!(!results.is_empty());
     assert_eq!(results[0]["title"], "OAuth Login");
+}
+
+/// A whole Japanese sentence pasted as the query has no spaces to split on, so
+/// it used to reach FTS as one phrase and match nothing.
+#[test]
+fn test_search_with_japanese_sentence_query() {
+    let dir = setup_temp_project();
+    lk_in(dir.path()).arg("init").output().unwrap();
+    lk_in(dir.path())
+        .args([
+            "add",
+            "OAuth2 トークンの保存先を EncryptedSharedPreferences に移した経緯",
+            "--keywords",
+            "oauth2,encryptedsharedpreferences",
+            "--content",
+            "OAuth2 のトークンを平文の SharedPreferences から EncryptedSharedPreferences に移した。",
+        ])
+        .output()
+        .unwrap();
+
+    let output = lk_in(dir.path())
+        .args([
+            "search",
+            "OAuth2のトークンをEncryptedSharedPreferencesに移したのってなんでだっけ？",
+            "--scope",
+            "project",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(!results.is_empty(), "sentence query should find the entry");
+    assert_eq!(
+        results[0]["title"],
+        "OAuth2 トークンの保存先を EncryptedSharedPreferences に移した経緯"
+    );
 }
 
 #[test]
